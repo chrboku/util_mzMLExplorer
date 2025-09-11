@@ -5,7 +5,8 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, QHBoxLayout
                              QTreeWidget, QTreeWidgetItem, QLabel, QDoubleSpinBox,
                              QLineEdit, QGroupBox, QCheckBox, QComboBox, QSpinBox,
                              QSplitter, QFileDialog, QMessageBox, QHeaderView,
-                             QMenuBar, QMenu, QDialog, QFormLayout)
+                             QMenuBar, QMenu, QDialog, QFormLayout, QProgressDialog,
+                             QFrame, QScrollArea)
 from PyQt6.QtCore import Qt, QTimer, QMimeData, QUrl, QSettings
 from PyQt6.QtGui import QFont, QAction, QDragEnterEvent, QDropEvent
 from PyQt6.QtCore import Qt, pyqtSignal, QObject
@@ -16,7 +17,7 @@ import numpy as np
 from .compound_manager import CompoundManager
 from .file_manager import FileManager
 from .eic_window import EICWindow
-from .utils import calculate_mz_from_formula
+from natsort import natsorted, index_natsorted
 
 
 class MzMLExplorerMainWindow(QMainWindow):
@@ -30,12 +31,14 @@ class MzMLExplorerMainWindow(QMainWindow):
         
         # Initialize settings
         self.settings = QSettings('mzMLExplorer', 'mzMLExplorer')
-        self.load_eic_defaults()
         
-        # Data storage
+        # Data storage (initialize before loading settings that depend on it)
         self.file_manager = FileManager()
         self.compound_manager = CompoundManager()
         self.eic_windows = []
+        
+        # Load settings after data storage is initialized
+        self.load_eic_defaults()
         
         self.init_ui()
         self.load_stylesheet()
@@ -91,8 +94,18 @@ class MzMLExplorerMainWindow(QMainWindow):
         
         main_layout.addWidget(splitter)
         
-        # Status bar
+        # Create memory usage label for bottom left corner
+        self.memory_label = QLabel("Memory: -- MB")
+        self.memory_label.setStyleSheet("QLabel { font-size: 9px; color: #666; }")
+        
+        # Add memory label to status bar
+        self.statusBar().addPermanentWidget(self.memory_label)
         self.statusBar().showMessage("Ready")
+        
+        # Timer for updating memory usage
+        self.memory_timer = QTimer()
+        self.memory_timer.timeout.connect(self.update_memory_label)
+        self.memory_timer.start(2000)  # Update every 2 seconds
     
     def load_files(self):
         """Load mzML files from a TSV or Excel file"""
@@ -121,6 +134,10 @@ class MzMLExplorerMainWindow(QMainWindow):
                 # Load files using file manager
                 self.file_manager.load_files(df)
                 self.update_files_table()
+                
+                # If memory mode is enabled, load the new files into memory with progress
+                if self.file_manager.keep_in_memory:
+                    self.load_files_to_memory_with_progress()
                 
                 total_files = len(self.file_manager.get_files_data())
                 self.statusBar().showMessage(f"Files loaded. Total: {total_files} files")
@@ -307,44 +324,16 @@ class MzMLExplorerMainWindow(QMainWindow):
             # Create adducts template
             adducts_template_data = {
                 'Adduct': [
-                    '[M+H]+',
-                    '[M+Na]+',
-                    '[M+K]+',
-                    '[M+NH4]+',
-                    '[M+2H]2+',
-                    '[M-H]-',
-                    '[M+Cl]-',
-                    '[M+HCOO]-',
-                    '[M+CH3COO]-',
-                    '[M-H2O-H]-',
-                    '[M-H2O+H]+',
-                    '[M+H-NH3]+',
-                    '[2M+H]+',
-                    '[2M+Na]+',
-                    '[2M-H]-'
+                    "[M+3H]+++", "[M+2H+Na]+++", "[M+H+2Na]+++", "[M+3Na]+++", "[M+2H]++", "[M+H+NH4]++", "[M+H+Na]++", "[M+H+K]++", "[M+ACN+2H]++", "[M+2Na]++", "[M+2ACN+2H]++", "[M+3ACN+2H]++", "[M+H]+", "[M+NH4]+", "[M+Na]+", "[M+CH3OH+H]+", "[M+K]+", "[M+ACN+H]+", "[M+2Na-H]+", "[M+IsoProp+H]+", "[M+ACN+Na]+", "[M+2K-H]+", "[M+DMSO+H]+", "[M+2ACN+H]+", "[M+IsoProp+Na+H]+", "[2M+H]+", "[2M+NH4]+", "[2M+Na]+", "[2M+K]+", "[2M+ACN+H]+", "[2M+ACN+Na]+", "[M-3H]---", "[M-2H]--", "[M-H2O-H]-", "[M-H]-", "[M+Na-2H]-", "[M+Cl]-", "[M+K-2H]-", "[M+FA-H]-", "[M+Hac-H]-", "[M+Br]-", "[M+TFA-H]-", "[2M-H]-", "[2M+FA-H]-", "[2M+Hac-H]-", "[3M-H]-"
                 ],
                 'Mass_change': [
-                    1.007276,
-                    22.989218,
-                    38.963158,
-                    18.033823,
-                    2.014552,
-                    -1.007276,
-                    34.969402,
-                    44.998201,
-                    59.013851,
-                    -19.018393,
-                    -17.003288,
-                    -16.018724,
-                    1.007276,
-                    22.989218,
-                    -1.007276
+                    1.007276, 8.33459, 15.76619, 22.989218, 1.007276, 9.52055, 11.998247, 19.985217, 21.52055, 22.989218, 42.033823, 62.547097, 1.007276, 18.033823, 22.989218, 33.033489, 38.963158, 42.033823, 44.97116, 61.06534, 64.015765, 76.91904, 79.02122, 83.06037, 84.05511, 1.007276, 18.033823, 22.989218, 38.963158, 42.033823, 64.015765, -1.007276, -1.007276, -19.01839, -1.007276, 20.974666, 34.969402, 36.948606, 44.998201, 59.013851, 78.918885, 112.985586, -1.007276, 44.998201, 59.013851, 1.007276
                 ],
                 'Charge': [
-                    1, 1, 1, 1, 2, -1, -1, -1, -1, -1, 1, 1, 1, 1, -1
+                    3, 3, 3, 3, 2, 2, 2, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, -3, -2, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1
                 ],
                 'Multiplier': [
-                    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2
+                    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 3
                 ]
             }
             
@@ -432,6 +421,9 @@ class MzMLExplorerMainWindow(QMainWindow):
         self.compounds_tree.clear()
         compounds_data = self.compound_manager.get_compounds_data()
         
+        # Create list to store compound items for sorting
+        compound_items = []
+        
         for _, compound in compounds_data.iterrows():
             # Create compound item with retention time info
             compound_name = compound['Name']
@@ -452,8 +444,13 @@ class MzMLExplorerMainWindow(QMainWindow):
             compound_item = QTreeWidgetItem([compound_text])
             compound_item.setFont(0, QFont("Arial", 10, QFont.Weight.Bold))
             
+            # Store the compound name for sorting
+            compound_item.setData(0, Qt.ItemDataRole.UserRole + 1, compound_name)
+            
             # Parse adducts and create child items
             adducts = compound['Common_adducts']
+            adduct_items = []
+            
             if isinstance(adducts, str):
                 adduct_list = [a.strip() for a in adducts.split(',') if a.strip()]
                 
@@ -490,8 +487,37 @@ class MzMLExplorerMainWindow(QMainWindow):
                         'mz': mz_value,
                         'polarity': polarity
                     })
+                    
+                    # Store sorting data
+                    adduct_item.setData(0, Qt.ItemDataRole.UserRole + 2, {
+                        'polarity': polarity or '',
+                        'mz': mz_value or 0
+                    })
+                    
+                    adduct_items.append(adduct_item)
+                
+                # Sort adduct items: first by polarity, then by m/z value
+                adduct_items.sort(key=lambda item: (
+                    item.data(0, Qt.ItemDataRole.UserRole + 2)['polarity'],
+                    item.data(0, Qt.ItemDataRole.UserRole + 2)['mz']
+                ))
+                
+                # Add sorted adduct items to compound item
+                for adduct_item in adduct_items:
                     compound_item.addChild(adduct_item)
             
+            compound_items.append(compound_item)
+        
+        # Sort compound items by natural sort of compound name
+        compound_items.sort(key=lambda item: item.data(0, Qt.ItemDataRole.UserRole + 1))
+        
+        # Use natsorted for natural sorting
+        compound_names = [item.data(0, Qt.ItemDataRole.UserRole + 1) for item in compound_items]
+        sorted_indices = index_natsorted(compound_names)
+        sorted_compound_items = [compound_items[i] for i in sorted_indices]
+        
+        # Add sorted compound items to tree
+        for compound_item in sorted_compound_items:
             self.compounds_tree.addTopLevelItem(compound_item)
         
         # Expand all items
@@ -729,10 +755,11 @@ class MzMLExplorerMainWindow(QMainWindow):
         # Options menu
         options_menu = menubar.addMenu('Options')
         
-        # EIC Defaults action
-        eic_defaults_action = QAction('EIC Window Defaults...', self)
-        eic_defaults_action.triggered.connect(self.show_eic_defaults_dialog)
-        options_menu.addAction(eic_defaults_action)
+        # Unified Options action
+        options_action = QAction('Options...', self)
+        options_action.setShortcut('Ctrl+P')
+        options_action.triggered.connect(self.show_options_dialog)
+        options_menu.addAction(options_action)
         
         # Help menu
         help_menu = menubar.addMenu('Help')
@@ -833,6 +860,10 @@ class MzMLExplorerMainWindow(QMainWindow):
             self.file_manager.load_files(df)
             self.update_files_table()
             
+            # If memory mode is enabled, load the new files into memory with progress
+            if self.file_manager.keep_in_memory:
+                self.load_files_to_memory_with_progress()
+            
             total_files = len(self.file_manager.get_files_data())
             self.statusBar().showMessage(f"Files loaded via drag & drop. Total: {total_files} files")
             
@@ -893,6 +924,14 @@ class MzMLExplorerMainWindow(QMainWindow):
             'crop_rt_window': self.settings.value('eic/crop_rt_window', False, type=bool),
             'normalize_samples': self.settings.value('eic/normalize_samples', False, type=bool)
         }
+        
+        # Load memory settings
+        self.memory_settings = {
+            'keep_in_memory': self.settings.value('memory/keep_in_memory', False, type=bool)
+        }
+        
+        # Apply memory settings to file manager
+        self.file_manager.set_memory_mode(self.memory_settings['keep_in_memory'], auto_load=True)
     
     def save_eic_defaults(self):
         """Save EIC window default settings"""
@@ -901,16 +940,452 @@ class MzMLExplorerMainWindow(QMainWindow):
         self.settings.setValue('eic/rt_shift_min', self.eic_defaults['rt_shift_min'])
         self.settings.setValue('eic/crop_rt_window', self.eic_defaults['crop_rt_window'])
         self.settings.setValue('eic/normalize_samples', self.eic_defaults['normalize_samples'])
+        
+    def save_memory_settings(self):
+        """Save memory settings"""
+        self.settings.setValue('memory/keep_in_memory', self.memory_settings['keep_in_memory'])
+    
+    def update_memory_label(self):
+        """Update the memory usage label"""
+        try:
+            memory_info = self.file_manager.get_memory_usage()
+            
+            if 'error' in memory_info:
+                self.memory_label.setText("Memory: Error")
+            else:
+                rss_mb = memory_info['rss_mb']
+                cached_files = memory_info['cached_files']
+                
+                if memory_info['keep_in_memory'] and cached_files > 0:
+                    self.memory_label.setText(f"Memory: {rss_mb:.1f} MB ({cached_files} files cached)")
+                else:
+                    self.memory_label.setText(f"Memory: {rss_mb:.1f} MB")
+        except Exception as e:
+            self.memory_label.setText("Memory: Error")
         self.settings.sync()
     
-    def show_eic_defaults_dialog(self):
-        """Show the EIC defaults configuration dialog"""
-        dialog = EICDefaultsDialog(self.eic_defaults, self)
+    def show_options_dialog(self):
+        """Show the unified options configuration dialog"""
+        dialog = UnifiedOptionsDialog(self.eic_defaults, self.memory_settings, self.file_manager, self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
-            self.eic_defaults = dialog.get_values()
+            self.eic_defaults, self.memory_settings = dialog.get_values()
             self.save_eic_defaults()
+            self.save_memory_settings()
+            
+            # Apply memory settings to file manager
+            old_memory_mode = self.file_manager.keep_in_memory
+            new_memory_mode = self.memory_settings['keep_in_memory']
+            
+            if old_memory_mode != new_memory_mode:
+                if new_memory_mode:
+                    # Show loading dialog when enabling memory mode
+                    self.file_manager.set_memory_mode(True, auto_load=False)  # Enable mode without auto-loading
+                    self.load_files_to_memory_with_progress()
+                else:
+                    # Just disable memory mode
+                    self.file_manager.set_memory_mode(False)
+            
             QMessageBox.information(self, "Settings Saved", 
-                                  "EIC window defaults have been saved successfully!")
+                                  "Options have been saved and applied successfully!")
+    
+    def load_files_to_memory_with_progress(self):
+        """Load files to memory with a progress dialog"""
+        if self.file_manager.files_data.empty:
+            return
+        
+        num_files = len(self.file_manager.files_data)
+        
+        # Create progress dialog
+        progress = QProgressDialog("Loading mzML files into memory...", "Cancel", 0, num_files, self)
+        progress.setWindowTitle("Loading Files")
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.show()
+        
+        # Clear any existing cache first
+        self.file_manager._clear_memory_cache()
+        
+        # Load files one by one with progress updates
+        for i, (_, row) in enumerate(self.file_manager.files_data.iterrows()):
+            if progress.wasCanceled():
+                self.file_manager.set_memory_mode(False)
+                QMessageBox.information(self, "Cancelled", "Memory loading was cancelled.")
+                return
+            
+            filepath = row['Filepath']
+            filename = row['filename']
+            
+            progress.setLabelText(f"Loading {filename}...")
+            progress.setValue(i)
+            QApplication.processEvents()  # Update UI
+            
+            try:
+                # Load single file
+                reader = self.file_manager.get_mzml_reader(filepath)
+                ms1_spectra_data = []
+                ms2_spectra_data = []
+                
+                for spectrum in reader:
+                    if spectrum.ms_level == 1:  # MS1 spectra
+                        spectrum_data = {
+                            'scan_time': spectrum.scan_time_in_minutes(),
+                            'mz': spectrum.mz,
+                            'intensity': spectrum.i,
+                            'polarity': self.file_manager._get_spectrum_polarity(spectrum)
+                        }
+                        ms1_spectra_data.append(spectrum_data)
+                    elif spectrum.ms_level == 2:  # MS2/MSMS spectra
+                        try:
+                            # Get precursor information
+                            precursor_mz = None
+                            if hasattr(spectrum, 'selected_precursors') and spectrum.selected_precursors:
+                                precursor_info = spectrum.selected_precursors[0]
+                                if 'mz' in precursor_info:
+                                    precursor_mz = float(precursor_info['mz'])
+                            
+                            # Alternative method to get precursor m/z
+                            if precursor_mz is None and hasattr(spectrum, 'element'):
+                                for elem in spectrum.element.iter():
+                                    if elem.tag.endswith('precursorList'):
+                                        for precursor in elem:
+                                            if precursor.tag.endswith('precursor'):
+                                                for selected_ion in precursor:
+                                                    if selected_ion.tag.endswith('selectedIonList'):
+                                                        for ion in selected_ion:
+                                                            for cv_param in ion:
+                                                                if (cv_param.tag.endswith('cvParam') and 
+                                                                    cv_param.get('accession') == 'MS:1000744'):  # selected ion m/z
+                                                                    precursor_mz = float(cv_param.get('value'))
+                                                                    break
+                            
+                            spectrum_data = {
+                                'scan_time': spectrum.scan_time_in_minutes(),
+                                'mz': spectrum.mz,
+                                'intensity': spectrum.i,
+                                'polarity': self.file_manager._get_spectrum_polarity(spectrum),
+                                'precursor_mz': precursor_mz,
+                                'scan_id': spectrum.ID if hasattr(spectrum, 'ID') else f"RT_{spectrum.scan_time_in_minutes():.2f}"
+                            }
+                            ms2_spectra_data.append(spectrum_data)
+                        except Exception as e:
+                            print(f"Error processing MS2 spectrum: {e}")
+                            continue
+                
+                # Store both MS1 and MS2 data
+                self.file_manager.cached_data[filepath] = {
+                    'ms1': ms1_spectra_data,
+                    'ms2': ms2_spectra_data
+                }
+                reader.close()
+                
+            except Exception as e:
+                print(f"Error loading {filepath} to memory: {str(e)}")
+        
+        progress.setValue(num_files)
+        progress.close()
+        
+        QMessageBox.information(self, "Complete", 
+                              f"Successfully loaded {len(self.file_manager.cached_data)} files into memory.")
+
+
+class CollapsibleSection(QWidget):
+    """A collapsible section widget with a title and content area"""
+    
+    def __init__(self, title, parent=None):
+        super().__init__(parent)
+        self.title = title
+        self.is_expanded = True
+        self.init_ui()
+    
+    def init_ui(self):
+        """Initialize the collapsible section UI"""
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        
+        # Header button
+        self.header_button = QPushButton(f"▼ {self.title}")
+        self.header_button.setStyleSheet("""
+            QPushButton {
+                text-align: left;
+                padding: 8px;
+                border: 1px solid #ccc;
+                background-color: #f0f0f0;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #e0e0e0;
+            }
+        """)
+        self.header_button.clicked.connect(self.toggle_expansion)
+        layout.addWidget(self.header_button)
+        
+        # Content frame
+        self.content_frame = QFrame()
+        self.content_frame.setFrameStyle(QFrame.Shape.Box)
+        self.content_frame.setStyleSheet("QFrame { border: 1px solid #ccc; border-top: none; }")
+        self.content_layout = QVBoxLayout(self.content_frame)
+        layout.addWidget(self.content_frame)
+    
+    def toggle_expansion(self):
+        """Toggle the expansion state of the section"""
+        self.is_expanded = not self.is_expanded
+        self.content_frame.setVisible(self.is_expanded)
+        arrow = "▼" if self.is_expanded else "▶"
+        self.header_button.setText(f"{arrow} {self.title}")
+    
+    def add_content(self, widget):
+        """Add a widget to the content area"""
+        self.content_layout.addWidget(widget)
+    
+    def set_expanded(self, expanded):
+        """Set the expansion state"""
+        if self.is_expanded != expanded:
+            self.toggle_expansion()
+
+
+class UnifiedOptionsDialog(QDialog):
+    """Unified dialog for all application options with collapsible sections"""
+    
+    def __init__(self, eic_defaults, memory_settings, file_manager, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Options")
+        self.setModal(True)
+        self.setMinimumSize(600, 500)
+        
+        self.eic_defaults = eic_defaults.copy()
+        self.memory_settings = memory_settings.copy()
+        self.file_manager = file_manager
+        self.init_ui()
+    
+    def init_ui(self):
+        """Initialize the dialog UI"""
+        layout = QVBoxLayout(self)
+        
+        # Create scroll area for the content
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        
+        content_widget = QWidget()
+        content_layout = QVBoxLayout(content_widget)
+        
+        # Memory Settings Section
+        memory_section = CollapsibleSection("Memory Settings")
+        memory_content = self.create_memory_settings_content()
+        memory_section.add_content(memory_content)
+        content_layout.addWidget(memory_section)
+        
+        # EIC Defaults Section
+        eic_section = CollapsibleSection("EIC Window Defaults")
+        eic_content = self.create_eic_defaults_content()
+        eic_section.add_content(eic_content)
+        content_layout.addWidget(eic_section)
+        
+        content_layout.addStretch()
+        scroll.setWidget(content_widget)
+        layout.addWidget(scroll)
+        
+        # Buttons
+        button_layout = QHBoxLayout()
+        
+        self.reset_button = QPushButton("Reset All to Defaults")
+        self.reset_button.clicked.connect(self.reset_all_to_defaults)
+        
+        self.ok_button = QPushButton("OK")
+        self.ok_button.clicked.connect(self.accept)
+        
+        self.cancel_button = QPushButton("Cancel")
+        self.cancel_button.clicked.connect(self.reject)
+        
+        button_layout.addWidget(self.reset_button)
+        button_layout.addStretch()
+        button_layout.addWidget(self.cancel_button)
+        button_layout.addWidget(self.ok_button)
+        
+        layout.addLayout(button_layout)
+    
+    def create_memory_settings_content(self):
+        """Create the memory settings content widget"""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        
+        # Description
+        desc_label = QLabel(
+            "Configure how mzML data is handled in memory. Keeping data in memory "
+            "provides faster access but uses more RAM."
+        )
+        desc_label.setWordWrap(True)
+        desc_label.setStyleSheet("QLabel { color: #555; margin-bottom: 10px; }")
+        layout.addWidget(desc_label)
+        
+        # Form layout
+        form_layout = QFormLayout()
+        
+        # Keep in memory checkbox
+        self.keep_in_memory_cb = QCheckBox()
+        self.keep_in_memory_cb.setChecked(self.memory_settings['keep_in_memory'])
+        self.keep_in_memory_cb.toggled.connect(self.on_memory_mode_changed)
+        form_layout.addRow("Keep all mzML data in memory:", self.keep_in_memory_cb)
+        
+        layout.addLayout(form_layout)
+        
+        # Current memory usage
+        memory_group = QGroupBox("Current Memory Usage")
+        memory_layout = QVBoxLayout(memory_group)
+        
+        memory_info = self.file_manager.get_memory_usage()
+        
+        if 'error' in memory_info:
+            memory_text = f"Error getting memory info: {memory_info['error']}"
+        else:
+            rss_mb = memory_info['rss_mb']
+            cached_files = memory_info['cached_files']
+            memory_text = f"Current memory usage: {rss_mb:.1f} MB\n"
+            memory_text += f"Cached files: {cached_files}\n"
+            memory_text += f"Memory mode: {'Enabled' if memory_info['keep_in_memory'] else 'Disabled'}"
+        
+        self.memory_info_label = QLabel(memory_text)
+        self.memory_info_label.setStyleSheet("QLabel { font-family: monospace; }")
+        memory_layout.addWidget(self.memory_info_label)
+        
+        # Refresh button
+        refresh_button = QPushButton("Refresh Memory Info")
+        refresh_button.clicked.connect(self.refresh_memory_info)
+        memory_layout.addWidget(refresh_button)
+        
+        layout.addWidget(memory_group)
+        
+        # Warning label
+        self.memory_warning_label = QLabel()
+        self.memory_warning_label.setWordWrap(True)
+        self.memory_warning_label.setStyleSheet("QLabel { color: #d66; margin: 10px 0; }")
+        self.update_memory_warning()
+        layout.addWidget(self.memory_warning_label)
+        
+        return widget
+    
+    def create_eic_defaults_content(self):
+        """Create the EIC defaults content widget"""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        
+        # Description
+        desc_label = QLabel(
+            "Configure default settings for new EIC (Extracted Ion Chromatogram) windows."
+        )
+        desc_label.setWordWrap(True)
+        desc_label.setStyleSheet("QLabel { color: #555; margin-bottom: 10px; }")
+        layout.addWidget(desc_label)
+        
+        # Form layout
+        form_layout = QFormLayout()
+        
+        # m/z Tolerance (ppm)
+        self.mz_tolerance_spin = QDoubleSpinBox()
+        self.mz_tolerance_spin.setRange(0.1, 10000.0)
+        self.mz_tolerance_spin.setValue(self.eic_defaults['mz_tolerance_ppm'])
+        self.mz_tolerance_spin.setSuffix(" ppm")
+        self.mz_tolerance_spin.setDecimals(1)
+        self.mz_tolerance_spin.setSingleStep(1.0)
+        form_layout.addRow("m/z Tolerance:", self.mz_tolerance_spin)
+        
+        # Separate by groups
+        self.separate_groups_cb = QCheckBox()
+        self.separate_groups_cb.setChecked(self.eic_defaults['separate_groups'])
+        form_layout.addRow("Separate by groups:", self.separate_groups_cb)
+        
+        # Group RT Shift
+        self.rt_shift_spin = QDoubleSpinBox()
+        self.rt_shift_spin.setRange(0.0, 60.0)
+        self.rt_shift_spin.setValue(self.eic_defaults['rt_shift_min'])
+        self.rt_shift_spin.setSuffix(" min")
+        self.rt_shift_spin.setDecimals(1)
+        form_layout.addRow("Group RT Shift:", self.rt_shift_spin)
+        
+        # Crop to RT Window
+        self.crop_rt_cb = QCheckBox()
+        self.crop_rt_cb.setChecked(self.eic_defaults['crop_rt_window'])
+        form_layout.addRow("Crop to RT Window:", self.crop_rt_cb)
+        
+        # Normalize to Max per Sample
+        self.normalize_cb = QCheckBox()
+        self.normalize_cb.setChecked(self.eic_defaults['normalize_samples'])
+        form_layout.addRow("Normalize to Max per Sample:", self.normalize_cb)
+        
+        layout.addLayout(form_layout)
+        
+        return widget
+    
+    def on_memory_mode_changed(self):
+        """Handle memory mode checkbox change"""
+        self.update_memory_warning()
+    
+    def update_memory_warning(self):
+        """Update the memory warning label based on current settings"""
+        if self.keep_in_memory_cb.isChecked():
+            num_files = len(self.file_manager.get_files_data())
+            if num_files > 0:
+                self.memory_warning_label.setText(
+                    f"⚠ Warning: Enabling memory mode will load all {num_files} mzML files "
+                    "into RAM. This may use significant memory and take time to load."
+                )
+            else:
+                self.memory_warning_label.setText(
+                    "ℹ Note: Memory mode will load all mzML files into RAM when files are added."
+                )
+        else:
+            if self.file_manager.keep_in_memory:
+                self.memory_warning_label.setText(
+                    "ℹ Disabling memory mode will clear the current cache and revert to "
+                    "file-based reading."
+                )
+            else:
+                self.memory_warning_label.setText("")
+    
+    def refresh_memory_info(self):
+        """Refresh the memory information display"""
+        memory_info = self.file_manager.get_memory_usage()
+        
+        if 'error' in memory_info:
+            memory_text = f"Error getting memory info: {memory_info['error']}"
+        else:
+            rss_mb = memory_info['rss_mb']
+            cached_files = memory_info['cached_files']
+            memory_text = f"Current memory usage: {rss_mb:.1f} MB\n"
+            memory_text += f"Cached files: {cached_files}\n"
+            memory_text += f"Memory mode: {'Enabled' if memory_info['keep_in_memory'] else 'Disabled'}"
+        
+        self.memory_info_label.setText(memory_text)
+    
+    def reset_all_to_defaults(self):
+        """Reset all values to application defaults"""
+        # Reset EIC defaults
+        self.mz_tolerance_spin.setValue(5.0)
+        self.separate_groups_cb.setChecked(True)
+        self.rt_shift_spin.setValue(1.0)
+        self.crop_rt_cb.setChecked(False)
+        self.normalize_cb.setChecked(False)
+        
+        # Reset memory settings
+        self.keep_in_memory_cb.setChecked(False)
+        self.update_memory_warning()
+    
+    def get_values(self):
+        """Get the current values from the dialog"""
+        eic_values = {
+            'mz_tolerance_ppm': self.mz_tolerance_spin.value(),
+            'separate_groups': self.separate_groups_cb.isChecked(),
+            'rt_shift_min': self.rt_shift_spin.value(),
+            'crop_rt_window': self.crop_rt_cb.isChecked(),
+            'normalize_samples': self.normalize_cb.isChecked()
+        }
+        
+        memory_values = {
+            'keep_in_memory': self.keep_in_memory_cb.isChecked()
+        }
+        
+        return eic_values, memory_values
 
 
 class EICDefaultsDialog(QDialog):

@@ -7,6 +7,8 @@ import pymzml
 from typing import Dict, List, Optional, Tuple
 import numpy as np
 from natsort import natsorted, index_natsorted
+import psutil
+import gc
 from .utils import generate_color_palette
 
 
@@ -17,7 +19,151 @@ class FileManager:
         self.files_data = pd.DataFrame()
         self.group_colors = {}
         self.mzml_readers = {}  # Cache for mzML readers
+        self.keep_in_memory = False  # Whether to keep all data in memory
+        self.cached_data = {}  # Cache for raw mzML data when keep_in_memory is True
     
+    def set_memory_mode(self, keep_in_memory: bool, auto_load: bool = True):
+        """
+        Set whether to keep all mzML data in memory.
+        
+        Args:
+            keep_in_memory: If True, load and cache all mzML data in memory
+            auto_load: If True, automatically load files to memory when enabled
+        """
+        if self.keep_in_memory == keep_in_memory:
+            return  # No change needed
+            
+        self.keep_in_memory = keep_in_memory
+        
+        if keep_in_memory and auto_load:
+            # Load all files into memory automatically (for initial settings load)
+            self._load_all_files_to_memory()
+        elif not keep_in_memory:
+            # Clear memory cache and revert to file-based reading
+            self._clear_memory_cache()
+    
+    def _load_all_files_to_memory(self):
+        """Load all mzML files into memory cache (for use without progress dialog)"""
+        if self.files_data.empty:
+            return
+            
+        print("Loading all mzML files into memory...")
+        self.cached_data = {}
+        
+        for _, row in self.files_data.iterrows():
+            filepath = row['Filepath']
+            try:
+                print(f"Loading {os.path.basename(filepath)}...")
+                # Read all spectra into memory
+                reader = pymzml.run.Reader(filepath)
+                ms1_spectra_data = []
+                ms2_spectra_data = []
+                
+                for spectrum in reader:
+                    if spectrum.ms_level == 1:  # MS1 spectra
+                        spectrum_data = {
+                            'scan_time': spectrum.scan_time_in_minutes(),
+                            'mz': spectrum.mz,
+                            'intensity': spectrum.i,
+                            'polarity': self._get_spectrum_polarity(spectrum)
+                        }
+                        ms1_spectra_data.append(spectrum_data)
+                    elif spectrum.ms_level == 2:  # MS2/MSMS spectra
+                        try:
+                            # Get precursor information
+                            precursor_mz = None
+                            precursor_intensity = 0
+                            if hasattr(spectrum, 'selected_precursors') and spectrum.selected_precursors:
+                                precursor_info = spectrum.selected_precursors[0]
+                                if 'mz' in precursor_info:
+                                    precursor_mz = float(precursor_info['mz'])
+                                if 'intensity' in precursor_info:
+                                    try:
+                                        precursor_intensity = float(precursor_info['intensity'])
+                                    except:
+                                        precursor_intensity = 0
+                            
+                            # Alternative method to get precursor m/z
+                            if precursor_mz is None and hasattr(spectrum, 'element'):
+                                for elem in spectrum.element.iter():
+                                    if elem.tag.endswith('precursorList'):
+                                        for precursor in elem:
+                                            if precursor.tag.endswith('precursor'):
+                                                for selected_ion in precursor:
+                                                    if selected_ion.tag.endswith('selectedIonList'):
+                                                        for ion in selected_ion:
+                                                            for cv_param in ion:
+                                                                if (cv_param.tag.endswith('cvParam') and 
+                                                                    cv_param.get('accession') == 'MS:1000744'):  # selected ion m/z
+                                                                    precursor_mz = float(cv_param.get('value'))
+                                                                elif (cv_param.tag.endswith('cvParam') and 
+                                                                      cv_param.get('accession') == 'MS:1000042'):  # peak intensity
+                                                                    try:
+                                                                        precursor_intensity = float(cv_param.get('value'))
+                                                                    except:
+                                                                        precursor_intensity = 0
+                            
+                            spectrum_data = {
+                                'scan_time': spectrum.scan_time_in_minutes(),
+                                'mz': spectrum.mz,
+                                'intensity': spectrum.i,
+                                'polarity': self._get_spectrum_polarity(spectrum),
+                                'precursor_mz': precursor_mz,
+                                'precursor_intensity': precursor_intensity,
+                                'scan_id': spectrum.ID if hasattr(spectrum, 'ID') else f"RT_{spectrum.scan_time_in_minutes():.2f}"
+                            }
+                            ms2_spectra_data.append(spectrum_data)
+                        except Exception as e:
+                            print(f"Error processing MS2 spectrum: {e}")
+                            continue
+                
+                # Store both MS1 and MS2 data
+                self.cached_data[filepath] = {
+                    'ms1': ms1_spectra_data,
+                    'ms2': ms2_spectra_data
+                }
+                reader.close()
+                
+            except Exception as e:
+                print(f"Error loading {filepath} to memory: {str(e)}")
+                
+        print(f"Loaded {len(self.cached_data)} files into memory.")
+    
+    def _clear_memory_cache(self):
+        """Clear the memory cache to free up RAM"""
+        print("Clearing memory cache...")
+        self.cached_data = {}
+        gc.collect()  # Force garbage collection
+    
+    def get_memory_usage(self) -> dict:
+        """
+        Get current memory usage statistics.
+        
+        Returns:
+            Dictionary with memory usage information
+        """
+        try:
+            process = psutil.Process()
+            memory_info = process.memory_info()
+            memory_percent = process.memory_percent()
+            
+            return {
+                'rss_mb': memory_info.rss / 1024 / 1024,  # Resident Set Size in MB
+                'vms_mb': memory_info.vms / 1024 / 1024,  # Virtual Memory Size in MB
+                'percent': memory_percent,
+                'cached_files': len(self.cached_data),
+                'keep_in_memory': self.keep_in_memory
+            }
+        except Exception as e:
+            return {
+                'rss_mb': 0,
+                'vms_mb': 0,
+                'percent': 0,
+                'cached_files': len(self.cached_data),
+                'keep_in_memory': self.keep_in_memory,
+                'error': str(e)
+            }
+
     def load_files(self, files_df: pd.DataFrame):
         """
         Load file list with metadata. New files are added to existing ones.
@@ -70,6 +216,9 @@ class FileManager:
         self._sort_files_data()
         
         print(f"Added {len(valid_files)} new files. Total files: {len(self.files_data)}")
+        
+        # Note: Memory loading is now handled by the main window with progress dialog
+        # The main window will call load_files_to_memory_with_progress() if needed
     
     def _sort_files_data(self):
         """Sort files data by group first, then by filename using natural sort"""
@@ -299,39 +448,27 @@ class FileManager:
             Tuple of (retention_times, intensities) arrays
         """
         try:
-            reader = self.get_mzml_reader(filepath)
-            
             rt_list = []
             intensity_list = []
             
-            # Debug: count spectra by polarity
-            polarity_debug = {'total': 0, 'used': 0, 'filtered': 0}
-            
-            for spectrum in reader:
-                if spectrum.ms_level == 1:  # Only MS1 spectra
-                    polarity_debug['total'] += 1
-                    
+            # Use cached data if available
+            if self.keep_in_memory and filepath in self.cached_data:
+                cached_file_data = self.cached_data[filepath]
+                
+                # Handle both old format (list) and new format (dict with ms1/ms2)
+                if isinstance(cached_file_data, dict) and 'ms1' in cached_file_data:
+                    spectra_data = cached_file_data['ms1']
+                else:
+                    # Old format - assume it's MS1 data
+                    spectra_data = cached_file_data
+                
+                for spectrum_data in spectra_data:
                     # Check polarity if specified
-                    spectrum_used = True
-                    if polarity is not None:
-                        spectrum_polarity = self._get_spectrum_polarity(spectrum)
-                        
-                        # Skip if polarity doesn't match
-                        if spectrum_polarity is not None:
-                            if polarity == '+' and spectrum_polarity != '+':
-                                spectrum_used = False
-                            elif polarity == '-' and spectrum_polarity != '-':
-                                spectrum_used = False
-                        # If spectrum_polarity is None, we include the spectrum
-                        # (better to include uncertain spectra than miss data)
+                    if polarity is not None and spectrum_data['polarity'] is not None:
+                        if polarity != spectrum_data['polarity']:
+                            continue
                     
-                    if not spectrum_used:
-                        polarity_debug['filtered'] += 1
-                        continue
-                    
-                    polarity_debug['used'] += 1
-                    
-                    rt = spectrum.scan_time_in_minutes()
+                    rt = spectrum_data['scan_time']
                     
                     # Filter by retention time if specified
                     if rt_start is not None and rt < rt_start:
@@ -340,8 +477,8 @@ class FileManager:
                         continue
                     
                     # Find peaks within m/z tolerance
-                    mz_array = spectrum.mz
-                    intensity_array = spectrum.i
+                    mz_array = spectrum_data['mz']
+                    intensity_array = spectrum_data['intensity']
                     
                     if len(mz_array) > 0:
                         # Find indices of peaks within tolerance
@@ -361,8 +498,72 @@ class FileManager:
                             # No peaks found, add zero intensity
                             rt_list.append(rt)
                             intensity_list.append(0.0)
+                
+                return np.array(rt_list), np.array(intensity_list)
             
-            return np.array(rt_list), np.array(intensity_list)
+            else:
+                # Use file-based reading (original method)
+                reader = self.get_mzml_reader(filepath)
+                
+                # Debug: count spectra by polarity
+                polarity_debug = {'total': 0, 'used': 0, 'filtered': 0}
+                
+                for spectrum in reader:
+                    if spectrum.ms_level == 1:  # Only MS1 spectra
+                        polarity_debug['total'] += 1
+                        
+                        # Check polarity if specified
+                        spectrum_used = True
+                        if polarity is not None:
+                            spectrum_polarity = self._get_spectrum_polarity(spectrum)
+                            
+                            # Skip if polarity doesn't match
+                            if spectrum_polarity is not None:
+                                if polarity == '+' and spectrum_polarity != '+':
+                                    spectrum_used = False
+                                elif polarity == '-' and spectrum_polarity != '-':
+                                    spectrum_used = False
+                            # If spectrum_polarity is None, we include the spectrum
+                            # (better to include uncertain spectra than miss data)
+                        
+                        if not spectrum_used:
+                            polarity_debug['filtered'] += 1
+                            continue
+                        
+                        polarity_debug['used'] += 1
+                        
+                        rt = spectrum.scan_time_in_minutes()
+                        
+                        # Filter by retention time if specified
+                        if rt_start is not None and rt < rt_start:
+                            continue
+                        if rt_end is not None and rt > rt_end:
+                            continue
+                        
+                        # Find peaks within m/z tolerance
+                        mz_array = spectrum.mz
+                        intensity_array = spectrum.i
+                        
+                        if len(mz_array) > 0:
+                            # Find indices of peaks within tolerance
+                            mz_mask = np.abs(mz_array - target_mz) <= mz_tolerance
+                            
+                            if np.any(mz_mask):
+                                if calculation_method == "Sum of all signals":
+                                    # Sum intensities of all peaks within tolerance
+                                    total_intensity = np.sum(intensity_array[mz_mask])
+                                else:  # "Most intensive signal"
+                                    # Take the maximum intensity within tolerance
+                                    total_intensity = np.max(intensity_array[mz_mask])
+                                
+                                rt_list.append(rt)
+                                intensity_list.append(total_intensity)
+                            else:
+                                # No peaks found, add zero intensity
+                                rt_list.append(rt)
+                                intensity_list.append(0.0)
+                
+                return np.array(rt_list), np.array(intensity_list)
             
         except Exception as e:
             print(f"Error extracting EIC from {filepath}: {str(e)}")
@@ -414,6 +615,10 @@ class FileManager:
             except:
                 pass
         self.mzml_readers.clear()
+        
+        # Also clear memory cache if not in memory mode
+        if not self.keep_in_memory:
+            self._clear_memory_cache()
     
     def __del__(self):
         """Cleanup when object is destroyed"""

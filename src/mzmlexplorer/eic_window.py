@@ -13,6 +13,8 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QPointF
 from PyQt6.QtCharts import QChart, QChartView, QLineSeries, QValueAxis
 from PyQt6.QtGui import QPen, QColor, QPainter, QMouseEvent, QAction
+from PyQt6.QtWidgets import QSizePolicy
+from .utils import calculate_cosine_similarity, calculate_similarity_statistics
 import numpy as np
 from typing import Dict, Tuple, Optional
 from .utils import calculate_mz_from_formula, format_mz, format_retention_time
@@ -2018,25 +2020,40 @@ class MSMSViewerWindow(QWidget):
             f"MSMS Spectra: {self.compound_name} - {self.adduct} "
             f"(RT: {self.rt_center:.2f} ± {self.rt_window:.1f} min)"
         )
-        self.setGeometry(100, 100, 1600, 900)
+        self.setGeometry(100, 100, 1800, 1000)  # Increased width and height for similarity panels
         
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(5, 5, 5, 5)
+        layout.setSpacing(5)
         
-        # Header with information
+        # Header with information - compact layout
         total_spectra = sum(len(data['spectra']) for data in self.msms_spectra.values())
         header_label = QLabel(
-            f"<h3>MSMS Spectra for {self.compound_name} ({self.adduct})</h3>"
-            f"<b>Target m/z:</b> {self.target_mz:.4f} | "
-            f"<b>RT Window:</b> {self.rt_center:.2f} ± {self.rt_window:.1f} min | "
-            f"<b>Files:</b> {len(self.msms_spectra)} | "
-            f"<b>Total Spectra:</b> {total_spectra}"
+            f"<b>{self.compound_name} ({self.adduct})</b> | "
+            f"m/z: {self.target_mz:.4f} | "
+            f"RT: {self.rt_center:.2f} ± {self.rt_window:.1f} min | "
+            f"Files: {len(self.msms_spectra)} | "
+            f"Spectra: {total_spectra}"
         )
-        header_label.setStyleSheet("QLabel { margin: 10px; }")
+        header_label.setStyleSheet("QLabel { margin: 2px; padding: 5px; font-size: 12px; }")
+        header_label.setFixedHeight(30)
+        header_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         layout.addWidget(header_label)
         
         # Pre-process data: sort by intensity and find global m/z range
         self._preprocess_spectra_data()
         
+        # Create main layout - no splitter needed
+        main_widget = QWidget()
+        main_layout = QVBoxLayout(main_widget)
+        main_layout.setContentsMargins(1, 1, 1, 1)
+        main_layout.setSpacing(1)
+        
+        # Top: Inter-file similarity overview
+        inter_file_widget = self._create_similarity_overview_widget()
+        main_layout.addWidget(inter_file_widget)
+        
+        # Bottom: Spectra grid
         # Create scroll area for the spectra grid
         scroll_area = QScrollArea()
         scroll_widget = QWidget()
@@ -2044,9 +2061,9 @@ class MSMSViewerWindow(QWidget):
         scroll_area.setWidgetResizable(True)
         
         grid_layout = QGridLayout(scroll_widget)
-        grid_layout.setSpacing(5)  # Reduce spacing between widgets
-        grid_layout.setContentsMargins(5, 5, 5, 5)
-        
+        grid_layout.setSpacing(1)  # Reduce spacing between widgets
+        grid_layout.setContentsMargins(1, 1, 1, 1)
+
         # Organize files and create charts
         row = 0
         for filepath, file_data in self.processed_data:
@@ -2054,19 +2071,32 @@ class MSMSViewerWindow(QWidget):
             group = file_data.get('group', 'Unknown')
             spectra = file_data['spectra']
             
-            # File header with filename and group
-            file_header_text = f"<b>{filename}</b> <i>Group: {group}</i> ({len(spectra)} spectra)"
+            # File header with filename, group, and similarity statistics
+            similarity_info = ""
+            if filename in self.intra_file_similarities:
+                stats = self.intra_file_similarities[filename]
+                similarity_info = (f" | Cosine Similarities: "
+                                 f"Min:{stats['min']:.3f} "
+                                 f"10%:{stats['percentile_10']:.3f} "
+                                 f"Med:{stats['median']:.3f} "
+                                 f"90%:{stats['percentile_90']:.3f} "
+                                 f"Max:{stats['max']:.3f}")
+            
+            display_name = filename.split('.')[0] if '.' in filename else filename
+            file_header_text = f"<b>{display_name}</b> | Group: {group} | {len(spectra)} spectra{similarity_info}"
             file_label = QLabel(file_header_text)
             file_label.setStyleSheet("""
                 QLabel { 
                     background-color: #f0f0f0; 
-                    padding: 8px; 
-                    margin: 2px;
+                    padding: 4px; 
+                    margin: 1px;
                     border: 1px solid #ccc;
-                    border-radius: 3px;
+                    border-radius: 2px;
+                    font-size: 10px;
                 }
             """)
-            file_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            file_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
+            file_label.setMaximumHeight(25)
             grid_layout.addWidget(file_label, row, 0, 1, max(1, len(spectra)))
             row += 1
             
@@ -2077,12 +2107,20 @@ class MSMSViewerWindow(QWidget):
             
             row += 1
         
-        layout.addWidget(scroll_area)
+        main_layout.addWidget(scroll_area)
+        layout.addWidget(main_widget)
         
-        # Close button
+        # Close button - compact
         close_btn = QPushButton("Close")
+        close_btn.setMaximumWidth(100)
         close_btn.clicked.connect(self.close)
-        layout.addWidget(close_btn)
+        
+        # Add close button in a horizontal layout to center it
+        close_layout = QHBoxLayout()
+        close_layout.addStretch()
+        close_layout.addWidget(close_btn)
+        close_layout.addStretch()
+        layout.addLayout(close_layout)
     
     def _preprocess_spectra_data(self):
         """Preprocess spectra data: sort by intensity and find global m/z range"""
@@ -2122,6 +2160,155 @@ class MSMSViewerWindow(QWidget):
             # Fallback if no spectra found
             self.global_mz_min = 0
             self.global_mz_max = 1000
+            
+        # Calculate cosine similarities
+        self._calculate_cosine_similarities()
+    
+    def _calculate_cosine_similarities(self):
+        """Calculate cosine similarity scores within and between files"""
+        self.intra_file_similarities = {}  # filename -> similarity stats
+        self.inter_file_similarities = {}  # (file1, file2) -> list of all similarities
+        
+        # Calculate intra-file similarities (within each file)
+        for filepath, file_data in self.processed_data:
+            filename = file_data['filename']
+            spectra = file_data['spectra']
+            
+            similarities = []
+            if len(spectra) > 1:
+                for i in range(len(spectra)):
+                    for j in range(i + 1, len(spectra)):
+                        sim = calculate_cosine_similarity(spectra[i], spectra[j])
+                        similarities.append(sim)
+            
+            self.intra_file_similarities[filename] = calculate_similarity_statistics(similarities)
+        
+        # Calculate inter-file similarities (between all pairs of files)
+        files_list = list(self.processed_data)
+        for i in range(len(files_list)):
+            for j in range(i + 1, len(files_list)):
+                file1_path, file1_data = files_list[i]
+                file2_path, file2_data = files_list[j]
+                
+                filename1 = file1_data['filename']
+                filename2 = file2_data['filename']
+                spectra1 = file1_data['spectra']
+                spectra2 = file2_data['spectra']
+                
+                similarities = []
+                for spec1 in spectra1:
+                    for spec2 in spectra2:
+                        sim = calculate_cosine_similarity(spec1, spec2)
+                        similarities.append(sim)
+                
+                key = (filename1, filename2)
+                self.inter_file_similarities[key] = similarities  # Store all similarities, not just stats
+    
+    def _create_similarity_overview_widget(self):
+        """Create a widget displaying cosine similarity overview"""
+        overview_widget = QWidget()
+        layout = QVBoxLayout(overview_widget)
+        layout.setContentsMargins(5, 5, 5, 5)
+        layout.setSpacing(5)
+        
+        # Inter-file similarity matrix (top panel)
+        inter_file_label = QLabel("<b>Cosine Similarity Matrix (Median Values)</b>")
+        inter_file_label.setFixedHeight(20)
+        inter_file_label.setStyleSheet("QLabel { font-size: 12px; }")
+        layout.addWidget(inter_file_label)
+        
+        # Create table for inter-file similarities
+        files = [data[1]['filename'] for data in self.processed_data]
+        if len(files) > 1:
+            inter_table = QTableWidget(len(files), len(files))
+            inter_table.setHorizontalHeaderLabels([f.split('.')[0] for f in files])  # Show filename without extension
+            inter_table.setVerticalHeaderLabels([f.split('.')[0] for f in files])
+            inter_table.setFixedHeight(min(150, 30 + len(files) * 35))
+            inter_table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            
+            # Set table properties for better display
+            inter_table.horizontalHeader().setDefaultSectionSize(100)
+            inter_table.verticalHeader().setDefaultSectionSize(20)
+            
+            # Fill the table
+            for i, file1 in enumerate(files):
+                for j, file2 in enumerate(files):
+                    if i == j:
+                        # Diagonal - show intra-file median similarity with distinct styling
+                        if file1 in self.intra_file_similarities:
+                            stats = self.intra_file_similarities[file1]
+                            median_sim = stats['median']
+                            text = f"{median_sim:.3f}"
+                            item = QTableWidgetItem(text)
+                            # Use lighter colors for diagonal to distinguish from inter-file
+                            if median_sim >= 0.8:
+                                item.setBackground(QColor(76, 175, 80, 100))  # Light Green
+                            elif median_sim >= 0.6:
+                                item.setBackground(QColor(255, 193, 7, 100))  # Light Amber
+                            elif median_sim >= 0.4:
+                                item.setBackground(QColor(255, 152, 0, 100))  # Light Orange
+                            else:
+                                item.setBackground(QColor(244, 67, 54, 100))  # Light Red
+                        else:
+                            item = QTableWidgetItem("N/A")
+                            item.setBackground(QColor(240, 240, 240))  # Light gray background
+                    else:
+                        # Off-diagonal - show inter-file median similarity with color coding
+                        key1 = (file1, file2)
+                        key2 = (file2, file1)
+                        
+                        similarities = None
+                        if key1 in self.inter_file_similarities:
+                            similarities = self.inter_file_similarities[key1]
+                        elif key2 in self.inter_file_similarities:
+                            similarities = self.inter_file_similarities[key2]
+                        
+                        if similarities:
+                            stats = calculate_similarity_statistics(similarities)
+                            median_sim = stats['median']
+                            # Show only median value, use color for indication
+                            text = f"{median_sim:.3f}"
+                        else:
+                            median_sim = 0.0
+                            text = "0.000"
+                        
+                        item = QTableWidgetItem(text)
+                        
+                        # Use color intensity to indicate median similarity level
+                        if median_sim >= 0.8:
+                            item.setBackground(QColor(76, 175, 80, 200))  # Strong Green
+                        elif median_sim >= 0.6:
+                            item.setBackground(QColor(255, 193, 7, 200))  # Strong Amber
+                        elif median_sim >= 0.4:
+                            item.setBackground(QColor(255, 152, 0, 200))  # Strong Orange
+                        else:
+                            item.setBackground(QColor(244, 67, 54, 200))  # Strong Red
+                    
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                    item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                    # Set smaller font for compact display
+                    font = item.font()
+                    font.setPointSize(7)
+                    item.setFont(font)
+                    inter_table.setItem(i, j, item)
+            
+            layout.addWidget(inter_table)
+            
+            # Add compact legend
+            legend_label = QLabel(
+                "<small><b>Legend:</b> Values show median cosine similarity | "
+                "Diagonal = Intra-file (lighter colors) | Off-diagonal = Inter-file (darker colors)</small>"
+            )
+            legend_label.setFixedHeight(15)
+            legend_label.setStyleSheet("QLabel { font-size: 10px; }")
+            layout.addWidget(legend_label)
+        else:
+            no_comparison_label = QLabel("<i>At least 2 files needed for inter-file comparison</i>")
+            layout.addWidget(no_comparison_label)
+        
+        return overview_widget
+    
+
     
     def create_msms_chart(self, spectrum_data, filename, group):
         """Create a chart widget for a single MSMS spectrum"""
@@ -2190,10 +2377,10 @@ class MSMSViewerWindow(QWidget):
         # Use global m/z range for consistent x-axis limits
         x_axis.setRange(self.global_mz_min, self.global_mz_max)
         
-        # Create interactive chart view
+        # Create interactive chart view with dynamic sizing
         chart_view = InteractiveMSMSChartView(chart)
-        chart_view.setMinimumSize(300, 180)  # Slightly reduced height
-        chart_view.setMaximumSize(400, 220)  # Slightly reduced height
+        chart_view.setMinimumSize(250, 150)  # Reduced minimum size
+        chart_view.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         
         # Store spectrum data for popup display
         chart_view.spectrum_data = spectrum_data

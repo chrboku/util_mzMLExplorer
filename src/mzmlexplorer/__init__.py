@@ -13,11 +13,11 @@ from .eic_window import EICWindow
 from .utils import calculate_mz_from_formula, calculate_molecular_mass
 
 __all__ = [
-    'main',
-    'MzMLExplorerMainWindow',
-    'FileManager', 
-    'CompoundManager',
-    'EICWindow',
-    'calculate_mz_from_formula',
-    'calculate_molecular_mass'
+    "main",
+    "MzMLExplorerMainWindow",
+    "FileManager",
+    "CompoundManager",
+    "EICWindow",
+    "calculate_mz_from_formula",
+    "calculate_molecular_mass",
 ]

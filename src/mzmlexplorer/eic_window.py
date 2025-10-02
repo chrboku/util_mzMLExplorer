@@ -28,6 +28,8 @@ from PyQt6.QtWidgets import (
     QTableWidgetItem,
     QHeaderView,
     QAbstractItemView,
+    QTabWidget,
+    QApplication,
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QPointF, QMargins
 from PyQt6.QtCharts import QChart, QChartView, QLineSeries, QValueAxis
@@ -35,7 +37,11 @@ from PyQt6.QtGui import QPen, QColor, QPainter, QMouseEvent, QAction, QBrush
 from PyQt6.QtWidgets import QSizePolicy
 from .utils import calculate_cosine_similarity, calculate_similarity_statistics
 import numpy as np
-from typing import Dict, Tuple, Optional
+from typing import Dict, Tuple, Optional, List
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.figure import Figure
+import seaborn as sns
 from .utils import (
     calculate_mz_from_formula,
     format_mz,
@@ -1077,6 +1083,17 @@ class EICWindow(QWidget):
         self.scatter_separator_label = None
         self.scatter_plot_menu_text = "View 2D scatter plot (RT vs m/z)"
 
+        # Initialize peak boundary line attributes
+        self.peak_boundary_lines = []  # List of QLineSeries for boundary lines
+        self.peak_start_rt = None  # Start RT of peak boundary
+        self.peak_end_rt = None  # End RT of peak boundary
+        self.dragging_line = None  # Reference to line being dragged
+        self.drag_offset = 0.0  # Offset for smooth dragging
+
+        # Initialize boxplot widget
+        self.boxplot_widget = None
+        self.boxplot_canvas = None
+
         self.init_ui()
         self.extract_eic_data()
 
@@ -1136,13 +1153,31 @@ class EICWindow(QWidget):
         return panel
 
     def create_right_panel(self) -> QWidget:
-        """Create the right panel with the chart"""
+        """Create the right panel with the chart and boxplot"""
         panel = QWidget()
         layout = QVBoxLayout(panel)
 
-        # Chart
+        # Create a vertical splitter for EIC chart and boxplot
+        self.eic_boxplot_splitter = QSplitter(Qt.Orientation.Vertical)
+        self.eic_boxplot_splitter.setChildrenCollapsible(
+            False
+        )  # Prevent complete collapse
+
+        # Main chart (EIC)
         self.chart_view = self.create_chart()
-        layout.addWidget(self.chart_view)
+        self.eic_boxplot_splitter.addWidget(self.chart_view)
+
+        # Boxplot widget
+        self.create_boxplot_widget()
+        self.eic_boxplot_splitter.addWidget(self.boxplot_widget)
+
+        # Set initial sizes (75% EIC, 25% boxplot)
+        self.eic_boxplot_splitter.setSizes([750, 250])
+        self.eic_boxplot_splitter.setStretchFactor(0, 1)  # EIC chart is stretchable
+        self.eic_boxplot_splitter.setStretchFactor(1, 0)  # Boxplot maintains proportion
+
+        # Add the splitter to the main layout
+        layout.addWidget(self.eic_boxplot_splitter)
 
         return panel
 
@@ -1248,6 +1283,778 @@ class EICWindow(QWidget):
         layout.addRow(self.normalize_cb)
 
         return group
+
+    def create_boxplot_widget(self):
+        """Create the tabbed widget for boxplots and peak area table"""
+        # Create the main tabbed widget
+        self.boxplot_widget = QTabWidget()
+
+        # Tab 1: Boxplot
+        self.boxplot_figure = Figure(figsize=(10, 3))
+        self.boxplot_canvas = FigureCanvas(self.boxplot_figure)
+        self.boxplot_widget.addTab(self.boxplot_canvas, "Boxplot")
+
+        # Tab 2: Peak Area Table
+        peak_area_tab = QWidget()
+        peak_area_layout = QVBoxLayout(peak_area_tab)
+
+        # Buttons for peak area table
+        peak_area_buttons_layout = QHBoxLayout()
+
+        self.copy_peak_area_excel_btn = QPushButton("Copy as Excel Tab-delimited")
+        self.copy_peak_area_excel_btn.clicked.connect(self._copy_peak_area_table_excel)
+        peak_area_buttons_layout.addWidget(self.copy_peak_area_excel_btn)
+
+        self.copy_peak_area_r_btn = QPushButton("Copy as R dataframe")
+        self.copy_peak_area_r_btn.clicked.connect(self._copy_peak_area_table_r)
+        peak_area_buttons_layout.addWidget(self.copy_peak_area_r_btn)
+
+        peak_area_buttons_layout.addStretch()  # Push buttons to the left
+        peak_area_layout.addLayout(peak_area_buttons_layout)
+
+        # Peak area table
+        self.peak_area_table = QTableWidget()
+        self.peak_area_table.setColumnCount(3)
+        self.peak_area_table.setHorizontalHeaderLabels(
+            ["Group", "Sample Name", "Peak Area"]
+        )
+
+        # Configure table appearance
+        self.peak_area_table.setAlternatingRowColors(True)
+        self.peak_area_table.setSortingEnabled(True)
+        self.peak_area_table.horizontalHeader().setStretchLastSection(True)
+        self.peak_area_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.ResizeToContents
+        )
+        self.peak_area_table.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectRows
+        )
+
+        peak_area_layout.addWidget(self.peak_area_table)
+        self.boxplot_widget.addTab(peak_area_tab, "Peak Area Table")
+
+        # Tab 3: Summary Statistics Table
+        summary_stats_tab = QWidget()
+        summary_stats_layout = QVBoxLayout(summary_stats_tab)
+
+        # Buttons for summary statistics table
+        summary_buttons_layout = QHBoxLayout()
+
+        self.copy_summary_excel_btn = QPushButton("Copy as Excel Tab-delimited")
+        self.copy_summary_excel_btn.clicked.connect(
+            self._copy_summary_stats_table_excel
+        )
+        summary_buttons_layout.addWidget(self.copy_summary_excel_btn)
+
+        self.copy_summary_r_btn = QPushButton("Copy as R dataframe")
+        self.copy_summary_r_btn.clicked.connect(self._copy_summary_stats_table_r)
+        summary_buttons_layout.addWidget(self.copy_summary_r_btn)
+
+        summary_buttons_layout.addStretch()  # Push buttons to the left
+        summary_stats_layout.addLayout(summary_buttons_layout)
+
+        # Summary statistics table
+        self.summary_stats_table = QTableWidget()
+        self.summary_stats_table.setColumnCount(10)
+        self.summary_stats_table.setHorizontalHeaderLabels(
+            [
+                "Group",
+                "Min",
+                "Perc_10",
+                "Perc_25",
+                "Perc_50_Median",
+                "Mean",
+                "Perc_75",
+                "Perc_90",
+                "Max",
+                "Std_Dev",
+            ]
+        )
+
+        # Configure summary table appearance
+        self.summary_stats_table.setAlternatingRowColors(True)
+        self.summary_stats_table.setSortingEnabled(True)
+        self.summary_stats_table.horizontalHeader().setStretchLastSection(True)
+        self.summary_stats_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.ResizeToContents
+        )
+        self.summary_stats_table.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectRows
+        )
+
+        summary_stats_layout.addWidget(self.summary_stats_table)
+        self.boxplot_widget.addTab(summary_stats_tab, "Summary Statistics")
+
+        # Initially hide the boxplot widget
+        self.boxplot_widget.setVisible(False)
+
+    def add_peak_boundary(self, rt_value: float):
+        """Add a single peak boundary line at the specified RT"""
+        if len(self.peak_boundary_lines) >= 2:
+            return  # Already have 2 boundary lines
+
+        # Get current axis ranges
+        x_axis = self.chart.axes(Qt.Orientation.Horizontal)[0]
+        y_axis = self.chart.axes(Qt.Orientation.Vertical)[0]
+
+        x_min, x_max = x_axis.min(), x_axis.max()
+        y_min, y_max = y_axis.min(), y_axis.max()
+
+        # Ensure the RT is within the visible range
+        line_x = max(x_min, min(x_max, rt_value))
+
+        # Create vertical line
+        line_series = QLineSeries()
+        line_series.setName("")  # No legend entry
+        line_series.append(line_x, y_min)
+        line_series.append(line_x, y_max)
+
+        # Style: solid red line for peak boundaries
+        pen = QPen(QColor(255, 0, 0))  # Red
+        pen.setWidth(2)
+        pen.setStyle(Qt.PenStyle.SolidLine)
+        line_series.setPen(pen)
+
+        # Add to chart
+        self.chart.addSeries(line_series)
+        line_series.attachAxis(x_axis)
+        line_series.attachAxis(y_axis)
+
+        # Store reference and RT value
+        self.peak_boundary_lines.append(line_series)
+
+        if len(self.peak_boundary_lines) == 1:
+            self.peak_start_rt = line_x
+        else:  # len == 2
+            self.peak_end_rt = line_x
+            # Ensure start_rt <= end_rt
+            if self.peak_start_rt > self.peak_end_rt:
+                self.peak_start_rt, self.peak_end_rt = (
+                    self.peak_end_rt,
+                    self.peak_start_rt,
+                )
+
+        # Update info and show boxplot only when we have 2 boundaries
+        if len(self.peak_boundary_lines) == 2:
+            self.update_boundary_info()
+            self.update_boxplot()
+        elif hasattr(self, "boundary_info_label"):
+            self.boundary_info_label.setText(
+                f"Peak boundary: {line_x:.2f} min (add second boundary)"
+            )
+
+    def remove_peak_boundaries(self):
+        """Remove all peak boundary lines"""
+        for line in self.peak_boundary_lines:
+            self.chart.removeSeries(line)
+
+        self.peak_boundary_lines.clear()
+        self.peak_start_rt = None
+        self.peak_end_rt = None
+
+        # Hide boxplot and clear info
+        self.boxplot_widget.setVisible(False)
+
+        # Clear the peak area table
+        if hasattr(self, "peak_area_table"):
+            self.peak_area_table.setRowCount(0)
+
+        if hasattr(self, "boundary_info_label"):
+            self.boundary_info_label.setText("")
+
+    def update_boundary_info(self):
+        """Update the boundary info (no longer displays label since UI was removed)"""
+        # This method is kept for compatibility but no longer updates any UI element
+        # The peak boundaries are now managed only through the context menu
+        pass
+
+    def update_boxplot(self):
+        """Update the boxplot with integrated peak areas"""
+        if len(self.peak_boundary_lines) != 2 or not self.eic_data:
+            self.boxplot_widget.setVisible(False)
+            # Clear the peak area table
+            if hasattr(self, "peak_area_table"):
+                self.peak_area_table.setRowCount(0)
+            return
+
+        # Calculate integrated areas for each sample
+        start_rt = (
+            min(self.peak_start_rt, self.peak_end_rt)
+            if self.peak_start_rt and self.peak_end_rt
+            else 0
+        )
+        end_rt = (
+            max(self.peak_start_rt, self.peak_end_rt)
+            if self.peak_start_rt and self.peak_end_rt
+            else 0
+        )
+
+        if start_rt >= end_rt:
+            return
+
+        # Collect data for boxplot and table
+        boxplot_data = {}  # group_name -> list of integrated areas
+        table_data = []  # list of tuples (group, sample_name, peak_area)
+
+        separate_groups = self.separate_groups_cb.isChecked()
+
+        for filepath, data in self.eic_data.items():
+            rt = data["rt"]
+            intensity = data["intensity"]
+            metadata = data["metadata"]
+
+            if len(rt) == 0 or len(intensity) == 0:
+                continue
+
+            group = metadata.get("group", "Unknown")
+            sample_name = metadata.get("filename", "Unknown")
+
+            # Remove file extension from sample name for cleaner display
+            if "." in sample_name:
+                sample_name = sample_name.rsplit(".", 1)[0]
+
+            # Use original RT values for integration (not shifted)
+            # This ensures we always use the same RT scale regardless of visualization
+            original_rt = rt.copy()
+
+            # Calculate integrated area with proper boundary handling
+            integrated_area = self._calculate_peak_area_with_boundaries(
+                original_rt, intensity, start_rt, end_rt
+            )
+
+            if integrated_area > 0:  # Only add non-zero areas
+                if group not in boxplot_data:
+                    boxplot_data[group] = []
+                boxplot_data[group].append(integrated_area)
+
+                # Add to table data
+                table_data.append((group, sample_name, integrated_area))
+
+        if not boxplot_data:
+            self.boxplot_widget.setVisible(False)
+            # Clear the peak area table
+            if hasattr(self, "peak_area_table"):
+                self.peak_area_table.setRowCount(0)
+            return
+
+        # Create boxplot
+        self.boxplot_figure.clear()
+        ax = self.boxplot_figure.add_subplot(111)
+
+        # Prepare data for plotting
+        groups = list(boxplot_data.keys())
+        data_lists = [boxplot_data[group] for group in groups]
+
+        # Create boxplot
+        bp = ax.boxplot(data_lists, labels=groups, patch_artist=True)
+
+        # Color the boxes according to group colors
+        for i, (group, patch) in enumerate(zip(groups, bp["boxes"])):
+            group_color = self.file_manager.get_group_color(group)
+            if group_color:
+                color = QColor(group_color)
+                patch.set_facecolor(
+                    (color.red() / 255, color.green() / 255, color.blue() / 255, 0.7)
+                )
+
+        # Add jitter points
+        for i, (group, values) in enumerate(zip(groups, data_lists)):
+            # Add some jitter to x positions
+            x_pos = i + 1
+            jitter_x = np.random.normal(x_pos, 0.05, len(values))  # Small jitter
+
+            group_color = self.file_manager.get_group_color(group)
+            if group_color:
+                color = QColor(group_color)
+                color_rgb = (color.red() / 255, color.green() / 255, color.blue() / 255)
+            else:
+                color_rgb = (0.5, 0.5, 0.5)  # Default gray
+
+            ax.scatter(
+                jitter_x,
+                values,
+                alpha=0.6,
+                color=color_rgb,
+                s=30,
+                edgecolors="black",
+                linewidth=0.5,
+            )
+
+        ax.set_ylabel("Integrated Peak Area")
+        ax.set_title(f"Peak Integration ({start_rt:.2f} - {end_rt:.2f} min)")
+        ax.grid(True, alpha=0.3)
+
+        # Always set y-axis to start from 0
+        ax.set_ylim(bottom=0)
+
+        # Rotate x-axis labels if needed
+        plt.setp(ax.get_xticklabels(), rotation=45, ha="right")
+
+        self.boxplot_figure.tight_layout()
+        self.boxplot_canvas.draw()
+
+        # Update the peak area table
+        self._update_peak_area_table(table_data)
+
+        # Update the summary statistics table
+        self._update_summary_stats_table(table_data)
+
+        # Show the boxplot widget
+        self.boxplot_widget.setVisible(True)
+
+    def _update_peak_area_table(self, table_data):
+        """Update the peak area table with the calculated data"""
+        # Clear existing data
+        self.peak_area_table.setRowCount(0)
+
+        if not table_data:
+            return
+
+        # Sort data by group, then by sample name
+        table_data.sort(key=lambda x: (x[0], x[1]))
+
+        # Set number of rows
+        self.peak_area_table.setRowCount(len(table_data))
+
+        # Populate the table
+        for row, (group, sample_name, peak_area) in enumerate(table_data):
+            # Group column
+            group_item = QTableWidgetItem(str(group))
+            self.peak_area_table.setItem(row, 0, group_item)
+
+            # Sample name column
+            sample_item = QTableWidgetItem(str(sample_name))
+            self.peak_area_table.setItem(row, 1, sample_item)
+
+            # Peak area column (formatted to scientific notation)
+            area_item = QTableWidgetItem(f"{peak_area:.2e}")
+            area_item.setData(
+                Qt.ItemDataRole.UserRole, peak_area
+            )  # Store actual value for sorting
+            self.peak_area_table.setItem(row, 2, area_item)
+
+        # Auto-resize columns to fit content
+        self.peak_area_table.resizeColumnsToContents()
+
+    def _update_summary_stats_table(self, table_data):
+        """Update the summary statistics table with group-level statistics"""
+        import numpy as np
+
+        # Clear existing data
+        self.summary_stats_table.setRowCount(0)
+
+        if not table_data:
+            return
+
+        # Group data by group name
+        group_data = {}
+        for group, sample_name, peak_area in table_data:
+            if group not in group_data:
+                group_data[group] = []
+            group_data[group].append(peak_area)
+
+        # Calculate statistics for each group
+        stats_data = []
+        for group, areas in group_data.items():
+            areas_array = np.array(areas)
+
+            # Calculate all required statistics
+            stats = {
+                "group": str(group),
+                "min": np.min(areas_array),
+                "p10": np.percentile(areas_array, 10),
+                "p25": np.percentile(areas_array, 25),
+                "median": np.percentile(areas_array, 50),
+                "mean": np.mean(areas_array),
+                "p75": np.percentile(areas_array, 75),
+                "p90": np.percentile(areas_array, 90),
+                "max": np.max(areas_array),
+                "std": np.std(areas_array, ddof=1),  # Sample standard deviation
+            }
+            stats_data.append(stats)
+
+        # Sort by group name
+        stats_data.sort(key=lambda x: x["group"])
+
+        # Set number of rows
+        self.summary_stats_table.setRowCount(len(stats_data))
+
+        # Populate the table
+        for row, stats in enumerate(stats_data):
+            # Group name
+            group_item = QTableWidgetItem(stats["group"])
+            self.summary_stats_table.setItem(row, 0, group_item)
+
+            # Statistical values (formatted to scientific notation)
+            stat_values = [
+                stats["min"],
+                stats["p10"],
+                stats["p25"],
+                stats["median"],
+                stats["mean"],
+                stats["p75"],
+                stats["p90"],
+                stats["max"],
+                stats["std"],
+            ]
+
+            for col, value in enumerate(stat_values, 1):
+                item = QTableWidgetItem(f"{value:.2e}")
+                item.setData(
+                    Qt.ItemDataRole.UserRole, value
+                )  # Store actual value for sorting
+                self.summary_stats_table.setItem(row, col, item)
+
+        # Auto-resize columns to fit content
+        self.summary_stats_table.resizeColumnsToContents()
+
+    def _copy_peak_area_table_excel(self):
+        """Copy peak area table data in Excel tab-delimited format"""
+        if self.peak_area_table.rowCount() == 0:
+            return
+
+        # Get headers
+        headers = []
+        for col in range(self.peak_area_table.columnCount()):
+            headers.append(self.peak_area_table.horizontalHeaderItem(col).text())
+
+        # Get data
+        data_lines = ["\t".join(headers)]
+        for row in range(self.peak_area_table.rowCount()):
+            row_data = []
+            for col in range(self.peak_area_table.columnCount()):
+                item = self.peak_area_table.item(row, col)
+                if item:
+                    if col == 2:  # Peak area column - use actual numeric value
+                        value = item.data(Qt.ItemDataRole.UserRole)
+                        row_data.append(str(value))
+                    else:
+                        row_data.append(item.text())
+                else:
+                    row_data.append("")
+            data_lines.append("\t".join(row_data))
+
+        # Copy to clipboard
+        clipboard_text = "\n".join(data_lines)
+        QApplication.clipboard().setText(clipboard_text)
+
+    def _copy_peak_area_table_r(self):
+        """Copy peak area table data as R dataframe code"""
+        if self.peak_area_table.rowCount() == 0:
+            return
+
+        # Get headers (make them R-compatible)
+        headers = []
+        for col in range(self.peak_area_table.columnCount()):
+            header = self.peak_area_table.horizontalHeaderItem(col).text()
+            # Replace spaces and special characters for R compatibility
+            r_header = (
+                header.replace(" ", "_")
+                .replace("(", "")
+                .replace(")", "")
+                .replace("%", "pct")
+            )
+            headers.append(r_header)
+
+        # Collect data by columns
+        columns_data = {header: [] for header in headers}
+
+        for row in range(self.peak_area_table.rowCount()):
+            for col in range(self.peak_area_table.columnCount()):
+                item = self.peak_area_table.item(row, col)
+                header = headers[col]
+                if item:
+                    if col == 2:  # Peak area column - use actual numeric value
+                        value = item.data(Qt.ItemDataRole.UserRole)
+                        columns_data[header].append(str(value))
+                    else:
+                        # Escape quotes and wrap strings in quotes
+                        text = item.text().replace('"', '\\"')
+                        columns_data[header].append(f'"{text}"')
+                else:
+                    columns_data[header].append('""')
+
+        # Build R dataframe code
+        r_code_lines = ["peak_area_data <- data.frame("]
+        for i, (header, values) in enumerate(columns_data.items()):
+            values_str = ", ".join(values)
+            line = f"  {header} = c({values_str})"
+            if i < len(columns_data) - 1:
+                line += ","
+            r_code_lines.append(line)
+        r_code_lines.append(")")
+
+        # Copy to clipboard
+        clipboard_text = "\n".join(r_code_lines)
+        QApplication.clipboard().setText(clipboard_text)
+
+    def _copy_summary_stats_table_excel(self):
+        """Copy summary statistics table data in Excel tab-delimited format"""
+        if self.summary_stats_table.rowCount() == 0:
+            return
+
+        # Get headers
+        headers = []
+        for col in range(self.summary_stats_table.columnCount()):
+            headers.append(self.summary_stats_table.horizontalHeaderItem(col).text())
+
+        # Get data
+        data_lines = ["\t".join(headers)]
+        for row in range(self.summary_stats_table.rowCount()):
+            row_data = []
+            for col in range(self.summary_stats_table.columnCount()):
+                item = self.summary_stats_table.item(row, col)
+                if item:
+                    if col > 0:  # Numeric columns - use actual numeric value
+                        value = item.data(Qt.ItemDataRole.UserRole)
+                        row_data.append(str(value))
+                    else:
+                        row_data.append(item.text())
+                else:
+                    row_data.append("")
+            data_lines.append("\t".join(row_data))
+
+        # Copy to clipboard
+        clipboard_text = "\n".join(data_lines)
+        QApplication.clipboard().setText(clipboard_text)
+
+    def _copy_summary_stats_table_r(self):
+        """Copy summary statistics table data as R dataframe code"""
+        if self.summary_stats_table.rowCount() == 0:
+            return
+
+        # Get headers (make them R-compatible)
+        headers = []
+        for col in range(self.summary_stats_table.columnCount()):
+            header = self.summary_stats_table.horizontalHeaderItem(col).text()
+            # Replace spaces and special characters for R compatibility
+            r_header = (
+                header.replace(" ", "_")
+                .replace("(", "")
+                .replace(")", "")
+                .replace("%", "pct")
+            )
+            headers.append(r_header)
+
+        # Collect data by columns
+        columns_data = {header: [] for header in headers}
+
+        for row in range(self.summary_stats_table.rowCount()):
+            for col in range(self.summary_stats_table.columnCount()):
+                item = self.summary_stats_table.item(row, col)
+                header = headers[col]
+                if item:
+                    if col == 0:  # Group column - wrap in quotes
+                        text = item.text().replace('"', '\\"')
+                        columns_data[header].append(f'"{text}"')
+                    else:  # Numeric columns - use actual numeric value
+                        value = item.data(Qt.ItemDataRole.UserRole)
+                        columns_data[header].append(str(value))
+                else:
+                    if col == 0:
+                        columns_data[header].append('""')
+                    else:
+                        columns_data[header].append("NA")
+
+        # Build R dataframe code
+        r_code_lines = ["summary_stats_data <- data.frame("]
+        for i, (header, values) in enumerate(columns_data.items()):
+            values_str = ", ".join(values)
+            line = f"  {header} = c({values_str})"
+            if i < len(columns_data) - 1:
+                line += ","
+            r_code_lines.append(line)
+        r_code_lines.append(")")
+
+        # Copy to clipboard
+        clipboard_text = "\n".join(r_code_lines)
+        QApplication.clipboard().setText(clipboard_text)
+
+    def _calculate_peak_area_with_boundaries(
+        self, rt_array, intensity_array, start_rt, end_rt
+    ):
+        """
+        Calculate peak area using proper numerical integration with boundary handling.
+
+        This method:
+        1. Includes one data point before and after the boundaries when available
+        2. Uses linear interpolation to estimate intensities at exact boundary positions
+        3. Applies trapezoidal rule for accurate area calculation
+        4. Handles partial areas at boundaries correctly
+        """
+        if len(rt_array) < 2 or start_rt >= end_rt:
+            return 0.0
+
+        # Convert to numpy arrays for easier manipulation
+        rt = np.array(rt_array)
+        intensity = np.array(intensity_array)
+
+        # Sort by retention time to ensure proper ordering
+        sort_indices = np.argsort(rt)
+        rt = rt[sort_indices]
+        intensity = intensity[sort_indices]
+
+        # Find indices for boundary handling
+        # Include one point before start_rt and one point after end_rt if available
+        start_idx = np.searchsorted(rt, start_rt, side="left")
+        end_idx = np.searchsorted(rt, end_rt, side="right")
+
+        # Extend the range to include boundary points
+        extended_start_idx = max(0, start_idx - 1)
+        extended_end_idx = min(len(rt), end_idx + 1)
+
+        if extended_start_idx >= extended_end_idx:
+            return 0.0
+
+        # Extract the extended range
+        rt_extended = rt[extended_start_idx:extended_end_idx]
+        intensity_extended = intensity[extended_start_idx:extended_end_idx]
+
+        # Create arrays for integration including interpolated boundary values
+        integration_rt = []
+        integration_intensity = []
+
+        # Add point before start boundary if it exists
+        if extended_start_idx < start_idx and len(rt_extended) > 0:
+            integration_rt.append(rt_extended[0])
+            integration_intensity.append(intensity_extended[0])
+
+        # Interpolate intensity at start boundary if not exactly on a data point
+        if start_rt not in rt_extended and len(rt_extended) >= 2:
+            start_intensity = np.interp(start_rt, rt_extended, intensity_extended)
+            integration_rt.append(start_rt)
+            integration_intensity.append(start_intensity)
+
+        # Add all points within boundaries
+        mask_within = (rt_extended >= start_rt) & (rt_extended <= end_rt)
+        integration_rt.extend(rt_extended[mask_within].tolist())
+        integration_intensity.extend(intensity_extended[mask_within].tolist())
+
+        # Interpolate intensity at end boundary if not exactly on a data point
+        if end_rt not in rt_extended and len(rt_extended) >= 2:
+            end_intensity = np.interp(end_rt, rt_extended, intensity_extended)
+            integration_rt.append(end_rt)
+            integration_intensity.append(end_intensity)
+
+        # Add point after end boundary if it exists
+        if extended_end_idx > end_idx and len(rt_extended) > 0:
+            integration_rt.append(rt_extended[-1])
+            integration_intensity.append(intensity_extended[-1])
+
+        # Remove duplicates and sort
+        if len(integration_rt) < 2:
+            return 0.0
+
+        # Convert to arrays and sort
+        integration_rt = np.array(integration_rt)
+        integration_intensity = np.array(integration_intensity)
+
+        # Sort by RT
+        sort_indices = np.argsort(integration_rt)
+        integration_rt = integration_rt[sort_indices]
+        integration_intensity = integration_intensity[sort_indices]
+
+        # Remove duplicate RT values (keep first occurrence)
+        unique_indices = np.unique(integration_rt, return_index=True)[1]
+        integration_rt = integration_rt[unique_indices]
+        integration_intensity = integration_intensity[unique_indices]
+
+        if len(integration_rt) < 2:
+            return 0.0
+
+        # Now calculate the area only for the portion within boundaries
+        # Find the exact indices for the boundary region
+        boundary_mask = (integration_rt >= start_rt) & (integration_rt <= end_rt)
+
+        if not np.any(boundary_mask):
+            return 0.0
+
+        boundary_rt = integration_rt[boundary_mask]
+        boundary_intensity = integration_intensity[boundary_mask]
+
+        # Handle case where boundaries don't align with data points
+        if len(boundary_rt) == 0:
+            return 0.0
+        elif len(boundary_rt) == 1:
+            # Single point - estimate area using neighboring points
+            single_rt = boundary_rt[0]
+            single_intensity = boundary_intensity[0]
+
+            # Find time span by looking at neighboring points
+            if len(integration_rt) >= 2:
+                # Find the position of this point in the extended array
+                pos = np.where(integration_rt == single_rt)[0]
+                if len(pos) > 0:
+                    pos = pos[0]
+                    # Estimate time span based on neighboring points
+                    if pos > 0 and pos < len(integration_rt) - 1:
+                        # Use average of distances to neighbors
+                        dt_before = single_rt - integration_rt[pos - 1]
+                        dt_after = integration_rt[pos + 1] - single_rt
+                        dt_avg = (dt_before + dt_after) / 2
+                    elif pos > 0:
+                        dt_avg = single_rt - integration_rt[pos - 1]
+                    elif pos < len(integration_rt) - 1:
+                        dt_avg = integration_rt[pos + 1] - single_rt
+                    else:
+                        dt_avg = 0.01  # Fallback
+
+                    return single_intensity * dt_avg
+
+            return 0.0
+        else:
+            # Multiple points - use trapezoidal integration
+            return np.trapz(boundary_intensity, boundary_rt)
+
+    def _restore_peak_boundary_lines(self):
+        """Restore peak boundary lines after plot update"""
+        # Check if we have stored RT values for boundaries
+        if not hasattr(self, "peak_start_rt") or not hasattr(self, "peak_end_rt"):
+            return
+
+        if self.peak_start_rt is None and self.peak_end_rt is None:
+            return
+
+        # Clear the old boundary line references (they're invalid after chart update)
+        self.peak_boundary_lines.clear()
+
+        # Get axes for the new chart
+        x_axis = self.chart.axes(Qt.Orientation.Horizontal)[0]
+        y_axis = self.chart.axes(Qt.Orientation.Vertical)[0]
+        y_min, y_max = y_axis.min(), y_axis.max()
+
+        # Recreate boundary lines using stored RT values
+        stored_rts = []
+        if self.peak_start_rt is not None:
+            stored_rts.append(self.peak_start_rt)
+        if self.peak_end_rt is not None:
+            stored_rts.append(self.peak_end_rt)
+
+        for rt_pos in stored_rts:
+            # Create new boundary line
+            line_series = QLineSeries()
+            line_series.setName("")  # No legend entry
+            line_series.append(rt_pos, y_min)
+            line_series.append(rt_pos, y_max)
+
+            # Style: solid red line for peak boundaries
+            pen = QPen(QColor(255, 0, 0))  # Red
+            pen.setWidth(2)
+            pen.setStyle(Qt.PenStyle.SolidLine)
+            line_series.setPen(pen)
+
+            # Add to chart
+            self.chart.addSeries(line_series)
+            line_series.attachAxis(x_axis)
+            line_series.attachAxis(y_axis)
+
+            # Store new reference
+            self.peak_boundary_lines.append(line_series)
+
+        # Update info and boxplot if we have 2 lines
+        if len(self.peak_boundary_lines) == 2:
+            self.update_boundary_info()
+            self.update_boxplot()
 
     def update_mz_tolerance_da(self):
         """Update Da value when ppm value changes"""
@@ -1563,6 +2370,9 @@ class EICWindow(QWidget):
         if hasattr(self.chart_view, "update_series_cache"):
             self.chart_view.update_series_cache()
 
+        # Re-add peak boundary lines if they exist
+        self._restore_peak_boundary_lines()
+
         # Automatically add scatter plot when EIC data is loaded
         if (
             not hasattr(self, "_scatter_plot_auto_added")
@@ -1761,6 +2571,33 @@ class EICWindow(QWidget):
         rt_action = QAction(f"RT: {rt_value:.2f} min", self)
         rt_action.setEnabled(False)  # Make it non-clickable header
         context_menu.addAction(rt_action)
+
+        context_menu.addSeparator()
+
+        # Add peak boundary options
+        if len(self.peak_boundary_lines) == 0:
+            # No boundaries set - offer to add first one
+            add_boundary_action = QAction("Add peak boundary", self)
+            add_boundary_action.triggered.connect(
+                lambda: self.add_peak_boundary(rt_value)
+            )
+            context_menu.addAction(add_boundary_action)
+        elif len(self.peak_boundary_lines) == 1:
+            # One boundary set - offer to add second one or remove all
+            add_second_boundary_action = QAction("Add second peak boundary", self)
+            add_second_boundary_action.triggered.connect(
+                lambda: self.add_peak_boundary(rt_value)
+            )
+            context_menu.addAction(add_second_boundary_action)
+
+            remove_boundary_action = QAction("Remove peak boundaries", self)
+            remove_boundary_action.triggered.connect(self.remove_peak_boundaries)
+            context_menu.addAction(remove_boundary_action)
+        else:  # len == 2
+            # Both boundaries set - only offer to remove them
+            remove_boundary_action = QAction("Remove peak boundaries", self)
+            remove_boundary_action.triggered.connect(self.remove_peak_boundaries)
+            context_menu.addAction(remove_boundary_action)
 
         context_menu.addSeparator()
 
@@ -2026,23 +2863,28 @@ class EICWindow(QWidget):
             return 0.0, 30.0
 
     def add_scatter_plot(self, rt_center: float):
-        """Add 2D scatter plot underneath the EIC plot with resizable splitter"""
+        """Add 2D scatter plot underneath the EIC and boxplot with resizable splitter"""
         # Get RT range from the current chart view
         rt_min, rt_max = self.get_rt_range()
 
         # Get the right panel
-        right_panel = self.chart_view.parent()
+        right_panel = self.eic_boxplot_splitter.parent()
         current_layout = right_panel.layout()
 
-        # Remove chart view from current layout temporarily
-        current_layout.removeWidget(self.chart_view)
+        # Remove the current eic_boxplot_splitter from layout temporarily
+        current_layout.removeWidget(self.eic_boxplot_splitter)
 
-        # Create a vertical splitter to hold both the EIC chart and scatter plot
-        splitter = QSplitter(Qt.Orientation.Vertical)
-        splitter.setChildrenCollapsible(False)  # Prevent completely collapsing widgets
+        # Create a vertical splitter to hold EIC chart, boxplot, and scatter plot
+        three_way_splitter = QSplitter(Qt.Orientation.Vertical)
+        three_way_splitter.setChildrenCollapsible(
+            False
+        )  # Prevent completely collapsing widgets
 
-        # Add the EIC chart view to the splitter
-        splitter.addWidget(self.chart_view)
+        # Add the EIC chart view to the new splitter
+        three_way_splitter.addWidget(self.chart_view)
+
+        # Add the boxplot widget to the new splitter
+        three_way_splitter.addWidget(self.boxplot_widget)
 
         # Create a widget to contain the scatter plot
         scatter_container = QWidget()
@@ -2070,43 +2912,61 @@ class EICWindow(QWidget):
 
         scatter_layout.addWidget(self.scatter_plot_view)
 
-        # Add the scatter container to the splitter
-        splitter.addWidget(scatter_container)
+        # Add the scatter container to the new splitter
+        three_way_splitter.addWidget(scatter_container)
 
-        # Set initial splitter sizes (70% EIC, 30% scatter plot)
-        splitter.setSizes([700, 300])
-        splitter.setStretchFactor(0, 1)  # EIC chart is stretchable
-        splitter.setStretchFactor(1, 0)  # Scatter plot maintains its proportion
+        # Set initial splitter sizes (50% EIC, 25% boxplot, 25% scatter plot)
+        three_way_splitter.setSizes([500, 250, 250])
+        three_way_splitter.setStretchFactor(0, 1)  # EIC chart is stretchable
+        three_way_splitter.setStretchFactor(1, 0)  # Boxplot maintains its proportion
+        three_way_splitter.setStretchFactor(
+            2, 0
+        )  # Scatter plot maintains its proportion
 
-        # Add the splitter to the right panel layout
-        current_layout.addWidget(splitter)
+        # Add the new splitter to the right panel layout
+        current_layout.addWidget(three_way_splitter)
 
-        # Store reference to splitter for cleanup
-        self.chart_scatter_splitter = splitter
+        # Store reference to new splitter for cleanup
+        self.chart_scatter_splitter = three_way_splitter
 
         # Update context menu text
         self.update_context_menu_text("Hide 2D scatter plot")
 
     def remove_scatter_plot(self):
-        """Remove the 2D scatter plot from the EIC window and restore original layout"""
+        """Remove the 2D scatter plot from the EIC window and restore two-way splitter layout"""
         if (
             hasattr(self, "chart_scatter_splitter")
             and self.chart_scatter_splitter is not None
         ):
             # Get the right panel
-            right_panel = (
-                self.chart_view.parent().parent()
-            )  # Go up one more level due to splitter
+            right_panel = self.chart_scatter_splitter.parent()
             layout = right_panel.layout()
 
-            # Remove the splitter from layout
+            # Remove the three-way splitter from layout
             layout.removeWidget(self.chart_scatter_splitter)
 
-            # Re-parent the chart view back to the right panel directly
-            self.chart_view.setParent(right_panel)
-            layout.addWidget(self.chart_view)
+            # Create a new two-way splitter for EIC and boxplot
+            new_eic_boxplot_splitter = QSplitter(Qt.Orientation.Vertical)
+            new_eic_boxplot_splitter.setChildrenCollapsible(False)
 
-            # Clean up the splitter
+            # Re-parent the chart view and boxplot to the new two-way splitter
+            new_eic_boxplot_splitter.addWidget(self.chart_view)
+            new_eic_boxplot_splitter.addWidget(self.boxplot_widget)
+
+            # Set initial sizes (75% EIC, 25% boxplot)
+            new_eic_boxplot_splitter.setSizes([750, 250])
+            new_eic_boxplot_splitter.setStretchFactor(0, 1)  # EIC chart is stretchable
+            new_eic_boxplot_splitter.setStretchFactor(
+                1, 0
+            )  # Boxplot maintains proportion
+
+            # Add the new two-way splitter to the layout
+            layout.addWidget(new_eic_boxplot_splitter)
+
+            # Update the reference
+            self.eic_boxplot_splitter = new_eic_boxplot_splitter
+
+            # Clean up the old three-way splitter
             self.chart_scatter_splitter.deleteLater()
             self.chart_scatter_splitter = None
 

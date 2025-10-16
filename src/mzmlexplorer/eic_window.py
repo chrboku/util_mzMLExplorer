@@ -48,7 +48,7 @@ from .utils import (
     format_retention_time,
     parse_molecular_formula,
 )
-from natsort import natsorted
+from natsort import natsorted, natsort_keygen
 
 
 class MSMSPopupWindow(QWidget):
@@ -1610,8 +1610,9 @@ class EICWindow(QWidget):
         if not table_data:
             return
 
-        # Sort data by group, then by sample name
-        table_data.sort(key=lambda x: (x[0], x[1]))
+        # Sort data by group, then by sample name (using natural sort)
+        natsort_key = natsort_keygen()
+        table_data.sort(key=lambda x: (natsort_key(x[0]), natsort_key(x[1])))
 
         # Set number of rows
         self.peak_area_table.setRowCount(len(table_data))
@@ -1673,8 +1674,9 @@ class EICWindow(QWidget):
             }
             stats_data.append(stats)
 
-        # Sort by group name
-        stats_data.sort(key=lambda x: x["group"])
+        # Sort by group name (using natural sort)
+        natsort_key = natsort_keygen()
+        stats_data.sort(key=lambda x: natsort_key(x["group"]))
 
         # Set number of rows
         self.summary_stats_table.setRowCount(len(stats_data))
@@ -2200,8 +2202,8 @@ class EICWindow(QWidget):
             if "group" in data["metadata"]:
                 groups.add(data["metadata"]["group"])
 
-        # Sort groups and assign shifts
-        sorted_groups = sorted(groups)
+        # Sort groups and assign shifts (using natural sort)
+        sorted_groups = natsorted(groups)
         shift_amount = self.rt_shift_spin.value()
 
         self.group_shifts = {}
@@ -4530,8 +4532,9 @@ class MSMSViewerWindow(QWidget):
             processed_file_data["spectra"] = sorted_spectra
             processed_files.append((filepath, processed_file_data))
 
-        # Sort files by filename for consistent ordering
-        self.processed_data = sorted(processed_files, key=lambda x: x[1]["filename"])
+        # Sort files by filename for consistent ordering (using natural sort)
+        natsort_key = natsort_keygen()
+        self.processed_data = sorted(processed_files, key=lambda x: natsort_key(x[1]["filename"]))
 
         # Add padding to global m/z range
         if self.global_mz_min != float("inf") and self.global_mz_max != float("-inf"):

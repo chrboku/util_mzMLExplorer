@@ -271,45 +271,22 @@ class FileManager:
         if "group" not in self.files_data.columns:
             self.files_data["group"] = "default"
 
-        # Create sorting keys
-        groups = self.files_data["group"].tolist()
-        filenames = self.files_data["filename"].tolist()
-
-        # Natural sort by group first, then by filename
-        sort_indices = sorted(
-            range(len(self.files_data)),
-            key=lambda i: (groups[i], filenames[i]),
-            # Use natsort for the filename part
+        # Create a copy of the dataframe for sorting
+        df_copy = self.files_data.copy()
+        
+        # Add natural sort keys for both group and filename
+        df_copy['_group_sort_key'] = df_copy['group'].map(
+            lambda x: natsorted(df_copy['group'].unique()).index(x)
         )
-
-        # Apply natural sort to filenames within each group
-        grouped_indices = []
-        current_group = None
-        group_start = 0
-
-        for i, idx in enumerate(sort_indices):
-            if groups[idx] != current_group:
-                if current_group is not None:
-                    # Sort the previous group's filenames naturally
-                    group_slice = sort_indices[group_start:i]
-                    group_filenames = [filenames[idx] for idx in group_slice]
-                    nat_sort_indices = index_natsorted(group_filenames)
-                    sorted_group = [group_slice[j] for j in nat_sort_indices]
-                    grouped_indices.extend(sorted_group)
-
-                current_group = groups[idx]
-                group_start = i
-
-        # Handle the last group
-        if current_group is not None:
-            group_slice = sort_indices[group_start:]
-            group_filenames = [filenames[idx] for idx in group_slice]
-            nat_sort_indices = index_natsorted(group_filenames)
-            sorted_group = [group_slice[j] for j in nat_sort_indices]
-            grouped_indices.extend(sorted_group)
-
-        # Reorder the dataframe
-        self.files_data = self.files_data.iloc[grouped_indices].reset_index(drop=True)
+        df_copy['_filename_sort_key'] = df_copy['filename'].map(
+            lambda x: index_natsorted(df_copy['filename'])[df_copy['filename'].tolist().index(x)]
+        )
+        
+        # Sort by natural group order first, then by natural filename order
+        df_copy = df_copy.sort_values(['_group_sort_key', '_filename_sort_key'])
+        
+        # Remove the temporary sort key columns and update the main dataframe
+        self.files_data = df_copy.drop(columns=['_group_sort_key', '_filename_sort_key']).reset_index(drop=True)
 
     def _assign_group_colors(self):
         """Assign colors to groups based on the group column or color column"""
@@ -375,7 +352,7 @@ class FileManager:
     def get_groups(self) -> List[str]:
         """Get list of unique groups"""
         if "group" in self.files_data.columns:
-            return sorted(self.files_data["group"].unique())
+            return natsorted(self.files_data["group"].unique())
         return []
 
     def get_files_by_group(self, group: str) -> pd.DataFrame:

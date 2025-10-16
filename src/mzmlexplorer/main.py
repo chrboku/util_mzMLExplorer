@@ -40,6 +40,7 @@ import numpy as np
 from .compound_manager import CompoundManager
 from .file_manager import FileManager
 from .eic_window import EICWindow
+from .compound_import_dialog import CompoundImportDialog
 from natsort import natsorted, index_natsorted
 
 
@@ -107,11 +108,21 @@ class MzMLExplorerMainWindow(QMainWindow):
         filter_layout.addWidget(self.compound_filter)
         right_layout.addLayout(filter_layout)
 
-        self.compounds_tree = QTreeWidget()
-        self.compounds_tree.setHeaderLabel("Compounds and Adducts")
-        self.compounds_tree.itemClicked.connect(self.on_compound_selected)
-        self.compounds_tree.setAcceptDrops(True)
-        right_layout.addWidget(self.compounds_tree)
+        self.compounds_table = QTableWidget()
+        self.compounds_table.setColumnCount(3)
+        self.compounds_table.setHorizontalHeaderLabels(["Name", "Retention Time", "Type"])
+        self.compounds_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.compounds_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.compounds_table.customContextMenuRequested.connect(self.show_compound_context_menu)
+        self.compounds_table.setAcceptDrops(True)
+        
+        # Configure table headers
+        header = self.compounds_table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        
+        right_layout.addWidget(self.compounds_table)
 
         splitter.addWidget(left_panel)
         splitter.addWidget(right_panel)
@@ -175,73 +186,39 @@ class MzMLExplorerMainWindow(QMainWindow):
                 QMessageBox.critical(self, "Error", f"Failed to load files: {str(e)}")
 
     def load_compounds(self):
-        """Load compounds from an Excel file"""
+        """Load compounds from a file"""
         file_path, _ = QFileDialog.getOpenFileName(
-            self, "Load Compounds", "", "Excel files (*.xlsx)"
+            self, "Load Compounds", "", 
+            "All supported (*.xlsx *.csv *.tsv);;Excel files (*.xlsx);;CSV files (*.csv);;TSV files (*.tsv)"
         )
 
         if file_path:
-            try:
-                # Load all sheets from Excel file
-                excel_data = pd.read_excel(file_path, sheet_name=None)
+            self.load_compounds_from_file(file_path)
 
-                # Determine compounds sheet and validate
-                if len(excel_data) == 1:
-                    # Single sheet file
-                    compounds_sheet = list(excel_data.values())[0]
-                    compounds_input = compounds_sheet
-                else:
-                    # Multi-sheet file
-                    if "Compounds" in excel_data:
-                        compounds_sheet = excel_data["Compounds"]
-                    else:
-                        compounds_sheet = list(excel_data.values())[0]
-                    compounds_input = excel_data
+    def clear_compounds(self):
+        """Clear all loaded compounds"""
+        if self.compound_manager.get_compounds_data().empty:
+            QMessageBox.information(self, "Information", "No compounds loaded to clear.")
+            return
 
-                # Validate required columns for compounds sheet
-                required_cols = [
-                    "Name",
-                    "RT_min",
-                    "RT_start_min",
-                    "RT_end_min",
-                    "Common_adducts",
-                ]
-                missing_cols = [
-                    col for col in required_cols if col not in compounds_sheet.columns
-                ]
+        reply = QMessageBox.question(
+            self,
+            "Clear Compounds",
+            "Are you sure you want to clear all loaded compounds?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
 
-                # Check for either ChemicalFormula or Mass
-                has_formula = "ChemicalFormula" in compounds_sheet.columns
-                has_mass = "Mass" in compounds_sheet.columns
-
-                if not has_formula and not has_mass:
-                    missing_cols.append("ChemicalFormula OR Mass")
-
-                if missing_cols:
-                    QMessageBox.warning(
-                        self,
-                        "Error",
-                        f"Missing required columns in compounds sheet: {', '.join(missing_cols)}",
-                    )
-                    return
-
-                # Load compounds using compound manager
-                self.compound_manager.load_compounds(compounds_input)
-                self.update_compounds_tree()
-
-                compounds_count = len(self.compound_manager.get_compounds_data())
-                adducts_count = len(self.compound_manager.get_adducts_data())
-                self.statusBar().showMessage(
-                    f"Compounds loaded. Total: {compounds_count} compounds with {adducts_count} adduct definitions"
-                )
-
-            except Exception as e:
-                QMessageBox.critical(
-                    self, "Error", f"Failed to load compounds: {str(e)}"
-                )
-                import traceback
-
-                traceback.print_exc()
+        if reply == QMessageBox.StandardButton.Yes:
+            # Clear compounds data
+            self.compound_manager.compounds_data = pd.DataFrame()
+            self.compound_manager.compound_adduct_data = {}
+            
+            # Update the UI
+            self.update_compounds_table()
+            
+            # Update status
+            self.statusBar().showMessage("All compounds cleared.")
 
     def generate_templates(self):
         """Generate template Excel files for file list and compounds"""
@@ -589,121 +566,155 @@ class MzMLExplorerMainWindow(QMainWindow):
             QHeaderView.ResizeMode.ResizeToContents
         )
 
-    def update_compounds_tree(self):
-        """Update the compounds tree with loaded data"""
-        self.compounds_tree.clear()
+    def update_compounds_table(self):
+        """Update the compounds table with loaded data"""
+        self.compounds_table.setRowCount(0)
         compounds_data = self.compound_manager.get_compounds_data()
 
-        # Create list to store compound items for sorting
-        compound_items = []
+        if compounds_data.empty:
+            return
 
-        for _, compound in compounds_data.iterrows():
-            # Create compound item with retention time info
+        # Set row count
+        self.compounds_table.setRowCount(len(compounds_data))
+
+        # Populate table
+        for row_idx, (_, compound) in enumerate(compounds_data.iterrows()):
             compound_name = compound["Name"]
 
-            # Try to get average RT from RT_minutes column, fallback to RT window
+            # Compound name
+            name_item = QTableWidgetItem(compound_name)
+            name_item.setData(Qt.ItemDataRole.UserRole, compound.to_dict())
+            self.compounds_table.setItem(row_idx, 0, name_item)
+
+            # Retention time info
             rt_text = ""
             if "RT_minutes" in compound and pd.notna(compound["RT_minutes"]):
                 avg_rt = compound["RT_minutes"]
-                rt_text = f"RT: {avg_rt:.1f} min"
+                rt_text = f"{avg_rt:.1f} min"
             elif compound.get("RT_start_min") and compound.get("RT_end_min"):
                 rt_start = compound["RT_start_min"]
                 rt_end = compound["RT_end_min"]
-                rt_text = f"RT: {rt_start:.1f}-{rt_end:.1f} min"
+                rt_text = f"{rt_start:.1f}-{rt_end:.1f} min"
             else:
-                rt_text = "RT: not set"
+                rt_text = "not set"
 
-            compound_text = f"{compound_name} ({rt_text})"
-            compound_item = QTreeWidgetItem([compound_text])
-            compound_item.setFont(0, QFont("Arial", 10, QFont.Weight.Bold))
+            rt_item = QTableWidgetItem(rt_text)
+            self.compounds_table.setItem(row_idx, 1, rt_item)
 
-            # Store the compound name for sorting
-            compound_item.setData(0, Qt.ItemDataRole.UserRole + 1, compound_name)
+            # Compound type
+            compound_type = compound.get("compound_type", "formula")
+            type_display = {
+                "formula": "Formula",
+                "mass": "Mass",
+                "mz_only": "m/z only"
+            }.get(compound_type, compound_type)
+            
+            type_item = QTableWidgetItem(type_display)
+            self.compounds_table.setItem(row_idx, 2, type_item)
 
-            # Parse adducts and create child items
-            adducts = compound["Common_adducts"]
-            adduct_items = []
+        # Sort table by compound name
+        self.compounds_table.sortItems(0, Qt.SortOrder.AscendingOrder)
 
-            if isinstance(adducts, str):
-                adduct_list = [a.strip() for a in adducts.split(",") if a.strip()]
+    def show_compound_context_menu(self, position):
+        """Show context menu for compound adducts"""
+        item = self.compounds_table.itemAt(position)
+        if item is None:
+            return
 
-                for adduct in adduct_list:
-                    # Get pre-calculated data for this compound-adduct combination
-                    precalc_data = self.compound_manager.get_precalculated_data(
-                        compound["Name"], adduct
-                    )
+        # Get the compound data from the first column (name column)
+        row = item.row()
+        name_item = self.compounds_table.item(row, 0)
+        compound_data = name_item.data(Qt.ItemDataRole.UserRole)
+        
+        if not compound_data:
+            return
 
-                    if precalc_data:
-                        display_name = precalc_data["display_name"]
-                        mz_value = precalc_data["mz"]
-                        polarity = precalc_data["polarity"]
+        compound_name = compound_data["Name"]
 
-                        if mz_value is not None:
-                            adduct_text = f"{display_name} (m/z: {mz_value:.4f})"
-                        else:
-                            adduct_text = f"{display_name} (m/z: calculation failed)"
-                    else:
-                        # Fallback to old method if pre-calculated data not available
-                        display_name = self.compound_manager.get_adduct_display_name(
-                            compound["Name"], adduct
-                        )
-                        adduct_text = f"{display_name} (m/z: not calculated)"
-                        mz_value = None
-                        polarity = None
+        # Create context menu
+        menu = QMenu(self)
+        menu.setTitle(f"Adducts for {compound_name}")
 
-                    adduct_item = QTreeWidgetItem([adduct_text])
-                    # Store compound data and pre-calculated values in the item
-                    adduct_item.setData(
-                        0,
-                        Qt.ItemDataRole.UserRole,
-                        {
-                            "compound": compound.to_dict(),
-                            "adduct": adduct,
-                            "display_name": display_name,
-                            "mz": mz_value,
-                            "polarity": polarity,
-                        },
-                    )
+        # Get categorized adducts
+        adducts_info = self.compound_manager.get_compound_adducts_categorized(compound_name)
+        can_calculate = self.compound_manager.can_calculate_adducts_from_formula(compound_name)
 
-                    # Store sorting data
-                    adduct_item.setData(
-                        0,
-                        Qt.ItemDataRole.UserRole + 2,
-                        {"polarity": polarity or "", "mz": mz_value or 0},
-                    )
+        # Add specified adducts
+        specified_adducts = adducts_info["specified"]
+        if specified_adducts:
+            if can_calculate:
+                # Show specified adducts at top for compounds with formula/mass
+                for adduct in specified_adducts:
+                    self._add_adduct_action(menu, compound_data, adduct, specified=True)
+                
+                # Add separator
+                if adducts_info["remaining"]:
+                    menu.addSeparator()
+                    
+                # Add remaining adducts
+                for adduct in adducts_info["remaining"]:
+                    self._add_adduct_action(menu, compound_data, adduct, specified=False)
+            else:
+                # For m/z only compounds, show only the specified adducts
+                for adduct in specified_adducts:
+                    self._add_adduct_action(menu, compound_data, adduct, specified=True)
+        elif can_calculate:
+            # No adducts specified but can calculate from formula - show all possible
+            all_adducts = self.compound_manager.get_all_available_adducts()
+            for adduct in all_adducts:
+                self._add_adduct_action(menu, compound_data, adduct, specified=False)
+        else:
+            # No adducts and can't calculate - show message
+            no_adducts_action = QAction("No adducts available", self)
+            no_adducts_action.setEnabled(False)
+            menu.addAction(no_adducts_action)
 
-                    adduct_items.append(adduct_item)
+        # Show menu at cursor position
+        if menu.actions():
+            menu.exec(self.compounds_table.mapToGlobal(position))
 
-                # Sort adduct items: first by polarity, then by m/z value
-                adduct_items.sort(
-                    key=lambda item: (
-                        item.data(0, Qt.ItemDataRole.UserRole + 2)["polarity"],
-                        item.data(0, Qt.ItemDataRole.UserRole + 2)["mz"],
-                    )
-                )
+    def _add_adduct_action(self, menu, compound_data, adduct, specified=True):
+        """Add an adduct action to the context menu"""
+        # Get pre-calculated data for display
+        compound_name = compound_data["Name"]
+        precalc_data = self.compound_manager.get_precalculated_data(compound_name, adduct)
 
-                # Add sorted adduct items to compound item
-                for adduct_item in adduct_items:
-                    compound_item.addChild(adduct_item)
+        if precalc_data:
+            display_name = precalc_data["display_name"]
+            mz_value = precalc_data["mz"]
+            polarity = precalc_data["polarity"]
 
-            compound_items.append(compound_item)
+            if mz_value is not None:
+                action_text = f"{display_name} (m/z: {mz_value:.4f})"
+            else:
+                action_text = f"{display_name} (m/z: calculation failed)"
+        else:
+            # Try to calculate on the fly
+            display_name = self.compound_manager.get_adduct_display_name(compound_name, adduct)
+            mz_value = self.compound_manager.calculate_compound_mz(compound_name, adduct)
+            polarity = self.compound_manager._determine_polarity(adduct)
+            
+            if mz_value is not None:
+                action_text = f"{display_name} (m/z: {mz_value:.4f})"
+            else:
+                action_text = f"{display_name} (m/z: not calculated)"
 
-        # Sort compound items by natural sort of compound name
-        compound_items.sort(key=lambda item: item.data(0, Qt.ItemDataRole.UserRole + 1))
+        # Create action
+        action = QAction(action_text, self)
+        
+        # Make specified adducts bold
+        if specified:
+            font = action.font()
+            font.setBold(True)
+            action.setFont(font)
 
-        # Use natsorted for natural sorting
-        compound_names = [
-            item.data(0, Qt.ItemDataRole.UserRole + 1) for item in compound_items
-        ]
-        sorted_indices = index_natsorted(compound_names)
-        sorted_compound_items = [compound_items[i] for i in sorted_indices]
-
-        # Add sorted compound items to tree
-        for compound_item in sorted_compound_items:
-            self.compounds_tree.addTopLevelItem(compound_item)
-
-        # Expand all items
-        self.compounds_tree.expandAll()
+        # Connect to EIC window function
+        action.triggered.connect(
+            lambda checked, c=compound_data, a=adduct, m=mz_value, p=polarity: 
+            self.show_eic_window(c, a, m, p)
+        )
+        
+        menu.addAction(action)
 
     def filter_compounds(self):
         """Filter compounds based on the filter text"""
@@ -711,53 +722,36 @@ class MzMLExplorerMainWindow(QMainWindow):
 
         if not filter_text:
             # Show all compounds if filter is empty
-            for i in range(self.compounds_tree.topLevelItemCount()):
-                item = self.compounds_tree.topLevelItem(i)
-                item.setHidden(False)
-                # Show all children too
-                for j in range(item.childCount()):
-                    child = item.child(j)
-                    child.setHidden(False)
+            for i in range(self.compounds_table.rowCount()):
+                self.compounds_table.setRowHidden(i, False)
             return
 
         # Parse filter text
         filter_type, filter_params = self._parse_filter_text(filter_text)
 
-        compounds_data = self.compound_manager.get_compounds_data()
-
-        for i in range(self.compounds_tree.topLevelItemCount()):
-            item = self.compounds_tree.topLevelItem(i)
-            compound_name = None
-
-            # Extract compound name from tree item text (remove RT info)
-            item_text = item.text(0)
-            if "(" in item_text:
-                compound_name = item_text.split("(")[0].strip()
-            else:
-                compound_name = item_text
-
-            # Find corresponding compound data
-            compound_row = compounds_data[compounds_data["Name"] == compound_name]
-            if compound_row.empty:
-                item.setHidden(True)
+        for i in range(self.compounds_table.rowCount()):
+            name_item = self.compounds_table.item(i, 0)
+            compound_data = name_item.data(Qt.ItemDataRole.UserRole)
+            
+            if not compound_data:
+                self.compounds_table.setRowHidden(i, True)
                 continue
 
-            compound = compound_row.iloc[0]
+            compound_name = compound_data["Name"]
             show_compound = False
 
             if filter_type == "mz":
-                # Check which adducts have m/z in range and show only those
+                # Check if any adducts have m/z in range
                 min_mz, max_mz = filter_params
-                adducts = compound["Common_adducts"]
-                matching_adducts = []
-
-                if isinstance(adducts, str):
+                adducts = compound_data.get("Common_adducts", "")
+                
+                if isinstance(adducts, str) and adducts.strip():
                     adduct_list = [a.strip() for a in adducts.split(",") if a.strip()]
                     for adduct in adduct_list:
                         try:
                             # Use pre-calculated m/z value if available
                             precalc_data = self.compound_manager.get_precalculated_data(
-                                compound["Name"], adduct
+                                compound_name, adduct
                             )
 
                             if precalc_data and precalc_data["mz"] is not None:
@@ -765,37 +759,25 @@ class MzMLExplorerMainWindow(QMainWindow):
                             else:
                                 # Fallback to calculation if pre-calculated data not available
                                 mz_value = self.compound_manager.calculate_compound_mz(
-                                    compound["Name"], adduct
+                                    compound_name, adduct
                                 )
 
                             if mz_value is not None and min_mz <= mz_value <= max_mz:
-                                matching_adducts.append(adduct)
+                                show_compound = True
+                                break
                         except:
                             continue
-
-                if matching_adducts:
-                    show_compound = True
-                    # Show compound but hide non-matching adducts
-                    item.setHidden(False)
-                    for j in range(item.childCount()):
-                        child = item.child(j)
-                        child_data = child.data(0, Qt.ItemDataRole.UserRole)
-                        if child_data:
-                            child_adduct = child_data["adduct"]
-                            child.setHidden(child_adduct not in matching_adducts)
-                else:
-                    show_compound = False
 
             elif filter_type == "rt":
                 # Check if RT is in range
                 min_rt, max_rt = filter_params
-                if "RT_minutes" in compound and pd.notna(compound["RT_minutes"]):
-                    rt_value = float(compound["RT_minutes"])
+                if "RT_minutes" in compound_data and pd.notna(compound_data["RT_minutes"]):
+                    rt_value = float(compound_data["RT_minutes"])
                     show_compound = min_rt <= rt_value <= max_rt
-                elif compound.get("RT_start_min") and compound.get("RT_end_min"):
+                elif compound_data.get("RT_start_min") and compound_data.get("RT_end_min"):
                     # Use average of RT window if RT_minutes not available
                     avg_rt = (
-                        float(compound["RT_start_min"]) + float(compound["RT_end_min"])
+                        float(compound_data["RT_start_min"]) + float(compound_data["RT_end_min"])
                     ) / 2
                     show_compound = min_rt <= avg_rt <= max_rt
 
@@ -805,23 +787,13 @@ class MzMLExplorerMainWindow(QMainWindow):
 
                 try:
                     pattern = re.compile(filter_params, re.IGNORECASE)
-                    show_compound = bool(pattern.search(compound["Name"]))
+                    show_compound = bool(pattern.search(compound_name))
                 except re.error:
                     # If regex is invalid, fall back to simple string search
-                    show_compound = filter_params.lower() in compound["Name"].lower()
+                    show_compound = filter_params.lower() in compound_name.lower()
 
             # Show/hide compound based on filter result
-            if filter_type == "mz":
-                # For m/z filter, we already handled individual adduct visibility above
-                item.setHidden(not show_compound)
-            else:
-                # For other filters, show/hide compound and all its adducts together
-                item.setHidden(not show_compound)
-                if show_compound:
-                    # Show all adduct children when compound matches
-                    for j in range(item.childCount()):
-                        child = item.child(j)
-                        child.setHidden(False)
+            self.compounds_table.setRowHidden(i, not show_compound)
 
     def _parse_filter_text(self, filter_text):
         """
@@ -855,19 +827,6 @@ class MzMLExplorerMainWindow(QMainWindow):
 
         # Otherwise, treat as name regex pattern
         return "name", filter_text
-
-    def on_compound_selected(self, item, column):
-        """Handle compound/adduct selection"""
-        if item.parent() is not None:  # This is an adduct item
-            data = item.data(0, Qt.ItemDataRole.UserRole)
-            if data:
-                # Pass the pre-calculated m/z and polarity values
-                self.show_eic_window(
-                    data["compound"],
-                    data["adduct"],
-                    data.get("mz"),
-                    data.get("polarity"),
-                )
 
     def show_eic_window(self, compound, adduct, mz_value=None, polarity=None):
         """Show EIC window for the selected compound and adduct"""
@@ -928,6 +887,11 @@ class MzMLExplorerMainWindow(QMainWindow):
         load_compounds_action.setShortcut("Ctrl+C")
         load_compounds_action.triggered.connect(self.load_compounds)
         file_menu.addAction(load_compounds_action)
+
+        # Clear Compounds action
+        clear_compounds_action = QAction("Clear Compounds", self)
+        clear_compounds_action.triggered.connect(self.clear_compounds)
+        file_menu.addAction(clear_compounds_action)
 
         file_menu.addSeparator()
 
@@ -1012,7 +976,7 @@ class MzMLExplorerMainWindow(QMainWindow):
                 if current_widget == self.files_table:
                     files_panel_drop = True
                     break
-                elif current_widget == self.compounds_tree:
+                elif current_widget == self.compounds_table:
                     compounds_panel_drop = True
                     break
                 current_widget = current_widget.parent()
@@ -1072,38 +1036,76 @@ class MzMLExplorerMainWindow(QMainWindow):
     def load_compounds_from_file(self, file_path):
         """Load compounds from a dropped file"""
         try:
-            # Load all sheets from Excel file
-            excel_data = pd.read_excel(file_path, sheet_name=None)
-
-            # Determine compounds sheet and validate
-            if len(excel_data) == 1:
-                # Single sheet file
-                compounds_sheet = list(excel_data.values())[0]
-                compounds_input = compounds_sheet
+            file_ext = file_path.lower().split('.')[-1]
+            
+            if file_ext in ['csv', 'tsv']:
+                # Use import dialog for CSV/TSV files
+                self.load_compounds_from_csv_tsv(file_path)
+            elif file_ext == 'xlsx':
+                # Load Excel file directly (existing functionality)
+                self.load_compounds_from_excel(file_path)
             else:
-                # Multi-sheet file
-                if "Compounds" in excel_data:
-                    compounds_input = excel_data
-                else:
-                    QMessageBox.warning(
-                        self,
-                        "Warning",
-                        "Multi-sheet Excel file found, but no 'Compounds' sheet detected. "
-                        "Using the first sheet for compounds.",
-                    )
-                    compounds_input = list(excel_data.values())[0]
-
-            # Load compounds
-            self.compound_manager.load_compounds(compounds_input)
-            self.update_compounds_tree()
-
-            compound_count = len(self.compound_manager.get_compounds_data())
-            self.statusBar().showMessage(
-                f"Compounds loaded via drag & drop. Total: {compound_count} compounds"
-            )
+                QMessageBox.warning(
+                    self,
+                    "Unsupported Format",
+                    f"Unsupported file format: {file_ext}. "
+                    "Supported formats: xlsx, csv, tsv"
+                )
 
         except Exception as e:
-            raise Exception(f"Failed to load compounds: {str(e)}")
+            QMessageBox.critical(
+                self,
+                "Error",
+                f"Failed to load compounds: {str(e)}"
+            )
+
+    def load_compounds_from_csv_tsv(self, file_path):
+        """Load compounds from CSV/TSV file using import dialog"""
+        dialog = CompoundImportDialog(file_path, self)
+        
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            import_data = dialog.get_import_data()
+            if import_data is not None and not import_data.empty:
+                # Load compounds
+                self.compound_manager.load_compounds(import_data)
+                self.update_compounds_table()
+
+                compound_count = len(self.compound_manager.get_compounds_data())
+                self.statusBar().showMessage(
+                    f"Compounds imported from {file_path}. Total: {compound_count} compounds"
+                )
+
+    def load_compounds_from_excel(self, file_path):
+        """Load compounds from Excel file (existing functionality)"""
+        # Load all sheets from Excel file
+        excel_data = pd.read_excel(file_path, sheet_name=None)
+
+        # Determine compounds sheet and validate
+        if len(excel_data) == 1:
+            # Single sheet file
+            compounds_sheet = list(excel_data.values())[0]
+            compounds_input = compounds_sheet
+        else:
+            # Multi-sheet file
+            if "Compounds" in excel_data:
+                compounds_input = excel_data
+            else:
+                QMessageBox.warning(
+                    self,
+                    "Warning",
+                    "Multi-sheet Excel file found, but no 'Compounds' sheet detected. "
+                    "Using the first sheet for compounds.",
+                )
+                compounds_input = list(excel_data.values())[0]
+
+        # Load compounds
+        self.compound_manager.load_compounds(compounds_input)
+        self.update_compounds_table()
+
+        compound_count = len(self.compound_manager.get_compounds_data())
+        self.statusBar().showMessage(
+            f"Compounds loaded via drag & drop. Total: {compound_count} compounds"
+        )
 
     def load_stylesheet(self):
         """Load the CSS stylesheet"""

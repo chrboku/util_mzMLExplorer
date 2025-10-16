@@ -71,12 +71,9 @@ class CompoundManager:
             col for col in required_columns if col not in compounds_data.columns
         ]
 
-        # Check for either ChemicalFormula or Mass column
+        # Check for either ChemicalFormula or Mass column (or just adducts with m/z values)
         has_formula = "ChemicalFormula" in compounds_data.columns
         has_mass = "Mass" in compounds_data.columns
-
-        if not has_formula and not has_mass:
-            missing_columns.append("ChemicalFormula OR Mass")
 
         if missing_columns:
             raise ValueError(f"Missing required columns: {', '.join(missing_columns)}")
@@ -101,7 +98,7 @@ class CompoundManager:
 
                 compound_dict = row.to_dict()
 
-                # Validate chemical formula if present
+                # Determine compound type based on available data
                 if (
                     has_formula
                     and pd.notna(row.get("ChemicalFormula"))
@@ -121,9 +118,21 @@ class CompoundManager:
                         raise ValueError(f"Mass must be positive: {mass}")
                     compound_dict["compound_type"] = "mass"
                 else:
-                    raise ValueError(
-                        "Either ChemicalFormula or Mass must be provided and non-empty"
-                    )
+                    # Check if compound has adducts with m/z values (e.g., [197.23234]+)
+                    adducts_str = row.get("Common_adducts", "")
+                    if isinstance(adducts_str, str) and adducts_str.strip():
+                        adduct_list = [a.strip() for a in adducts_str.split(",") if a.strip()]
+                        has_mz_adducts = any(self._is_mz_adduct(adduct) for adduct in adduct_list)
+                        if has_mz_adducts:
+                            compound_dict["compound_type"] = "mz_only"
+                        else:
+                            raise ValueError(
+                                "Either ChemicalFormula, Mass, or m/z adducts must be provided"
+                            )
+                    else:
+                        raise ValueError(
+                            "Either ChemicalFormula, Mass, or m/z adducts must be provided"
+                        )
 
                 valid_compounds.append(compound_dict)
 
@@ -223,6 +232,16 @@ class CompoundManager:
         ]
         return pd.DataFrame(default_adducts)
 
+    def _is_mz_adduct(self, adduct_str: str) -> bool:
+        """
+        Check if adduct string is a direct m/z specification like [197.23234]+ or [197.23234]-
+
+        Returns:
+            True if it's an m/z adduct, False otherwise
+        """
+        pattern = r"\[(\d+\.?\d*)\]([+-])"
+        return bool(re.match(pattern, adduct_str.strip()))
+
     def _parse_mz_adduct(self, adduct_str: str) -> Tuple[float, str]:
         """
         Parse m/z value from adduct string like [197.23234]+ or [197.23234]-
@@ -312,6 +331,10 @@ class CompoundManager:
             elif compound_type == "mass":
                 mz_value = self._calculate_mz_from_mass(compound["Mass"], adduct)
                 return mz_value
+            elif compound_type == "mz_only":
+                # For mz_only compounds, the adduct should be an m/z specification
+                mz_value, polarity = self._parse_mz_adduct(adduct)
+                return mz_value
             else:
                 raise ValueError(f"Unknown compound type: {compound_type}")
 
@@ -346,6 +369,63 @@ class CompoundManager:
         mz = total_mass / abs(charge)
 
         return mz
+
+    def get_all_available_adducts(self) -> List[str]:
+        """
+        Get all available adducts from the adducts data table.
+
+        Returns:
+            List of all available adduct strings
+        """
+        if not self.adducts_data.empty:
+            return self.adducts_data["Adduct"].tolist()
+        return []
+
+    def get_compound_adducts_categorized(self, compound_name: str) -> Dict[str, List[str]]:
+        """
+        Get adducts for a compound categorized by specified/remaining.
+
+        Args:
+            compound_name: Name of the compound
+
+        Returns:
+            Dictionary with 'specified' and 'remaining' adduct lists
+        """
+        compound = self.get_compound_by_name(compound_name)
+        if compound is None:
+            return {"specified": [], "remaining": []}
+
+        compound_type = compound.get("compound_type", "formula")
+        
+        # Get specified adducts for this compound
+        specified_adducts = self.get_compound_adducts(compound_name)
+        
+        if compound_type == "mz_only":
+            # For m/z only compounds, only show the specified adducts
+            return {"specified": specified_adducts, "remaining": []}
+        
+        # For compounds with formula or mass, show all possible adducts
+        all_adducts = self.get_all_available_adducts()
+        remaining_adducts = [a for a in all_adducts if a not in specified_adducts]
+        
+        return {"specified": specified_adducts, "remaining": remaining_adducts}
+
+    def can_calculate_adducts_from_formula(self, compound_name: str) -> bool:
+        """
+        Check if compound can calculate adducts from sum formula.
+
+        Args:
+            compound_name: Name of the compound
+
+        Returns:
+            True if compound has formula or mass (not m/z only)
+        """
+        compound = self.get_compound_by_name(compound_name)
+        if compound is None:
+            return False
+        
+        compound_type = compound.get("compound_type", "formula")
+        return compound_type in ["formula", "mass"]
 
     def get_adduct_display_name(self, compound_name: str, adduct: str) -> str:
         """

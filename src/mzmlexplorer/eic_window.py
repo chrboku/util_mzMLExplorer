@@ -1015,6 +1015,7 @@ class EICWindow(QWidget):
         polarity=None,
         defaults=None,
         parent=None,
+        integration_callback=None,
     ):
         super().__init__(parent)
 
@@ -1032,6 +1033,7 @@ class EICWindow(QWidget):
         self.file_manager = file_manager
         self.eic_data = {}
         self.group_shifts = {}
+        self.integration_callback = integration_callback
 
         # Store defaults (use application defaults if none provided)
         self.defaults = (
@@ -1599,8 +1601,58 @@ class EICWindow(QWidget):
         # Update the summary statistics table
         self._update_summary_stats_table(table_data)
 
+        # Record peak integration data if callback is provided
+        if self.integration_callback:
+            self._record_integration_data(table_data, start_rt, end_rt)
+
         # Show the boxplot widget
         self.boxplot_widget.setVisible(True)
+
+    def _record_integration_data(self, table_data, start_rt, end_rt):
+        """Record integration data using the callback"""
+        try:
+            # Prepare the data for the callback
+            compound_name = self.compound_data.get("Name", "Unknown")
+            ion_name = self.adduct
+            mz_value = self.target_mz
+            rt_value = self.compound_data.get("RT_min", 0)
+            
+            # Determine ion mode from polarity
+            if self.polarity == "+":
+                ion_mode = "positive"
+            elif self.polarity == "-":
+                ion_mode = "negative"
+            else:
+                ion_mode = "unknown"
+            
+            # Prepare sample data list for the callback
+            sample_data_list = []
+            for group, sample_name, peak_area in table_data:
+                sample_data_list.append((sample_name, group, peak_area))
+            
+            # Call the integration callback to record the first sample
+            if sample_data_list:
+                first_sample = sample_data_list[0]
+                self.integration_callback(
+                    compound_name=compound_name,
+                    ion_name=ion_name, 
+                    mz_value=mz_value,
+                    rt_value=rt_value,
+                    ion_mode=ion_mode,
+                    sample_name=first_sample[0],
+                    group_name=first_sample[1],
+                    peak_start_rt=start_rt,
+                    peak_end_rt=end_rt,
+                    peak_area=first_sample[2]
+                )
+                
+                # Update with all sample data
+                self.integration_callback.__self__.update_peak_integration_samples(
+                    compound_name, ion_name, sample_data_list
+                )
+        
+        except Exception as e:
+            print(f"Error recording integration data: {e}")
 
     def _update_peak_area_table(self, table_data):
         """Update the peak area table with the calculated data"""

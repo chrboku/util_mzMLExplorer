@@ -60,6 +60,10 @@ class MzMLExplorerMainWindow(QMainWindow):
         self.file_manager = FileManager()
         self.compound_manager = CompoundManager()
         self.eic_windows = []
+        
+        # Peak integration data storage
+        # Key: (compound_name, ion_name) -> dict with integration data
+        self.peak_integration_data = {}
 
         # Load settings after data storage is initialized
         self.load_eic_defaults()
@@ -843,6 +847,7 @@ class MzMLExplorerMainWindow(QMainWindow):
                 polarity=polarity,
                 defaults=self.eic_defaults,  # Pass the defaults
                 parent=None,  # Make it independent
+                integration_callback=self.record_peak_integration,  # Pass integration callback
             )
 
             # Show the window
@@ -898,6 +903,18 @@ class MzMLExplorerMainWindow(QMainWindow):
         generate_templates_action = QAction("Generate Templates...", self)
         generate_templates_action.triggered.connect(self.generate_templates)
         file_menu.addAction(generate_templates_action)
+
+        file_menu.addSeparator()
+        
+        # Export Peak Integration Data action
+        export_integration_action = QAction("Export Peak Integration Data...", self)
+        export_integration_action.triggered.connect(self.export_peak_integration_excel)
+        file_menu.addAction(export_integration_action)
+        
+        # Generate R Code action  
+        generate_r_code_action = QAction("Generate R Code for Peak Data...", self)
+        generate_r_code_action.triggered.connect(self.generate_r_code)
+        file_menu.addAction(generate_r_code_action)
 
         file_menu.addSeparator()
 
@@ -1343,6 +1360,232 @@ class MzMLExplorerMainWindow(QMainWindow):
 
         progress.setValue(num_files)
         progress.close()
+
+    def record_peak_integration(self, compound_name, ion_name, mz_value, rt_value, 
+                               ion_mode, sample_name, group_name, peak_start_rt, 
+                               peak_end_rt, peak_area):
+        """
+        Record peak integration data for a compound and ion.
+        Only keeps the latest integration for each compound-ion combination.
+        
+        Args:
+            compound_name: Name of the compound
+            ion_name: Name/description of the ion (e.g., adduct type)
+            mz_value: m/z value 
+            rt_value: retention time value (center)
+            ion_mode: ionization mode (positive/negative)
+            sample_name: name of the sample file
+            group_name: group name for the sample
+            peak_start_rt: start of peak boundary
+            peak_end_rt: end of peak boundary  
+            peak_area: integrated peak area
+        """
+        key = (compound_name, ion_name)
+        
+        if key not in self.peak_integration_data:
+            self.peak_integration_data[key] = {
+                'compound_name': compound_name,
+                'ion_name': ion_name,
+                'mz_value': mz_value,
+                'rt_value': rt_value,
+                'ion_mode': ion_mode,
+                'peak_start_rt': peak_start_rt,
+                'peak_end_rt': peak_end_rt,
+                'sample_data': []  # List of (sample_name, group_name, peak_area) tuples
+            }
+        
+        # Update the integration data - only keep latest boundaries and sample data
+        integration_data = self.peak_integration_data[key]
+        integration_data['peak_start_rt'] = peak_start_rt
+        integration_data['peak_end_rt'] = peak_end_rt
+        integration_data['sample_data'] = [(sample_name, group_name, peak_area)]
+
+    def update_peak_integration_samples(self, compound_name, ion_name, sample_data_list):
+        """
+        Update the sample data for a compound-ion integration.
+        
+        Args:
+            compound_name: Name of the compound
+            ion_name: Name/description of the ion
+            sample_data_list: List of (sample_name, group_name, peak_area) tuples
+        """
+        key = (compound_name, ion_name)
+        
+        if key in self.peak_integration_data:
+            self.peak_integration_data[key]['sample_data'] = sample_data_list
+
+    def export_peak_integration_excel(self):
+        """Export peak integration data to Excel file in long format"""
+        if not self.peak_integration_data:
+            QMessageBox.information(
+                self, "No Data", "No peak integration data available to export."
+            )
+            return
+            
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export Peak Integration Data",
+            "peak_integration_data.xlsx",
+            "Excel files (*.xlsx)"
+        )
+        
+        if not file_path:
+            return
+            
+        try:
+            # Prepare data for long format table
+            export_data = []
+            
+            for (compound_name, ion_name), integration_data in self.peak_integration_data.items():
+                base_row = {
+                    'compound_name': integration_data['compound_name'],
+                    'ion_name': integration_data['ion_name'], 
+                    'mz_value': integration_data['mz_value'],
+                    'rt_value': integration_data['rt_value'],
+                    'ion_mode': integration_data['ion_mode'],
+                    'peak_start_rt': integration_data['peak_start_rt'],
+                    'peak_end_rt': integration_data['peak_end_rt']
+                }
+                
+                # Add a row for each sample
+                for sample_name, group_name, peak_area in integration_data['sample_data']:
+                    row = base_row.copy()
+                    row.update({
+                        'sample_name': sample_name,
+                        'group_name': group_name,
+                        'peak_area': peak_area
+                    })
+                    export_data.append(row)
+            
+            # Create DataFrame and export
+            df = pd.DataFrame(export_data)
+            df.to_excel(file_path, index=False)
+            
+            QMessageBox.information(
+                self, "Export Complete", 
+                f"Peak integration data exported to:\n{file_path}"
+            )
+            
+        except Exception as e:
+            QMessageBox.critical(
+                self, "Export Error", 
+                f"Failed to export data:\n{str(e)}"
+            )
+
+    def generate_r_code(self):
+        """Generate R code for loading the exported Excel file"""
+        if not self.peak_integration_data:
+            QMessageBox.information(
+                self, "No Data", "No peak integration data available to generate R code for."
+            )
+            return
+            
+        r_code = '''# R code to load peak integration data
+# Install readxl package if not already installed
+# install.packages("readxl")
+
+library(readxl)
+library(dplyr)
+
+# Load the peak integration data
+peak_data <- read_excel("peak_integration_data.xlsx")
+
+# Display structure of the data
+str(peak_data)
+
+# Summary of the data
+summary(peak_data)
+
+# View first few rows
+head(peak_data)
+
+# Example: Group by compound and ion to get summary statistics
+peak_summary <- peak_data %>%
+  group_by(compound_name, ion_name, group_name) %>%
+  summarise(
+    n_samples = n(),
+    mean_area = mean(peak_area, na.rm = TRUE),
+    sd_area = sd(peak_area, na.rm = TRUE),
+    median_area = median(peak_area, na.rm = TRUE),
+    .groups = 'drop'
+  )
+
+print(peak_summary)
+
+# Example: Create boxplot by groups
+library(ggplot2)
+
+ggplot(peak_data, aes(x = group_name, y = peak_area)) +
+  geom_boxplot() +
+  geom_jitter() +
+  facet_wrap(~ paste(compound_name, ion_name, sep = " - "), scales = "free_y") +
+  theme_minimal() +
+  labs(
+    title = "Peak Areas by Group",
+    x = "Group",
+    y = "Peak Area",
+    caption = "Data from mzML Explorer peak integration"
+  ) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+'''
+
+        # Show R code in a dialog
+        dialog = QDialog(self)
+        dialog.setWindowTitle("R Code for Loading Peak Integration Data")
+        dialog.resize(800, 600)
+        
+        layout = QVBoxLayout(dialog)
+        
+        # Text area with R code
+        from PyQt6.QtWidgets import QTextEdit
+        text_edit = QTextEdit()
+        text_edit.setPlainText(r_code)
+        text_edit.setFont(QFont("Courier", 10))
+        layout.addWidget(text_edit)
+        
+        # Buttons
+        button_layout = QHBoxLayout()
+        
+        copy_button = QPushButton("Copy to Clipboard")
+        copy_button.clicked.connect(lambda: QApplication.clipboard().setText(r_code))
+        button_layout.addWidget(copy_button)
+        
+        save_button = QPushButton("Save to File")
+        save_button.clicked.connect(lambda: self._save_r_code(r_code))
+        button_layout.addWidget(save_button)
+        
+        button_layout.addStretch()
+        
+        close_button = QPushButton("Close")
+        close_button.clicked.connect(dialog.close)
+        button_layout.addWidget(close_button)
+        
+        layout.addLayout(button_layout)
+        
+        dialog.exec()
+        
+    def _save_r_code(self, r_code):
+        """Save R code to a file"""
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save R Code",
+            "peak_integration_analysis.R",
+            "R files (*.R);;Text files (*.txt);;All files (*)"
+        )
+        
+        if file_path:
+            try:
+                with open(file_path, 'w') as f:
+                    f.write(r_code)
+                QMessageBox.information(
+                    self, "Save Complete",
+                    f"R code saved to:\n{file_path}"
+                )
+            except Exception as e:
+                QMessageBox.critical(
+                    self, "Save Error",
+                    f"Failed to save R code:\n{str(e)}"
+                )
 
 
 class CollapsibleSection(QWidget):

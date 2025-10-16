@@ -115,6 +115,7 @@ class MzMLExplorerMainWindow(QMainWindow):
         self.compounds_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.compounds_table.customContextMenuRequested.connect(self.show_compound_context_menu)
         self.compounds_table.setAcceptDrops(True)
+        self.compounds_table.setSortingEnabled(True)
         
         # Configure table headers
         header = self.compounds_table.horizontalHeader()
@@ -612,8 +613,6 @@ class MzMLExplorerMainWindow(QMainWindow):
             type_item = QTableWidgetItem(type_display)
             self.compounds_table.setItem(row_idx, 2, type_item)
 
-        # Sort table by compound name
-        self.compounds_table.sortItems(0, Qt.SortOrder.AscendingOrder)
 
     def show_compound_context_menu(self, position):
         """Show context menu for compound adducts"""

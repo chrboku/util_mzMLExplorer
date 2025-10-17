@@ -44,6 +44,8 @@ from .compound_import_dialog import CompoundImportDialog
 from .multi_adduct_window import MultiAdductWindow
 from natsort import natsorted, index_natsorted
 
+import toml
+
 
 class MzMLExplorerMainWindow(QMainWindow):
     def __init__(self):
@@ -94,6 +96,10 @@ class MzMLExplorerMainWindow(QMainWindow):
         self.files_table = QTableWidget()
         self.files_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.files_table.setAcceptDrops(True)
+        self.files_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.files_table.customContextMenuRequested.connect(
+            self.show_files_context_menu
+        )
         left_layout.addWidget(self.files_table)
 
         # Right panel: Compounds tree
@@ -237,6 +243,34 @@ class MzMLExplorerMainWindow(QMainWindow):
 
             # Update status
             self.statusBar().showMessage("All compounds cleared.")
+
+    def clear_files(self):
+        """Clear all loaded files"""
+        if self.file_manager.get_files_data().empty:
+            QMessageBox.information(self, "Information", "No files loaded to clear.")
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "Clear Files",
+            "Are you sure you want to clear all loaded files?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+
+        if reply == QMessageBox.StandardButton.Yes:
+            # Clear files data
+            self.file_manager.files_data = pd.DataFrame()
+
+            # Clear any cached file data in memory
+            if hasattr(self.file_manager, "files_in_memory"):
+                self.file_manager.files_in_memory = {}
+
+            # Update the UI
+            self.update_files_table()
+
+            # Update status
+            self.statusBar().showMessage("All files cleared.")
 
     def generate_templates(self):
         """Generate template Excel files for file list and compounds"""
@@ -624,11 +658,88 @@ class MzMLExplorerMainWindow(QMainWindow):
             type_display = {
                 "formula": "Formula",
                 "mass": "Mass",
-                "mz_only": "m/z only",
+                "mz_only": "Adduct",
             }.get(compound_type, compound_type)
 
             type_item = QTableWidgetItem(type_display)
             self.compounds_table.setItem(row_idx, 2, type_item)
+
+    def show_files_context_menu(self, position):
+        """Show context menu for file operations"""
+        item = self.files_table.itemAt(position)
+        if item is None:
+            return
+
+        # Get the selected row
+        row = item.row()
+
+        # Create context menu
+        menu = QMenu(self)
+
+        # Get file information for display
+        file_name = "Unknown"
+        if self.files_table.columnCount() > 0:
+            name_item = self.files_table.item(row, 0)
+            if name_item:
+                file_name = name_item.text()
+
+        # Add remove file action
+        remove_action = QAction(f"Remove File: {file_name}", self)
+        remove_action.triggered.connect(
+            lambda checked, r=row: self.remove_file_at_row(r)
+        )
+        menu.addAction(remove_action)
+
+        # Show menu at cursor position
+        menu.exec(self.files_table.mapToGlobal(position))
+
+    def remove_file_at_row(self, row):
+        """Remove a file at the specified row"""
+        if row < 0 or row >= self.files_table.rowCount():
+            return
+
+        # Get file information for confirmation
+        file_name = "Unknown"
+        if self.files_table.columnCount() > 0:
+            name_item = self.files_table.item(row, 0)
+            if name_item:
+                file_name = name_item.text()
+
+        # Confirm removal
+        reply = QMessageBox.question(
+            self,
+            "Remove File",
+            f"Are you sure you want to remove the file '{file_name}' from the list?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+
+        if reply == QMessageBox.StandardButton.Yes:
+            try:
+                # Get the current files data
+                files_data = self.file_manager.get_files_data()
+
+                if not files_data.empty and row < len(files_data):
+                    # Remove the file from the file manager
+                    files_data_copy = files_data.copy()
+                    files_data_copy = files_data_copy.drop(
+                        files_data_copy.index[row]
+                    ).reset_index(drop=True)
+
+                    # Update the file manager with the new data
+                    self.file_manager.files_data = files_data_copy
+
+                    # Update the UI
+                    self.update_files_table()
+
+                    # Update status
+                    remaining_files = len(self.file_manager.get_files_data())
+                    self.statusBar().showMessage(
+                        f"File removed. Remaining: {remaining_files} files"
+                    )
+
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to remove file: {str(e)}")
 
     def show_compound_context_menu(self, position):
         """Show context menu for compound adducts"""
@@ -758,26 +869,47 @@ class MzMLExplorerMainWindow(QMainWindow):
     ):
         """Add multi-adduct window actions to the context menu"""
         compound_name = compound_data["Name"]
+        compound_type = compound_data.get("compound_type", "formula")
+
+        # Check if multi-adduct options should be enabled
+        # Enable for compounds with formula or mass, disable for m/z only compounds
+        enable_multi_adduct = compound_type in ["formula", "mass"]
 
         # Option 1: Show predefined adducts in multi-EIC window
         specified_adducts = adducts_info["specified"]
         if specified_adducts:
             predefined_action = QAction("📊 Show Predefined Adducts (Multi-EIC)", self)
-            predefined_action.triggered.connect(
-                lambda checked, c=compound_data: self.show_multi_adduct_window(
-                    c, show_predefined_only=True
+            predefined_action.setEnabled(enable_multi_adduct)
+            if enable_multi_adduct:
+                predefined_action.triggered.connect(
+                    lambda checked, c=compound_data: self.show_multi_adduct_window(
+                        c, show_predefined_only=True
+                    )
                 )
-            )
+            else:
+                # Add tooltip explaining why it's disabled
+                predefined_action.setToolTip(
+                    "Multi-adduct view not available for specific m/z adducts. "
+                    "Please provide chemical formula or mass to calculate adducts."
+                )
             menu.addAction(predefined_action)
 
         # Option 2: Show all possible adducts in multi-EIC window
-        if can_calculate:
+        # This option is only shown if we can calculate adducts (formula or mass available)
+        if can_calculate and enable_multi_adduct:
             all_adducts_action = QAction("📊 Show All Adducts (Multi-EIC)", self)
             all_adducts_action.triggered.connect(
                 lambda checked, c=compound_data: self.show_multi_adduct_window(
                     c, show_predefined_only=False
                 )
             )
+            menu.addAction(all_adducts_action)
+
+        # If no multi-adduct options are available for m/z only compounds, show informational message
+        if not enable_multi_adduct and not specified_adducts:
+            info_action = QAction("ℹ️ Multi-adduct view requires formula or mass", self)
+            info_action.setEnabled(False)
+            menu.addAction(info_action)
             menu.addAction(all_adducts_action)
 
     def show_multi_adduct_window(self, compound, show_predefined_only=True):
@@ -1034,16 +1166,21 @@ class MzMLExplorerMainWindow(QMainWindow):
         file_menu = menubar.addMenu("File")
 
         # Load Files action
-        load_files_action = QAction("Load mzML Files...", self)
-        load_files_action.setShortcut("Ctrl+O")
+        load_files_action = QAction("Load mzML Files", self)
         load_files_action.triggered.connect(self.load_files)
         file_menu.addAction(load_files_action)
 
         # Load Compounds action
-        load_compounds_action = QAction("Load Compounds...", self)
-        load_compounds_action.setShortcut("Ctrl+C")
+        load_compounds_action = QAction("Load Compounds", self)
         load_compounds_action.triggered.connect(self.load_compounds)
         file_menu.addAction(load_compounds_action)
+
+        file_menu.addSeparator()
+
+        # Clear Files action
+        clear_files_action = QAction("Clear mzML Files", self)
+        clear_files_action.triggered.connect(self.clear_files)
+        file_menu.addAction(clear_files_action)
 
         # Clear Compounds action
         clear_compounds_action = QAction("Clear Compounds", self)
@@ -1053,19 +1190,19 @@ class MzMLExplorerMainWindow(QMainWindow):
         file_menu.addSeparator()
 
         # Generate Templates action
-        generate_templates_action = QAction("Generate Templates...", self)
+        generate_templates_action = QAction("Generate Templates", self)
         generate_templates_action.triggered.connect(self.generate_templates)
         file_menu.addAction(generate_templates_action)
 
         file_menu.addSeparator()
 
         # Export Peak Integration Data action
-        export_integration_action = QAction("Export Peak Integration Data...", self)
+        export_integration_action = QAction("Export Peak Integration Data", self)
         export_integration_action.triggered.connect(self.export_peak_integration_excel)
         file_menu.addAction(export_integration_action)
 
         # Generate R Code action
-        generate_r_code_action = QAction("Generate R Code for Peak Data...", self)
+        generate_r_code_action = QAction("Generate R Code for Peak Data", self)
         generate_r_code_action.triggered.connect(self.generate_r_code)
         file_menu.addAction(generate_r_code_action)
 
@@ -1081,7 +1218,7 @@ class MzMLExplorerMainWindow(QMainWindow):
         options_menu = menubar.addMenu("Options")
 
         # Unified Options action
-        options_action = QAction("Options...", self)
+        options_action = QAction("Options", self)
         options_action.setShortcut("Ctrl+P")
         options_action.triggered.connect(self.show_options_dialog)
         options_menu.addAction(options_action)
@@ -1096,18 +1233,29 @@ class MzMLExplorerMainWindow(QMainWindow):
 
     def show_about_dialog(self):
         """Show the about dialog"""
+        # Extract version from the project's pyproject.toml file
+        try:
+            toml_path = os.path.join(
+                os.path.dirname(__file__), "..", "..", "pyproject.toml"
+            )
+            with open(toml_path, "r") as f:
+                project_data = toml.load(f)
+                version = project_data.get("project", {}).get("version", "Unknown")
+        except Exception as ex:
+            version = "Unknown"
+
         QMessageBox.about(
             self,
             "About mzML Explorer",
-            "mzML Explorer v1.0\n\n"
+            f"mzML Explorer v{version}\n\n"
             "A tool for visualizing LC-HRMS data from mzML files.\n\n"
             "Features:\n"
             "• Load mzML files via Excel templates\n"
             "• Extract ion chromatograms (EICs)\n"
             "• Interactive plotting with zoom and pan\n"
-            "• Group-based color coding\n"
-            "• Drag and drop support\n\n"
-            "Built with PyQt6 and pymzml.",
+            "• Group-based color coding\n\n"
+            "Built with PyQt6 and pymzml.\n\n"
+            "(c) 2025 Plant-Microbe Metabolomics, BOKU University",
         )
 
     def dragEnterEvent(self, event: QDragEnterEvent):

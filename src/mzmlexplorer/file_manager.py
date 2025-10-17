@@ -273,20 +273,24 @@ class FileManager:
 
         # Create a copy of the dataframe for sorting
         df_copy = self.files_data.copy()
-        
+
         # Add natural sort keys for both group and filename
-        df_copy['_group_sort_key'] = df_copy['group'].map(
-            lambda x: natsorted(df_copy['group'].unique()).index(x)
+        df_copy["_group_sort_key"] = df_copy["group"].map(
+            lambda x: natsorted(df_copy["group"].unique()).index(x)
         )
-        df_copy['_filename_sort_key'] = df_copy['filename'].map(
-            lambda x: index_natsorted(df_copy['filename'])[df_copy['filename'].tolist().index(x)]
+        df_copy["_filename_sort_key"] = df_copy["filename"].map(
+            lambda x: index_natsorted(df_copy["filename"])[
+                df_copy["filename"].tolist().index(x)
+            ]
         )
-        
+
         # Sort by natural group order first, then by natural filename order
-        df_copy = df_copy.sort_values(['_group_sort_key', '_filename_sort_key'])
-        
+        df_copy = df_copy.sort_values(["_group_sort_key", "_filename_sort_key"])
+
         # Remove the temporary sort key columns and update the main dataframe
-        self.files_data = df_copy.drop(columns=['_group_sort_key', '_filename_sort_key']).reset_index(drop=True)
+        self.files_data = df_copy.drop(
+            columns=["_group_sort_key", "_filename_sort_key"]
+        ).reset_index(drop=True)
 
     def _assign_group_colors(self):
         """Assign colors to groups based on the group column or color column"""
@@ -475,6 +479,12 @@ class FileManager:
         Returns:
             Tuple of (retention_times, intensities) arrays
         """
+
+        if polarity.lower() in ["positive", "pos", "pos.", "+"]:
+            polarity = "+"
+        elif polarity.lower() in ["negative", "neg", "neg.", "-"]:
+            polarity = "-"
+
         try:
             rt_list = []
             intensity_list = []

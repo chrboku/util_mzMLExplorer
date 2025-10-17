@@ -41,6 +41,7 @@ from .compound_manager import CompoundManager
 from .file_manager import FileManager
 from .eic_window import EICWindow
 from .compound_import_dialog import CompoundImportDialog
+from .multi_adduct_window import MultiAdductWindow
 from natsort import natsorted, index_natsorted
 
 
@@ -60,7 +61,7 @@ class MzMLExplorerMainWindow(QMainWindow):
         self.file_manager = FileManager()
         self.compound_manager = CompoundManager()
         self.eic_windows = []
-        
+
         # Peak integration data storage
         # Key: (compound_name, ion_name) -> dict with integration data
         self.peak_integration_data = {}
@@ -114,19 +115,27 @@ class MzMLExplorerMainWindow(QMainWindow):
 
         self.compounds_table = QTableWidget()
         self.compounds_table.setColumnCount(3)
-        self.compounds_table.setHorizontalHeaderLabels(["Name", "Retention Time", "Type"])
-        self.compounds_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.compounds_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self.compounds_table.customContextMenuRequested.connect(self.show_compound_context_menu)
+        self.compounds_table.setHorizontalHeaderLabels(
+            ["Name", "Retention Time", "Type"]
+        )
+        self.compounds_table.setSelectionBehavior(
+            QTableWidget.SelectionBehavior.SelectRows
+        )
+        self.compounds_table.setContextMenuPolicy(
+            Qt.ContextMenuPolicy.CustomContextMenu
+        )
+        self.compounds_table.customContextMenuRequested.connect(
+            self.show_compound_context_menu
+        )
         self.compounds_table.setAcceptDrops(True)
         self.compounds_table.setSortingEnabled(True)
-        
+
         # Configure table headers
         header = self.compounds_table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        
+
         right_layout.addWidget(self.compounds_table)
 
         splitter.addWidget(left_panel)
@@ -193,8 +202,10 @@ class MzMLExplorerMainWindow(QMainWindow):
     def load_compounds(self):
         """Load compounds from a file"""
         file_path, _ = QFileDialog.getOpenFileName(
-            self, "Load Compounds", "", 
-            "All supported (*.xlsx *.csv *.tsv);;Excel files (*.xlsx);;CSV files (*.csv);;TSV files (*.tsv)"
+            self,
+            "Load Compounds",
+            "",
+            "All supported (*.xlsx *.csv *.tsv);;Excel files (*.xlsx);;CSV files (*.csv);;TSV files (*.tsv)",
         )
 
         if file_path:
@@ -203,7 +214,9 @@ class MzMLExplorerMainWindow(QMainWindow):
     def clear_compounds(self):
         """Clear all loaded compounds"""
         if self.compound_manager.get_compounds_data().empty:
-            QMessageBox.information(self, "Information", "No compounds loaded to clear.")
+            QMessageBox.information(
+                self, "Information", "No compounds loaded to clear."
+            )
             return
 
         reply = QMessageBox.question(
@@ -211,17 +224,17 @@ class MzMLExplorerMainWindow(QMainWindow):
             "Clear Compounds",
             "Are you sure you want to clear all loaded compounds?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No
+            QMessageBox.StandardButton.No,
         )
 
         if reply == QMessageBox.StandardButton.Yes:
             # Clear compounds data
             self.compound_manager.compounds_data = pd.DataFrame()
             self.compound_manager.compound_adduct_data = {}
-            
+
             # Update the UI
             self.update_compounds_table()
-            
+
             # Update status
             self.statusBar().showMessage("All compounds cleared.")
 
@@ -611,12 +624,11 @@ class MzMLExplorerMainWindow(QMainWindow):
             type_display = {
                 "formula": "Formula",
                 "mass": "Mass",
-                "mz_only": "m/z only"
+                "mz_only": "m/z only",
             }.get(compound_type, compound_type)
-            
+
             type_item = QTableWidgetItem(type_display)
             self.compounds_table.setItem(row_idx, 2, type_item)
-
 
     def show_compound_context_menu(self, position):
         """Show context menu for compound adducts"""
@@ -628,7 +640,7 @@ class MzMLExplorerMainWindow(QMainWindow):
         row = item.row()
         name_item = self.compounds_table.item(row, 0)
         compound_data = name_item.data(Qt.ItemDataRole.UserRole)
-        
+
         if not compound_data:
             return
 
@@ -639,8 +651,12 @@ class MzMLExplorerMainWindow(QMainWindow):
         menu.setTitle(f"Adducts for {compound_name}")
 
         # Get categorized adducts
-        adducts_info = self.compound_manager.get_compound_adducts_categorized(compound_name)
-        can_calculate = self.compound_manager.can_calculate_adducts_from_formula(compound_name)
+        adducts_info = self.compound_manager.get_compound_adducts_categorized(
+            compound_name
+        )
+        can_calculate = self.compound_manager.can_calculate_adducts_from_formula(
+            compound_name
+        )
 
         # Add specified adducts
         specified_adducts = adducts_info["specified"]
@@ -649,14 +665,16 @@ class MzMLExplorerMainWindow(QMainWindow):
                 # Show specified adducts at top for compounds with formula/mass
                 for adduct in specified_adducts:
                     self._add_adduct_action(menu, compound_data, adduct, specified=True)
-                
+
                 # Add separator
                 if adducts_info["remaining"]:
                     menu.addSeparator()
-                    
+
                 # Add remaining adducts
                 for adduct in adducts_info["remaining"]:
-                    self._add_adduct_action(menu, compound_data, adduct, specified=False)
+                    self._add_adduct_action(
+                        menu, compound_data, adduct, specified=False
+                    )
             else:
                 # For m/z only compounds, show only the specified adducts
                 for adduct in specified_adducts:
@@ -672,6 +690,13 @@ class MzMLExplorerMainWindow(QMainWindow):
             no_adducts_action.setEnabled(False)
             menu.addAction(no_adducts_action)
 
+        # Add separator before multi-adduct options
+        if menu.actions():
+            menu.addSeparator()
+
+        # Add multi-adduct options
+        self._add_multi_adduct_actions(menu, compound_data, adducts_info, can_calculate)
+
         # Show menu at cursor position
         if menu.actions():
             menu.exec(self.compounds_table.mapToGlobal(position))
@@ -680,7 +705,9 @@ class MzMLExplorerMainWindow(QMainWindow):
         """Add an adduct action to the context menu"""
         # Get pre-calculated data for display
         compound_name = compound_data["Name"]
-        precalc_data = self.compound_manager.get_precalculated_data(compound_name, adduct)
+        precalc_data = self.compound_manager.get_precalculated_data(
+            compound_name, adduct
+        )
 
         if precalc_data:
             display_name = precalc_data["display_name"]
@@ -693,10 +720,14 @@ class MzMLExplorerMainWindow(QMainWindow):
                 action_text = f"{display_name} (m/z: calculation failed)"
         else:
             # Try to calculate on the fly
-            display_name = self.compound_manager.get_adduct_display_name(compound_name, adduct)
-            mz_value = self.compound_manager.calculate_compound_mz(compound_name, adduct)
+            display_name = self.compound_manager.get_adduct_display_name(
+                compound_name, adduct
+            )
+            mz_value = self.compound_manager.calculate_compound_mz(
+                compound_name, adduct
+            )
             polarity = self.compound_manager._determine_polarity(adduct)
-            
+
             if mz_value is not None:
                 action_text = f"{display_name} (m/z: {mz_value:.4f})"
             else:
@@ -704,7 +735,7 @@ class MzMLExplorerMainWindow(QMainWindow):
 
         # Create action
         action = QAction(action_text, self)
-        
+
         # Make specified adducts bold
         if specified:
             font = action.font()
@@ -713,11 +744,128 @@ class MzMLExplorerMainWindow(QMainWindow):
 
         # Connect to EIC window function
         action.triggered.connect(
-            lambda checked, c=compound_data, a=adduct, m=mz_value, p=polarity: 
-            self.show_eic_window(c, a, m, p)
+            lambda checked,
+            c=compound_data,
+            a=adduct,
+            m=mz_value,
+            p=polarity: self.show_eic_window(c, a, m, p)
         )
-        
+
         menu.addAction(action)
+
+    def _add_multi_adduct_actions(
+        self, menu, compound_data, adducts_info, can_calculate
+    ):
+        """Add multi-adduct window actions to the context menu"""
+        compound_name = compound_data["Name"]
+
+        # Option 1: Show predefined adducts in multi-EIC window
+        specified_adducts = adducts_info["specified"]
+        if specified_adducts:
+            predefined_action = QAction("📊 Show Predefined Adducts (Multi-EIC)", self)
+            predefined_action.triggered.connect(
+                lambda checked, c=compound_data: self.show_multi_adduct_window(
+                    c, show_predefined_only=True
+                )
+            )
+            menu.addAction(predefined_action)
+
+        # Option 2: Show all possible adducts in multi-EIC window
+        if can_calculate:
+            all_adducts_action = QAction("📊 Show All Adducts (Multi-EIC)", self)
+            all_adducts_action.triggered.connect(
+                lambda checked, c=compound_data: self.show_multi_adduct_window(
+                    c, show_predefined_only=False
+                )
+            )
+            menu.addAction(all_adducts_action)
+
+    def show_multi_adduct_window(self, compound, show_predefined_only=True):
+        """Show multi-adduct EIC window"""
+        if self.file_manager.get_files_data().empty:
+            QMessageBox.warning(self, "Warning", "No files loaded!")
+            return
+
+        try:
+            compound_name = compound["Name"]
+
+            # Prepare adducts data
+            adducts_data = []
+
+            if show_predefined_only:
+                # Get only predefined adducts
+                specified_adducts = self.compound_manager.get_compound_adducts(
+                    compound_name
+                )
+                for adduct in specified_adducts:
+                    mz_value = self.compound_manager.calculate_compound_mz(
+                        compound_name, adduct
+                    )
+                    polarity = self.compound_manager._determine_polarity(adduct)
+                    adducts_data.append((adduct, mz_value, polarity))
+            else:
+                # Get all possible adducts
+                if self.compound_manager.can_calculate_adducts_from_formula(
+                    compound_name
+                ):
+                    all_adducts = self.compound_manager.get_all_available_adducts()
+                    for adduct in all_adducts:
+                        mz_value = self.compound_manager.calculate_compound_mz(
+                            compound_name, adduct
+                        )
+                        polarity = self.compound_manager._determine_polarity(adduct)
+                        if mz_value is not None:  # Only add adducts with valid m/z
+                            adducts_data.append((adduct, mz_value, polarity))
+                else:
+                    # For m/z only compounds, fall back to predefined
+                    specified_adducts = self.compound_manager.get_compound_adducts(
+                        compound_name
+                    )
+                    for adduct in specified_adducts:
+                        mz_value = self.compound_manager.calculate_compound_mz(
+                            compound_name, adduct
+                        )
+                        polarity = self.compound_manager._determine_polarity(adduct)
+                        adducts_data.append((adduct, mz_value, polarity))
+
+            if not adducts_data:
+                QMessageBox.information(
+                    self, "Information", "No adducts available for this compound."
+                )
+                return
+
+            # Create multi-adduct window
+            multi_window = MultiAdductWindow(
+                compound,
+                adducts_data,
+                self.file_manager,
+                defaults=self.eic_defaults,
+                show_predefined_only=show_predefined_only,
+                parent=None,
+            )
+
+            # Show the window
+            multi_window.show()
+            multi_window.raise_()
+            multi_window.activateWindow()
+
+            # Keep reference to prevent garbage collection
+            self.eic_windows.append(multi_window)
+
+            # Remove from list when window is closed
+            def on_window_closed():
+                if multi_window in self.eic_windows:
+                    self.eic_windows.remove(multi_window)
+
+            multi_window.destroyed.connect(on_window_closed)
+
+        except Exception as e:
+            QMessageBox.critical(
+                self, "Error", f"Failed to create multi-adduct window: {str(e)}"
+            )
+            import traceback
+
+            traceback.print_exc()
 
     def filter_compounds(self):
         """Filter compounds based on the filter text"""
@@ -735,7 +883,7 @@ class MzMLExplorerMainWindow(QMainWindow):
         for i in range(self.compounds_table.rowCount()):
             name_item = self.compounds_table.item(i, 0)
             compound_data = name_item.data(Qt.ItemDataRole.UserRole)
-            
+
             if not compound_data:
                 self.compounds_table.setRowHidden(i, True)
                 continue
@@ -747,7 +895,7 @@ class MzMLExplorerMainWindow(QMainWindow):
                 # Check if any adducts have m/z in range
                 min_mz, max_mz = filter_params
                 adducts = compound_data.get("Common_adducts", "")
-                
+
                 if isinstance(adducts, str) and adducts.strip():
                     adduct_list = [a.strip() for a in adducts.split(",") if a.strip()]
                     for adduct in adduct_list:
@@ -774,13 +922,18 @@ class MzMLExplorerMainWindow(QMainWindow):
             elif filter_type == "rt":
                 # Check if RT is in range
                 min_rt, max_rt = filter_params
-                if "RT_minutes" in compound_data and pd.notna(compound_data["RT_minutes"]):
+                if "RT_minutes" in compound_data and pd.notna(
+                    compound_data["RT_minutes"]
+                ):
                     rt_value = float(compound_data["RT_minutes"])
                     show_compound = min_rt <= rt_value <= max_rt
-                elif compound_data.get("RT_start_min") and compound_data.get("RT_end_min"):
+                elif compound_data.get("RT_start_min") and compound_data.get(
+                    "RT_end_min"
+                ):
                     # Use average of RT window if RT_minutes not available
                     avg_rt = (
-                        float(compound_data["RT_start_min"]) + float(compound_data["RT_end_min"])
+                        float(compound_data["RT_start_min"])
+                        + float(compound_data["RT_end_min"])
                     ) / 2
                     show_compound = min_rt <= avg_rt <= max_rt
 
@@ -905,13 +1058,13 @@ class MzMLExplorerMainWindow(QMainWindow):
         file_menu.addAction(generate_templates_action)
 
         file_menu.addSeparator()
-        
+
         # Export Peak Integration Data action
         export_integration_action = QAction("Export Peak Integration Data...", self)
         export_integration_action.triggered.connect(self.export_peak_integration_excel)
         file_menu.addAction(export_integration_action)
-        
-        # Generate R Code action  
+
+        # Generate R Code action
         generate_r_code_action = QAction("Generate R Code for Peak Data...", self)
         generate_r_code_action.triggered.connect(self.generate_r_code)
         file_menu.addAction(generate_r_code_action)
@@ -1052,12 +1205,12 @@ class MzMLExplorerMainWindow(QMainWindow):
     def load_compounds_from_file(self, file_path):
         """Load compounds from a dropped file"""
         try:
-            file_ext = file_path.lower().split('.')[-1]
-            
-            if file_ext in ['csv', 'tsv']:
+            file_ext = file_path.lower().split(".")[-1]
+
+            if file_ext in ["csv", "tsv"]:
                 # Use import dialog for CSV/TSV files
                 self.load_compounds_from_csv_tsv(file_path)
-            elif file_ext == 'xlsx':
+            elif file_ext == "xlsx":
                 # Load Excel file directly (existing functionality)
                 self.load_compounds_from_excel(file_path)
             else:
@@ -1065,20 +1218,16 @@ class MzMLExplorerMainWindow(QMainWindow):
                     self,
                     "Unsupported Format",
                     f"Unsupported file format: {file_ext}. "
-                    "Supported formats: xlsx, csv, tsv"
+                    "Supported formats: xlsx, csv, tsv",
                 )
 
         except Exception as e:
-            QMessageBox.critical(
-                self,
-                "Error",
-                f"Failed to load compounds: {str(e)}"
-            )
+            QMessageBox.critical(self, "Error", f"Failed to load compounds: {str(e)}")
 
     def load_compounds_from_csv_tsv(self, file_path):
         """Load compounds from CSV/TSV file using import dialog"""
         dialog = CompoundImportDialog(file_path, self)
-        
+
         if dialog.exec() == QDialog.DialogCode.Accepted:
             import_data = dialog.get_import_data()
             if import_data is not None and not import_data.empty:
@@ -1361,58 +1510,70 @@ class MzMLExplorerMainWindow(QMainWindow):
         progress.setValue(num_files)
         progress.close()
 
-    def record_peak_integration(self, compound_name, ion_name, mz_value, rt_value, 
-                               ion_mode, sample_name, group_name, peak_start_rt, 
-                               peak_end_rt, peak_area):
+    def record_peak_integration(
+        self,
+        compound_name,
+        ion_name,
+        mz_value,
+        rt_value,
+        ion_mode,
+        sample_name,
+        group_name,
+        peak_start_rt,
+        peak_end_rt,
+        peak_area,
+    ):
         """
         Record peak integration data for a compound and ion.
         Only keeps the latest integration for each compound-ion combination.
-        
+
         Args:
             compound_name: Name of the compound
             ion_name: Name/description of the ion (e.g., adduct type)
-            mz_value: m/z value 
+            mz_value: m/z value
             rt_value: retention time value (center)
             ion_mode: ionization mode (positive/negative)
             sample_name: name of the sample file
             group_name: group name for the sample
             peak_start_rt: start of peak boundary
-            peak_end_rt: end of peak boundary  
+            peak_end_rt: end of peak boundary
             peak_area: integrated peak area
         """
         key = (compound_name, ion_name)
-        
+
         if key not in self.peak_integration_data:
             self.peak_integration_data[key] = {
-                'compound_name': compound_name,
-                'ion_name': ion_name,
-                'mz_value': mz_value,
-                'rt_value': rt_value,
-                'ion_mode': ion_mode,
-                'peak_start_rt': peak_start_rt,
-                'peak_end_rt': peak_end_rt,
-                'sample_data': []  # List of (sample_name, group_name, peak_area) tuples
+                "compound_name": compound_name,
+                "ion_name": ion_name,
+                "mz_value": mz_value,
+                "rt_value": rt_value,
+                "ion_mode": ion_mode,
+                "peak_start_rt": peak_start_rt,
+                "peak_end_rt": peak_end_rt,
+                "sample_data": [],  # List of (sample_name, group_name, peak_area) tuples
             }
-        
+
         # Update the integration data - only keep latest boundaries and sample data
         integration_data = self.peak_integration_data[key]
-        integration_data['peak_start_rt'] = peak_start_rt
-        integration_data['peak_end_rt'] = peak_end_rt
-        integration_data['sample_data'] = [(sample_name, group_name, peak_area)]
+        integration_data["peak_start_rt"] = peak_start_rt
+        integration_data["peak_end_rt"] = peak_end_rt
+        integration_data["sample_data"] = [(sample_name, group_name, peak_area)]
 
-    def update_peak_integration_samples(self, compound_name, ion_name, sample_data_list):
+    def update_peak_integration_samples(
+        self, compound_name, ion_name, sample_data_list
+    ):
         """
         Update the sample data for a compound-ion integration.
-        
+
         Args:
             compound_name: Name of the compound
             ion_name: Name/description of the ion
             sample_data_list: List of (sample_name, group_name, peak_area) tuples
         """
         key = (compound_name, ion_name)
-        
+
         if key in self.peak_integration_data:
-            self.peak_integration_data[key]['sample_data'] = sample_data_list
+            self.peak_integration_data[key]["sample_data"] = sample_data_list
 
     def export_peak_integration_excel(self):
         """Export peak integration data to Excel file in long format"""
@@ -1421,66 +1582,75 @@ class MzMLExplorerMainWindow(QMainWindow):
                 self, "No Data", "No peak integration data available to export."
             )
             return
-            
+
         file_path, _ = QFileDialog.getSaveFileName(
             self,
             "Export Peak Integration Data",
             "peak_integration_data.xlsx",
-            "Excel files (*.xlsx)"
+            "Excel files (*.xlsx)",
         )
-        
+
         if not file_path:
             return
-            
+
         try:
             # Prepare data for long format table
             export_data = []
-            
-            for (compound_name, ion_name), integration_data in self.peak_integration_data.items():
+
+            for (
+                compound_name,
+                ion_name,
+            ), integration_data in self.peak_integration_data.items():
                 base_row = {
-                    'compound_name': integration_data['compound_name'],
-                    'ion_name': integration_data['ion_name'], 
-                    'mz_value': integration_data['mz_value'],
-                    'rt_value': integration_data['rt_value'],
-                    'ion_mode': integration_data['ion_mode'],
-                    'peak_start_rt': integration_data['peak_start_rt'],
-                    'peak_end_rt': integration_data['peak_end_rt']
+                    "compound_name": integration_data["compound_name"],
+                    "ion_name": integration_data["ion_name"],
+                    "mz_value": integration_data["mz_value"],
+                    "rt_value": integration_data["rt_value"],
+                    "ion_mode": integration_data["ion_mode"],
+                    "peak_start_rt": integration_data["peak_start_rt"],
+                    "peak_end_rt": integration_data["peak_end_rt"],
                 }
-                
+
                 # Add a row for each sample
-                for sample_name, group_name, peak_area in integration_data['sample_data']:
+                for sample_name, group_name, peak_area in integration_data[
+                    "sample_data"
+                ]:
                     row = base_row.copy()
-                    row.update({
-                        'sample_name': sample_name,
-                        'group_name': group_name,
-                        'peak_area': peak_area
-                    })
+                    row.update(
+                        {
+                            "sample_name": sample_name,
+                            "group_name": group_name,
+                            "peak_area": peak_area,
+                        }
+                    )
                     export_data.append(row)
-            
+
             # Create DataFrame and export
             df = pd.DataFrame(export_data)
             df.to_excel(file_path, index=False)
-            
+
             QMessageBox.information(
-                self, "Export Complete", 
-                f"Peak integration data exported to:\n{file_path}"
+                self,
+                "Export Complete",
+                f"Peak integration data exported to:\n{file_path}",
             )
-            
+
         except Exception as e:
             QMessageBox.critical(
-                self, "Export Error", 
-                f"Failed to export data:\n{str(e)}"
+                self, "Export Error", f"Failed to export data:\n{str(e)}"
             )
 
     def generate_r_code(self):
         """Generate R code for loading the exported Excel file"""
         if not self.peak_integration_data:
             QMessageBox.information(
-                self, "No Data", "No peak integration data available to generate R code for."
+                self,
+                "No Data",
+                "No peak integration data available to generate R code for.",
             )
             return
-            
-        r_code = '''# R code to load peak integration data
+
+        r_code = """# R code to load peak integration data
 # Install readxl package if not already installed
 # install.packages("readxl")
 
@@ -1527,64 +1697,63 @@ ggplot(peak_data, aes(x = group_name, y = peak_area)) +
     caption = "Data from mzML Explorer peak integration"
   ) +
   theme(axis.text.x = element_text(angle = 45, hjust = 1))
-'''
+"""
 
         # Show R code in a dialog
         dialog = QDialog(self)
         dialog.setWindowTitle("R Code for Loading Peak Integration Data")
         dialog.resize(800, 600)
-        
+
         layout = QVBoxLayout(dialog)
-        
+
         # Text area with R code
         from PyQt6.QtWidgets import QTextEdit
+
         text_edit = QTextEdit()
         text_edit.setPlainText(r_code)
         text_edit.setFont(QFont("Courier", 10))
         layout.addWidget(text_edit)
-        
+
         # Buttons
         button_layout = QHBoxLayout()
-        
+
         copy_button = QPushButton("Copy to Clipboard")
         copy_button.clicked.connect(lambda: QApplication.clipboard().setText(r_code))
         button_layout.addWidget(copy_button)
-        
+
         save_button = QPushButton("Save to File")
         save_button.clicked.connect(lambda: self._save_r_code(r_code))
         button_layout.addWidget(save_button)
-        
+
         button_layout.addStretch()
-        
+
         close_button = QPushButton("Close")
         close_button.clicked.connect(dialog.close)
         button_layout.addWidget(close_button)
-        
+
         layout.addLayout(button_layout)
-        
+
         dialog.exec()
-        
+
     def _save_r_code(self, r_code):
         """Save R code to a file"""
         file_path, _ = QFileDialog.getSaveFileName(
             self,
             "Save R Code",
             "peak_integration_analysis.R",
-            "R files (*.R);;Text files (*.txt);;All files (*)"
+            "R files (*.R);;Text files (*.txt);;All files (*)",
         )
-        
+
         if file_path:
             try:
-                with open(file_path, 'w') as f:
+                with open(file_path, "w") as f:
                     f.write(r_code)
                 QMessageBox.information(
-                    self, "Save Complete",
-                    f"R code saved to:\n{file_path}"
+                    self, "Save Complete", f"R code saved to:\n{file_path}"
                 )
             except Exception as e:
                 QMessageBox.critical(
-                    self, "Save Error",
-                    f"Failed to save R code:\n{str(e)}"
+                    self, "Save Error", f"Failed to save R code:\n{str(e)}"
                 )
 
 

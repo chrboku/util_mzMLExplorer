@@ -121,8 +121,12 @@ class CompoundManager:
                     # Check if compound has adducts with m/z values (e.g., [197.23234]+)
                     adducts_str = row.get("Common_adducts", "")
                     if isinstance(adducts_str, str) and adducts_str.strip():
-                        adduct_list = [a.strip() for a in adducts_str.split(",") if a.strip()]
-                        has_mz_adducts = any(self._is_mz_adduct(adduct) for adduct in adduct_list)
+                        adduct_list = [
+                            a.strip() for a in adducts_str.split(",") if a.strip()
+                        ]
+                        has_mz_adducts = any(
+                            self._is_mz_adduct(adduct) for adduct in adduct_list
+                        )
                         if has_mz_adducts:
                             compound_dict["compound_type"] = "mz_only"
                         else:
@@ -381,7 +385,9 @@ class CompoundManager:
             return self.adducts_data["Adduct"].tolist()
         return []
 
-    def get_compound_adducts_categorized(self, compound_name: str) -> Dict[str, List[str]]:
+    def get_compound_adducts_categorized(
+        self, compound_name: str
+    ) -> Dict[str, List[str]]:
         """
         Get adducts for a compound categorized by specified/remaining.
 
@@ -396,18 +402,18 @@ class CompoundManager:
             return {"specified": [], "remaining": []}
 
         compound_type = compound.get("compound_type", "formula")
-        
+
         # Get specified adducts for this compound
         specified_adducts = self.get_compound_adducts(compound_name)
-        
+
         if compound_type == "mz_only":
             # For m/z only compounds, only show the specified adducts
             return {"specified": specified_adducts, "remaining": []}
-        
+
         # For compounds with formula or mass, show all possible adducts
         all_adducts = self.get_all_available_adducts()
         remaining_adducts = [a for a in all_adducts if a not in specified_adducts]
-        
+
         return {"specified": specified_adducts, "remaining": remaining_adducts}
 
     def can_calculate_adducts_from_formula(self, compound_name: str) -> bool:
@@ -423,7 +429,7 @@ class CompoundManager:
         compound = self.get_compound_by_name(compound_name)
         if compound is None:
             return False
-        
+
         compound_type = compound.get("compound_type", "formula")
         return compound_type in ["formula", "mass"]
 

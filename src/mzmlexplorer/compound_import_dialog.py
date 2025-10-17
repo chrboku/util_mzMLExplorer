@@ -35,122 +35,126 @@ class CompoundImportDialog(QDialog):
         self.df = None
         self.preview_df = None
         self._initializing = True  # Flag to prevent premature updates
-        
+
         # Set up timer for debounced updates
         self.update_timer = QTimer()
         self.update_timer.setSingleShot(True)
         self.update_timer.timeout.connect(self.update_preview)
-        
+
         self.setWindowTitle("Import Compounds")
         self.setModal(True)
         self.resize(800, 600)
-        
+
         # Initialize UI
         self.init_ui()
-        
+
         # Load initial data
         self.load_file_with_delimiter(";")
-        
+
         # Initialization complete
         self._initializing = False
-        
+
         # Now do the first update (directly, not scheduled, since we're done initializing)
         self.update_preview()
 
     def init_ui(self):
         """Initialize the user interface"""
         layout = QVBoxLayout(self)
-        
+
         # File path display
         file_info_label = QLabel(f"Importing from: {self.file_path}")
-        file_info_label.setStyleSheet("QLabel { font-weight: bold; padding: 5px; background-color: #f0f0f0; border: 1px solid #ccc; }")
+        file_info_label.setStyleSheet(
+            "QLabel { font-weight: bold; padding: 5px; background-color: #f0f0f0; border: 1px solid #ccc; }"
+        )
         file_info_label.setWordWrap(True)
         layout.addWidget(file_info_label)
-        
+
         # Create splitter for parameters and preview
         splitter = QSplitter(Qt.Orientation.Vertical)
-        
+
         # Parameters section
         params_widget = self.create_parameters_section()
         splitter.addWidget(params_widget)
-        
+
         # Preview section
         preview_widget = self.create_preview_section()
         splitter.addWidget(preview_widget)
-        
+
         # Set splitter proportions
         splitter.setSizes([300, 300])
         layout.addWidget(splitter)
-        
+
         # Buttons
         button_layout = QHBoxLayout()
-        
+
         self.cancel_btn = QPushButton("Cancel")
         self.cancel_btn.clicked.connect(self.reject)
-        
+
         self.import_btn = QPushButton("Import")
         self.import_btn.clicked.connect(self.accept)
         self.import_btn.setDefault(True)
-        
+
         button_layout.addStretch()
         button_layout.addWidget(self.cancel_btn)
         button_layout.addWidget(self.import_btn)
-        
+
         layout.addLayout(button_layout)
 
     def create_parameters_section(self):
         """Create the parameters configuration section"""
         group = QGroupBox("Import Parameters")
         layout = QFormLayout(group)
-        
+
         # Delimiter selection
         self.delimiter_combo = QComboBox()
         self.delimiter_combo.addItems([";", ",", "\\t (Tab)", "|", ":"])
         self.delimiter_combo.currentTextChanged.connect(self.on_delimiter_changed)
         layout.addRow("Delimiter:", self.delimiter_combo)
-        
+
         # Compound name prefix
         self.name_prefix_edit = QLineEdit("")
         self.name_prefix_edit.setPlaceholderText("Optional prefix for compound names")
         self.name_prefix_edit.textChanged.connect(self.schedule_update)
         layout.addRow("Name Prefix:", self.name_prefix_edit)
-        
+
         # Column selections
         self.name_column_combo = QComboBox()
         self.name_column_combo.currentTextChanged.connect(self.schedule_update)
         layout.addRow("Name Column:", self.name_column_combo)
-        
+
         self.mz_column_combo = QComboBox()
         self.mz_column_combo.currentTextChanged.connect(self.schedule_update)
         layout.addRow("m/z Column:", self.mz_column_combo)
-        
+
         self.rt_column_combo = QComboBox()
         self.rt_column_combo.currentTextChanged.connect(self.schedule_update)
         layout.addRow("RT Column:", self.rt_column_combo)
-        
+
         # Polarity selection
         self.polarity_combo = QComboBox()
         self.polarity_combo.addItems(["Use Global Polarity", "Use Column"])
         self.polarity_combo.currentTextChanged.connect(self.on_polarity_method_changed)
         layout.addRow("Polarity Method:", self.polarity_combo)
-        
+
         # Global polarity selection
         self.global_polarity_combo = QComboBox()
         self.global_polarity_combo.addItems(["+", "-"])
-        self.global_polarity_combo.currentTextChanged.connect(self.on_global_polarity_changed)
+        self.global_polarity_combo.currentTextChanged.connect(
+            self.on_global_polarity_changed
+        )
         self.global_polarity_label = QLabel("Global Polarity:")
         layout.addRow(self.global_polarity_label, self.global_polarity_combo)
-        
+
         # Polarity column selection
         self.polarity_column_combo = QComboBox()
         self.polarity_column_combo.currentTextChanged.connect(self.schedule_update)
         self.polarity_column_label = QLabel("Polarity Column:")
         layout.addRow(self.polarity_column_label, self.polarity_column_combo)
-        
+
         # Initially hide polarity column controls
         self.polarity_column_label.setVisible(False)
         self.polarity_column_combo.setVisible(False)
-        
+
         # RT window
         self.rt_window_spinbox = QDoubleSpinBox()
         self.rt_window_spinbox.setRange(0.1, 10.0)
@@ -159,23 +163,23 @@ class CompoundImportDialog(QDialog):
         self.rt_window_spinbox.setDecimals(2)
         self.rt_window_spinbox.valueChanged.connect(self.schedule_update)
         layout.addRow("RT Window (±):", self.rt_window_spinbox)
-        
+
         return group
 
     def create_preview_section(self):
         """Create the preview section"""
         group = QGroupBox("Preview")
         layout = QVBoxLayout(group)
-        
+
         # Info text
         self.info_label = QLabel("Preview of compounds to be imported:")
         layout.addWidget(self.info_label)
-        
+
         # Preview table
         self.preview_table = QTableWidget()
         self.preview_table.setAlternatingRowColors(True)
         layout.addWidget(self.preview_table)
-        
+
         return group
 
     def on_delimiter_changed(self, text):
@@ -183,24 +187,30 @@ class CompoundImportDialog(QDialog):
         delimiter = text
         if delimiter == "\\t (Tab)":
             delimiter = "\t"
-        
+
         # Block signals during file reloading to prevent cascading updates
         self._block_all_signals(True)
         try:
             self.load_file_with_delimiter(delimiter)
         finally:
             self._block_all_signals(False)
-        
+
         # Only update preview if not initializing
-        if not getattr(self, '_initializing', False):
+        if not getattr(self, "_initializing", False):
             self.schedule_update()
 
     def _block_all_signals(self, block):
         """Block or unblock signals for all input controls"""
         controls = [
-            self.delimiter_combo, self.name_prefix_edit, self.name_column_combo,
-            self.mz_column_combo, self.rt_column_combo, self.polarity_combo,
-            self.polarity_column_combo, self.global_polarity_combo, self.rt_window_spinbox
+            self.delimiter_combo,
+            self.name_prefix_edit,
+            self.name_column_combo,
+            self.mz_column_combo,
+            self.rt_column_combo,
+            self.polarity_combo,
+            self.polarity_column_combo,
+            self.global_polarity_combo,
+            self.rt_window_spinbox,
         ]
         for control in controls:
             control.blockSignals(block)
@@ -215,23 +225,23 @@ class CompoundImportDialog(QDialog):
     def on_polarity_method_changed(self, text):
         """Handle polarity method change"""
         use_column = text == "Use Column"
-        
+
         # Show/hide appropriate controls
         self._update_polarity_ui_visibility(use_column)
-        
+
         # Only update preview if not initializing
-        if not getattr(self, '_initializing', False):
+        if not getattr(self, "_initializing", False):
             self.schedule_update()
 
     def on_global_polarity_changed(self, text):
         """Handle global polarity change"""
         # Only update preview if not initializing
-        if not getattr(self, '_initializing', False):
+        if not getattr(self, "_initializing", False):
             self.schedule_update()
 
     def schedule_update(self):
         """Schedule an update with a small delay to debounce rapid changes"""
-        if not getattr(self, '_initializing', False) and hasattr(self, 'update_timer'):
+        if not getattr(self, "_initializing", False) and hasattr(self, "update_timer"):
             # Stop any existing timer and start a new one
             self.update_timer.stop()
             self.update_timer.start(200)  # 200ms delay for more stability
@@ -240,14 +250,14 @@ class CompoundImportDialog(QDialog):
         """Load the file with the specified delimiter"""
         try:
             # Try to read the file
-            if self.file_path.endswith('.xlsx'):
+            if self.file_path.endswith(".xlsx"):
                 self.df = pd.read_excel(self.file_path)
             else:
                 self.df = pd.read_csv(self.file_path, sep=delimiter)
-            
+
             # Update column combo boxes
             self.update_column_combos()
-            
+
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to load file: {str(e)}")
             self.df = None
@@ -256,17 +266,22 @@ class CompoundImportDialog(QDialog):
         """Update the column selection combo boxes"""
         if self.df is None:
             return
-        
+
         columns = [""] + list(self.df.columns)
-        
+
         # Block signals to prevent recursive calls during population
-        combos = [self.name_column_combo, self.mz_column_combo, self.rt_column_combo, self.polarity_column_combo]
+        combos = [
+            self.name_column_combo,
+            self.mz_column_combo,
+            self.rt_column_combo,
+            self.polarity_column_combo,
+        ]
         for combo in combos:
             combo.blockSignals(True)
             combo.clear()
             combo.addItems(columns)
             combo.blockSignals(False)
-        
+
         # Try to auto-detect columns based on common names
         self.auto_detect_columns()
 
@@ -274,35 +289,47 @@ class CompoundImportDialog(QDialog):
         """Auto-detect likely column mappings"""
         if self.df is None:
             return
-        
+
         columns = list(self.df.columns)
-        
+
         # Block signals during auto-detection to prevent recursive calls
-        combos = [self.name_column_combo, self.mz_column_combo, self.rt_column_combo, self.polarity_column_combo, self.polarity_combo]
+        combos = [
+            self.name_column_combo,
+            self.mz_column_combo,
+            self.rt_column_combo,
+            self.polarity_column_combo,
+            self.polarity_combo,
+        ]
         for combo in combos:
             combo.blockSignals(True)
-        
+
         try:
             # Auto-detect name column
-            name_candidates = ['name', 'compound', 'compound_name', 'substance', 'chemical']
+            name_candidates = [
+                "name",
+                "compound",
+                "compound_name",
+                "substance",
+                "chemical",
+            ]
             for col in columns:
                 if any(candidate in col.lower() for candidate in name_candidates):
                     idx = self.name_column_combo.findText(col)
                     if idx >= 0:
                         self.name_column_combo.setCurrentIndex(idx)
                     break
-            
+
             # Auto-detect m/z column
-            mz_candidates = ['mz', 'm/z', 'mass', 'molecular_mass', 'exact_mass']
+            mz_candidates = ["mz", "m/z", "mass", "molecular_mass", "exact_mass"]
             for col in columns:
                 if any(candidate in col.lower() for candidate in mz_candidates):
                     idx = self.mz_column_combo.findText(col)
                     if idx >= 0:
                         self.mz_column_combo.setCurrentIndex(idx)
                     break
-            
+
             # Auto-detect RT column
-            rt_candidates = ['rt', 'retention_time', 'time', 'retention', 'rt_min']
+            rt_candidates = ["rt", "retention_time", "time", "retention", "rt_min"]
             for col in columns:
                 if any(candidate in col.lower() for candidate in rt_candidates):
                     idx = self.rt_column_combo.findText(col)
@@ -311,7 +338,7 @@ class CompoundImportDialog(QDialog):
                     break
 
             # Auto-detect polarity column
-            polarity_candidates = ['polarity', 'pol', 'charge', 'mode', 'ion_mode']
+            polarity_candidates = ["polarity", "pol", "charge", "mode", "ion_mode"]
             for col in columns:
                 if any(candidate in col.lower() for candidate in polarity_candidates):
                     idx = self.polarity_column_combo.findText(col)
@@ -322,7 +349,7 @@ class CompoundImportDialog(QDialog):
                         # Manually trigger the UI changes without signals
                         self._update_polarity_ui_visibility(True)
                     break
-        
+
         finally:
             # Re-enable signals
             for combo in combos:
@@ -330,9 +357,9 @@ class CompoundImportDialog(QDialog):
 
     def update_preview(self):
         """Update the preview table"""
-        if self.df is None or getattr(self, '_initializing', False):
+        if self.df is None or getattr(self, "_initializing", False):
             return
-        
+
         try:
             # Get current selections
             name_col = self.name_column_combo.currentText()
@@ -340,17 +367,19 @@ class CompoundImportDialog(QDialog):
             rt_col = self.rt_column_combo.currentText()
             name_prefix = self.name_prefix_edit.text()
             rt_window = self.rt_window_spinbox.value()
-            
+
             # Polarity settings
             use_polarity_column = self.polarity_combo.currentText() == "Use Column"
-            polarity_col = self.polarity_column_combo.currentText() if use_polarity_column else ""
+            polarity_col = (
+                self.polarity_column_combo.currentText() if use_polarity_column else ""
+            )
             global_polarity = self.global_polarity_combo.currentText()
-            
+
         except Exception as e:
             # If there's an error getting the selections (e.g., during initialization), just return
             print(f"Error getting selections: {e}")
             return
-        
+
         # Check if required columns are selected
         required_missing = []
         if not name_col:
@@ -361,93 +390,104 @@ class CompoundImportDialog(QDialog):
             required_missing.append("RT")
         if use_polarity_column and not polarity_col:
             required_missing.append("Polarity")
-            
+
         if required_missing:
             self.preview_table.setRowCount(0)
-            self.info_label.setText(f"Please select all required columns: {', '.join(required_missing)}")
+            self.info_label.setText(
+                f"Please select all required columns: {', '.join(required_missing)}"
+            )
             self.import_btn.setEnabled(False)
             return
-        
+
         try:
             # Create preview dataframe
             preview_data = []
-            
+
             for idx, row in self.df.iterrows():
                 # Check required fields
-                if pd.isna(row[name_col]) or pd.isna(row[mz_col]) or pd.isna(row[rt_col]):
+                if (
+                    pd.isna(row[name_col])
+                    or pd.isna(row[mz_col])
+                    or pd.isna(row[rt_col])
+                ):
                     continue
-                
+
                 # Check polarity field if using column
                 if use_polarity_column and pd.isna(row[polarity_col]):
                     continue
-                
+
                 compound_name = name_prefix + str(row[name_col])
                 mz_value = float(row[mz_col])
                 rt_value = float(row[rt_col])
-                
+
                 # Determine polarity
                 if use_polarity_column:
                     polarity_value = str(row[polarity_col]).strip().lower()
                     # Map common polarity representations
-                    if polarity_value in ['pos', 'positive', '+', '1']:
-                        polarity = '+'
-                    elif polarity_value in ['neg', 'negative', '-', '0']:
-                        polarity = '-'
+                    if polarity_value in ["pos", "positive", "+", "1"]:
+                        polarity = "+"
+                    elif polarity_value in ["neg", "negative", "-", "0"]:
+                        polarity = "-"
                     else:
                         # Default to positive if unclear
-                        polarity = '+'
+                        polarity = "+"
                 else:
                     polarity = global_polarity
-                
+
                 # Create m/z adduct format
                 adduct = f"[{mz_value:.4f}]{polarity}"
-                
-                preview_data.append({
-                    'Name': compound_name,
-                    'RT_min': rt_value,
-                    'RT_start_min': rt_value - rt_window,
-                    'RT_end_min': rt_value + rt_window,
-                    'Common_adducts': adduct
-                })
-            
+
+                preview_data.append(
+                    {
+                        "Name": compound_name,
+                        "RT_min": rt_value,
+                        "RT_start_min": rt_value - rt_window,
+                        "RT_end_min": rt_value + rt_window,
+                        "Common_adducts": adduct,
+                    }
+                )
+
             self.preview_df = pd.DataFrame(preview_data)
-            
+
             # Update preview table
             self.populate_preview_table()
-            
+
             # Update info label
-            self.info_label.setText(f"Preview: {len(self.preview_df)} compounds will be imported")
-            
+            self.info_label.setText(
+                f"Preview: {len(self.preview_df)} compounds will be imported"
+            )
+
             # Enable import button if we have data
             self.import_btn.setEnabled(len(self.preview_df) > 0)
 
         except Exception as e:
             print(f"Exception in update_preview: {str(e)}")
             import traceback
+
             traceback.print_exc()
             self.preview_table.setRowCount(0)
             self.info_label.setText(f"Error creating preview: {str(e)}")
             self.import_btn.setEnabled(False)
 
-    def populate_preview_table(self, max_rows = 5):
+    def populate_preview_table(self, max_rows=5):
         """Populate the preview table with data"""
         if self.preview_df is None or self.preview_df.empty:
             self.preview_table.setRowCount(0)
             return
-        
+
         preview_df = self.preview_df.head(max_rows)
-        
+
         # Set up table
         self.preview_table.setRowCount(len(preview_df))
         self.preview_table.setColumnCount(len(preview_df.columns))
         self.preview_table.setHorizontalHeaderLabels(list(preview_df.columns))
-        
+
         # Populate data
         for row_idx, (_, row) in enumerate(preview_df.iterrows()):
             for col_idx, value in enumerate(row):
                 item = QTableWidgetItem(str(value))
                 self.preview_table.setItem(row_idx, col_idx, item)
-        
+
         # Resize columns to content
         header = self.preview_table.horizontalHeader()
         for i in range(len(preview_df.columns)):
@@ -460,13 +500,13 @@ class CompoundImportDialog(QDialog):
     def get_import_parameters(self) -> Dict[str, Any]:
         """Get the import parameters"""
         return {
-            'delimiter': self.delimiter_combo.currentText(),
-            'name_prefix': self.name_prefix_edit.text(),
-            'name_column': self.name_column_combo.currentText(),
-            'mz_column': self.mz_column_combo.currentText(),
-            'rt_column': self.rt_column_combo.currentText(),
-            'rt_window': self.rt_window_spinbox.value(),
-            'polarity_method': self.polarity_combo.currentText(),
-            'polarity_column': self.polarity_column_combo.currentText(),
-            'global_polarity': self.global_polarity_combo.currentText()
+            "delimiter": self.delimiter_combo.currentText(),
+            "name_prefix": self.name_prefix_edit.text(),
+            "name_column": self.name_column_combo.currentText(),
+            "mz_column": self.mz_column_combo.currentText(),
+            "rt_column": self.rt_column_combo.currentText(),
+            "rt_window": self.rt_window_spinbox.value(),
+            "polarity_method": self.polarity_combo.currentText(),
+            "polarity_column": self.polarity_column_combo.currentText(),
+            "global_polarity": self.global_polarity_combo.currentText(),
         }

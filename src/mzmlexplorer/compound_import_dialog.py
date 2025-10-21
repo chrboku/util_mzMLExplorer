@@ -128,7 +128,7 @@ class CompoundImportDialog(QDialog):
 
         self.rt_column_combo = QComboBox()
         self.rt_column_combo.currentTextChanged.connect(self.schedule_update)
-        layout.addRow("RT Column:", self.rt_column_combo)
+        layout.addRow("RT Column (optional):", self.rt_column_combo)
 
         # Polarity selection
         self.polarity_combo = QComboBox()
@@ -386,8 +386,7 @@ class CompoundImportDialog(QDialog):
             required_missing.append("Name")
         if not mz_col:
             required_missing.append("m/z")
-        if not rt_col:
-            required_missing.append("RT")
+        # RT column is now optional
         if use_polarity_column and not polarity_col:
             required_missing.append("Polarity")
 
@@ -405,12 +404,11 @@ class CompoundImportDialog(QDialog):
 
             for idx, row in self.df.iterrows():
                 # Check required fields
-                if (
-                    pd.isna(row[name_col])
-                    or pd.isna(row[mz_col])
-                    or pd.isna(row[rt_col])
-                ):
+                if pd.isna(row[name_col]) or pd.isna(row[mz_col]):
                     continue
+
+                # RT is now optional - if not provided, defaults will be used (0-100 min)
+                has_rt = rt_col and not pd.isna(row[rt_col])
 
                 # Check polarity field if using column
                 if use_polarity_column and pd.isna(row[polarity_col]):
@@ -418,7 +416,17 @@ class CompoundImportDialog(QDialog):
 
                 compound_name = name_prefix + str(row[name_col])
                 mz_value = float(row[mz_col])
-                rt_value = float(row[rt_col])
+
+                # Handle RT value - use provided value or defaults
+                if has_rt:
+                    rt_value = float(row[rt_col])
+                    rt_start = rt_value - rt_window
+                    rt_end = rt_value + rt_window
+                else:
+                    # Default RT values when not specified
+                    rt_value = 50.0  # Center of default range
+                    rt_start = 0.0  # Start of default range
+                    rt_end = 100.0  # End of default range
 
                 # Determine polarity
                 if use_polarity_column:
@@ -441,8 +449,8 @@ class CompoundImportDialog(QDialog):
                     {
                         "Name": compound_name,
                         "RT_min": rt_value,
-                        "RT_start_min": rt_value - rt_window,
-                        "RT_end_min": rt_value + rt_window,
+                        "RT_start_min": rt_start,
+                        "RT_end_min": rt_end,
                         "Common_adducts": adduct,
                     }
                 )

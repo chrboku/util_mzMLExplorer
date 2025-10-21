@@ -60,11 +60,9 @@ class CompoundManager:
                 self.adducts_data = self._get_default_adducts()
 
         # Validate required columns for compounds
+        # RT columns are now optional and will default to 0-100 min if not provided
         required_columns = [
             "Name",
-            "RT_min",
-            "RT_start_min",
-            "RT_end_min",
             "Common_adducts",
         ]
         missing_columns = [
@@ -77,6 +75,14 @@ class CompoundManager:
 
         if missing_columns:
             raise ValueError(f"Missing required columns: {', '.join(missing_columns)}")
+
+        # Add RT columns if they don't exist (will be filled with defaults)
+        if "RT_min" not in compounds_data.columns:
+            compounds_data["RT_min"] = None
+        if "RT_start_min" not in compounds_data.columns:
+            compounds_data["RT_start_min"] = None
+        if "RT_end_min" not in compounds_data.columns:
+            compounds_data["RT_end_min"] = None
 
         # Get existing compound names to avoid duplicates
         existing_compounds = (
@@ -97,6 +103,23 @@ class CompoundManager:
                     continue
 
                 compound_dict = row.to_dict()
+
+                # Set default RT values if not provided (0-100 minutes)
+                if (
+                    pd.isna(compound_dict.get("RT_min"))
+                    or compound_dict.get("RT_min") is None
+                ):
+                    compound_dict["RT_min"] = 50.0  # Default center
+                if (
+                    pd.isna(compound_dict.get("RT_start_min"))
+                    or compound_dict.get("RT_start_min") is None
+                ):
+                    compound_dict["RT_start_min"] = 0.0  # Default start
+                if (
+                    pd.isna(compound_dict.get("RT_end_min"))
+                    or compound_dict.get("RT_end_min") is None
+                ):
+                    compound_dict["RT_end_min"] = 100.0  # Default end
 
                 # Determine compound type based on available data
                 if (

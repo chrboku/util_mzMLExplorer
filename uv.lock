@@ -594,7 +594,7 @@ wheels = [
 
 [[package]]
 name = "util-mzmlexplorer"
-version = "5.5.0"
+version = "5.6.0"
 source = { editable = "." }
 dependencies = [
     { name = "matplotlib" },

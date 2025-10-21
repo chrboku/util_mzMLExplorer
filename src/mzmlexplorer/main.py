@@ -173,37 +173,99 @@ class MzMLExplorerMainWindow(QMainWindow):
         )
 
         if file_path:
-            try:
-                # Load the file list
-                if file_path.endswith(".xlsx"):
-                    df = pd.read_excel(file_path)
-                elif file_path.endswith(".tsv"):
-                    df = pd.read_csv(file_path, sep="\t")
-                else:
-                    df = pd.read_csv(file_path)
+            self._load_files_from_path(file_path, source="menu")
 
-                # Validate required columns
-                if "Filepath" not in df.columns:
-                    QMessageBox.warning(
-                        self, "Error", "The file must contain a 'Filepath' column!"
-                    )
-                    return
+    def _load_files_from_path(self, file_path, source="menu"):
+        """
+        Shared method to load files from a file path.
 
-                # Load files using file manager
-                self.file_manager.load_files(df)
-                self.update_files_table()
+        Args:
+            file_path: Path to the file to load
+            source: Source of the load ("menu" or "drag & drop")
+        """
+        try:
+            # Load the file list
+            if file_path.endswith(".xlsx"):
+                df = pd.read_excel(file_path)
+            elif file_path.endswith(".tsv"):
+                df = pd.read_csv(file_path, sep="\t")
+            else:
+                df = pd.read_csv(file_path)
 
-                # If memory mode is enabled, load the new files into memory with progress
-                if self.file_manager.keep_in_memory:
-                    self.load_files_to_memory_with_progress()
+            # Process the dataframe (validation + forward-fill + loading)
+            self._process_files_dataframe(df, source=source)
 
-                total_files = len(self.file_manager.get_files_data())
-                self.statusBar().showMessage(
-                    f"Files loaded. Total: {total_files} files"
-                )
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to load files: {str(e)}")
 
-            except Exception as e:
-                QMessageBox.critical(self, "Error", f"Failed to load files: {str(e)}")
+    def _process_files_dataframe(self, df, source="menu"):
+        """
+        Shared method to validate and process files dataframe.
+
+        Args:
+            df: DataFrame with file list data
+            source: Source of the load ("menu" or "drag & drop")
+
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        # Validate required columns
+        if "Filepath" not in df.columns:
+            QMessageBox.warning(
+                self, "Error", "The file must contain a 'Filepath' column!"
+            )
+            return False
+
+        # Validate that the first row is fully filled
+        if df.empty:
+            QMessageBox.warning(self, "Error", "The file list is empty!")
+            return False
+
+        first_row = df.iloc[0]
+        missing_in_first = first_row.isna()
+        if missing_in_first.any():
+            missing_cols = ", ".join(first_row[missing_in_first].index.tolist())
+            QMessageBox.warning(
+                self,
+                "Error",
+                f"The first row must be fully filled. Missing values in columns: {missing_cols}",
+            )
+            return False
+
+        # Validate that Filepath column is fully filled
+        if df["Filepath"].isna().any():
+            empty_rows = df[df["Filepath"].isna()].index.tolist()
+            row_numbers = ", ".join(
+                [str(i + 2) for i in empty_rows]
+            )  # +2 for 1-based and header
+            QMessageBox.warning(
+                self,
+                "Error",
+                f"The 'Filepath' column must be fully filled. Empty cells found in rows: {row_numbers}",
+            )
+            return False
+
+        # Forward-fill empty cells with the last valid value from each column
+        # This applies to all columns except Filepath (which we already validated)
+        for col in df.columns:
+            if col != "Filepath":
+                df[col] = df[col].ffill()
+
+        # Load files using file manager
+        self.file_manager.load_files(df)
+        self.update_files_table()
+
+        # If memory mode is enabled, load the new files into memory with progress
+        if self.file_manager.keep_in_memory:
+            self.load_files_to_memory_with_progress()
+
+        total_files = len(self.file_manager.get_files_data())
+        source_text = "via drag & drop" if source == "drag & drop" else ""
+        self.statusBar().showMessage(
+            f"Files loaded {source_text}. Total: {total_files} files".strip()
+        )
+
+        return True
 
     def load_compounds(self):
         """Load compounds from a file"""
@@ -290,12 +352,21 @@ class MzMLExplorerMainWindow(QMainWindow):
                     "C:\\path\\to\\your\\file2.mzML",
                     "C:\\path\\to\\your\\file3.mzML",
                     "C:\\path\\to\\your\\file4.mzML",
+                    "C:\\path\\to\\your\\file5.mzML",
+                    "C:\\path\\to\\your\\file6.mzML",
                 ],
-                "group": ["Control", "Control", "Treatment", "Treatment"],
-                "color": ["#1f77b4", "#1f77b4", "#ff7f0e", "#ff7f0e"],
-                "batch": ["Batch1", "Batch1", "Batch1", "Batch2"],
-                "injection_volume": [5.0, 5.0, 5.0, 5.0],
-                "sample_id": ["CTL_001", "CTL_002", "TRT_001", "TRT_002"],
+                "group": ["Control", "", "", "Treatment", "", ""],
+                "color": ["#1f77b4", "", "", "#ff7f0e", "", ""],
+                "batch": ["Batch1", "", "", "Batch1", "", "Batch2"],
+                "injection_volume": [5.0, "", "", 5.0, "", ""],
+                "sample_id": [
+                    "CTL_001",
+                    "CTL_002",
+                    "CTL_003",
+                    "TRT_001",
+                    "TRT_002",
+                    "TRT_003",
+                ],
             }
 
             files_template_df = pd.DataFrame(files_template_data)
@@ -309,30 +380,40 @@ class MzMLExplorerMainWindow(QMainWindow):
                     "Theophylline",
                     "Unknown_Compound_1",
                     "Unknown_Compound_2",
+                    "Unknown_No_RT",
                 ],
                 "ChemicalFormula": [
                     "C8H10N4O2",
                     "C7H8N4O2",
                     "",  # Empty for mass-based compound
                     "",  # Empty for mass-based compound
+                    "C10H15N5O",  # Compound without RT info
                 ],
                 "Mass": [
                     "",  # Empty for formula-based compound
                     "",  # Empty for formula-based compound
                     194.0579,  # Mass-based compound
                     256.1234,  # Mass-based compound
+                    "",
                 ],
-                "RT_min": [5.2, 4.8, 3.1, 7.5],
-                "RT_start_min": [4.8, 4.4, 2.7, 7.0],
-                "RT_end_min": [5.6, 5.2, 3.5, 8.0],
+                "RT_min": [5.2, 4.8, 3.1, 7.5, ""],  # Empty RT for last compound
+                "RT_start_min": [4.8, 4.4, 2.7, 7.0, ""],  # Empty for last compound
+                "RT_end_min": [5.6, 5.2, 3.5, 8.0, ""],  # Empty for last compound
                 "Common_adducts": [
                     "[M+H]+, [M+Na]+, [M+K]+",
                     "[M+H]+, [M+Na]+, [M-H]-",
                     "[M+H]+, [195.0652]+",  # Mix of standard and custom m/z
                     "[257.1307]+, [255.1151]-",  # Custom m/z values only
+                    "[M+H]+",  # Compound without RT will use full range (0-100 min)
                 ],
-                "compound_class": ["Alkaloid", "Alkaloid", "Unknown", "Unknown"],
-                "cas_number": ["58-08-2", "58-55-9", "", ""],
+                "compound_class": [
+                    "Alkaloid",
+                    "Alkaloid",
+                    "Unknown",
+                    "Unknown",
+                    "Unknown",
+                ],
+                "cas_number": ["58-08-2", "58-55-9", "", "", ""],
             }
 
             compounds_template_df = pd.DataFrame(compounds_template_data)
@@ -646,9 +727,13 @@ class MzMLExplorerMainWindow(QMainWindow):
             elif compound.get("RT_start_min") and compound.get("RT_end_min"):
                 rt_start = compound["RT_start_min"]
                 rt_end = compound["RT_end_min"]
-                rt_text = f"{rt_start:.1f}-{rt_end:.1f} min"
+                # Check if using default range (0-100 min)
+                if rt_start == 0.0 and rt_end == 100.0:
+                    rt_text = "full range"
+                else:
+                    rt_text = f"{rt_start:.1f}-{rt_end:.1f} min"
             else:
-                rt_text = "not set"
+                rt_text = "full range"
 
             rt_item = QTableWidgetItem(rt_text)
             self.compounds_table.setItem(row_idx, 1, rt_item)
@@ -1318,37 +1403,7 @@ class MzMLExplorerMainWindow(QMainWindow):
 
     def load_files_from_file(self, file_path):
         """Load files from a dropped file"""
-        try:
-            # Load the file list
-            if file_path.endswith(".xlsx"):
-                df = pd.read_excel(file_path)
-            elif file_path.endswith(".tsv"):
-                df = pd.read_csv(file_path, sep="\t")
-            else:
-                df = pd.read_csv(file_path)
-
-            # Validate required columns
-            if "Filepath" not in df.columns:
-                QMessageBox.warning(
-                    self, "Error", "The file must contain a 'Filepath' column!"
-                )
-                return
-
-            # Load files using file manager
-            self.file_manager.load_files(df)
-            self.update_files_table()
-
-            # If memory mode is enabled, load the new files into memory with progress
-            if self.file_manager.keep_in_memory:
-                self.load_files_to_memory_with_progress()
-
-            total_files = len(self.file_manager.get_files_data())
-            self.statusBar().showMessage(
-                f"Files loaded via drag & drop. Total: {total_files} files"
-            )
-
-        except Exception as e:
-            raise Exception(f"Failed to load files: {str(e)}")
+        self._load_files_from_path(file_path, source="drag & drop")
 
     def load_compounds_from_file(self, file_path):
         """Load compounds from a dropped file"""

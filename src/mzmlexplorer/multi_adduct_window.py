@@ -318,8 +318,11 @@ class InteractiveEICWidget(QWidget):
         rt_end = self.compound.get("RT_end_min")
         rt_center = self.compound.get("RT_min")
 
+        # Check if using default full range (0-100 min) - treat as no RT info
+        is_full_range = rt_start == 0.0 and rt_end == 100.0
+
         # Determine RT window for zoom
-        if rt_start is not None and rt_end is not None:
+        if rt_start is not None and rt_end is not None and not is_full_range:
             # Use defined RT window
             rt_margin = (rt_end - rt_start) * 0.1  # Add 10% margin
             zoom_start = max(0, rt_start - rt_margin)
@@ -327,7 +330,7 @@ class InteractiveEICWidget(QWidget):
             rt_window_start = rt_start
             rt_window_end = rt_end
 
-        elif rt_center is not None:
+        elif rt_center is not None and not is_full_range:
             # Use RT center with default window
             window_width = 2.0  # Default 2-minute window around center
             zoom_start = max(0, rt_center - window_width)
@@ -338,7 +341,7 @@ class InteractiveEICWidget(QWidget):
             rt_window_end = rt_center + 1.0
 
         else:
-            # No RT info available, try to find a reasonable zoom based on data
+            # No RT info available or using full range, try to find a reasonable zoom based on data
             if all_rt_values:
                 data_rt_min = min(all_rt_values)
                 data_rt_max = max(all_rt_values)

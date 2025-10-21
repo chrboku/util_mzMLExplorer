@@ -1357,7 +1357,7 @@ class EICWindow(QWidget):
 
         # Summary statistics table
         self.summary_stats_table = QTableWidget()
-        self.summary_stats_table.setColumnCount(10)
+        self.summary_stats_table.setColumnCount(11)
         self.summary_stats_table.setHorizontalHeaderLabels(
             [
                 "Group",
@@ -1370,6 +1370,7 @@ class EICWindow(QWidget):
                 "Perc_90",
                 "Max",
                 "Std_Dev",
+                "RSD_%",
             ]
         )
 
@@ -1724,6 +1725,11 @@ class EICWindow(QWidget):
                 "max": np.max(areas_array),
                 "std": np.std(areas_array, ddof=1),  # Sample standard deviation
             }
+            # Calculate RSD (Relative Standard Deviation) as percentage
+            if stats["mean"] != 0:
+                stats["rsd"] = (stats["std"] / stats["mean"]) * 100
+            else:
+                stats["rsd"] = 0.0
             stats_data.append(stats)
 
         # Sort by group name (using natural sort)
@@ -1750,10 +1756,15 @@ class EICWindow(QWidget):
                 stats["p90"],
                 stats["max"],
                 stats["std"],
+                stats["rsd"],
             ]
 
             for col, value in enumerate(stat_values, 1):
-                item = QTableWidgetItem(f"{value:.2e}")
+                # Format RSD as percentage with 2 decimal places
+                if col == 10:  # RSD column
+                    item = QTableWidgetItem(f"{value:.2f}")
+                else:
+                    item = QTableWidgetItem(f"{value:.2e}")
                 item.setData(
                     Qt.ItemDataRole.UserRole, value
                 )  # Store actual value for sorting

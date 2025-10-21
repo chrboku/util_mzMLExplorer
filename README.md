@@ -69,9 +69,11 @@ Create an Excel file with columns:
 - `Name`: Compound name
 - `ChemicalFormula` OR `Mass`: Chemical formula or molecular mass
 - `RT_minutes`: Average retention time (optional)
-- `RT_start_min`: RT window start
-- `RT_end_min`: RT window end
+- `RT_start_min`: RT window start (optional, defaults to 0 min if not specified)
+- `RT_end_min`: RT window end (optional, defaults to 100 min if not specified)
 - `Common_adducts`: Comma-separated list of adducts
+
+**Note:** If RT columns are not provided or left empty, the compound will use the full retention time range (0-100 minutes) for extraction.
 
 Use **File → Load Compounds...** or drag the Excel file onto the "Compounds" panel.
 
@@ -125,19 +127,27 @@ Use the filter box above the compounds tree:
 ```excel
 Filepath                             | group
 C:\data\sample1.mzML                 | Control
-C:\data\sample2.mzML                 | Control
+C:\data\sample2.mzML                 | 
 C:\data\sample3.mzML                 | Treatment
-C:\data\sample4.mzML                 | Treatment
+C:\data\sample4.mzML                 | 
 ```
+
+**Important Rules for File Lists:**
+- The **first row** must be completely filled (no empty cells)
+- The **Filepath column** must be completely filled in all rows
+- Other columns (like `group`) can have empty cells
+- Empty cells automatically inherit the value from the previous row in that column
+- In the example above, sample2 inherits "Control" and sample4 inherits "Treatment"
 
 ### Compounds Template
 ```excel
 Name     | ChemicalFormula | RT_minutes | RT_start_min | RT_end_min | Common_adducts
 Caffeine | C8H10N4O2      | 8.5        | 7.5          | 9.5        | [M+H]+,[M+Na]+
 Glucose  |                 | 2.1        | 1.5          | 3.0        | [M+H]+,[M+NH4]+
+Unknown  | C10H15N5O      |            |              |            | [M+H]+
 ```
 
-*Note: Either `ChemicalFormula` OR `Mass` column is required*
+*Note: Either `ChemicalFormula` OR `Mass` column is required. RT columns are optional - if not specified, the full range (0-100 min) will be used.*
 
 ### Adducts Sheet (Optional)
 ```excel

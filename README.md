@@ -66,6 +66,7 @@ Use **File → Load mzML Files...** or drag the Excel file onto the "Loaded File
 
 #### 2. Compounds
 Create an Excel file with columns:
+- `Group`: Group name for organizing compounds (optional, can contain multiple groups separated by ";")
 - `Name`: Compound name
 - `ChemicalFormula` OR `Mass`: Chemical formula or molecular mass
 - `RT_minutes`: Average retention time (optional)
@@ -73,7 +74,9 @@ Create an Excel file with columns:
 - `RT_end_min`: RT window end (optional, defaults to 100 min if not specified)
 - `Common_adducts`: Comma-separated list of adducts
 
-**Note:** If RT columns are not provided or left empty, the compound will use the full retention time range (0-100 minutes) for extraction.
+**Note:** 
+- If RT columns are not provided or left empty, the compound will use the full retention time range (0-100 minutes) for extraction.
+- The `Group` column allows you to organize compounds hierarchically in the table. Group names appear as bold headers, with compounds listed underneath. Multiple groups can be specified separated by semicolons (e.g., "Alkaloids;Stimulants") to add a compound to multiple groups. Compounds without a group will appear under an empty group header at the bottom.
 
 Use **File → Load Compounds...** or drag the Excel file onto the "Compounds" panel.
 

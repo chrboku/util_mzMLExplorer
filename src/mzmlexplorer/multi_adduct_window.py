@@ -231,10 +231,11 @@ class InteractiveEICWidget(QWidget):
                     )
                     non_zero_points = np.sum(intensity_values > 0)
 
-                    # Store the data even if all intensities are zero (for debugging)
+                    # Store the data with metadata including group info
                     eic_results[filename] = {
                         "rt": rt_values,
                         "intensity": intensity_values,
+                        "metadata": file_row.to_dict(),  # Include all file metadata
                     }
 
             except Exception as e:
@@ -262,24 +263,49 @@ class InteractiveEICWidget(QWidget):
                 fontsize=9,
             )
         else:
-            # Plot each file's EIC
-            colors = plt.cm.tab10(np.linspace(0, 1, len(eic_data)))
-
+            # Plot each file's EIC with group-based colors
             plots_made = 0
             all_rt_values = []
 
-            for i, (filename, data) in enumerate(eic_data.items()):
-                if len(data["rt"]) > 0 and len(data["intensity"]) > 0:
-                    all_rt_values.extend(data["rt"])
+            # Organize data by groups for consistent coloring
+            groups_data = {}
+            for filename, data in eic_data.items():
+                metadata = data.get("metadata", {})
+                group = metadata.get("group", "Unknown")
+                if group not in groups_data:
+                    groups_data[group] = []
+                groups_data[group].append((filename, data))
 
-                    ax.plot(
-                        data["rt"],
-                        data["intensity"],
-                        label=filename,
-                        color=colors[i],
-                        linewidth=1,
-                    )
-                    plots_made += 1
+            # Plot by groups
+            for group_name, group_files in groups_data.items():
+                # Get group color
+                group_color = self.file_manager.get_group_color(group_name)
+
+                if group_color:
+                    # Convert hex color to RGB tuple for matplotlib
+                    color_obj = QColor(group_color)
+                    color_rgb = (
+                        color_obj.red() / 255.0,
+                        color_obj.green() / 255.0,
+                        color_obj.blue() / 255.0,
+                        0.7,
+                    )  # Add alpha for transparency
+                else:
+                    # Fallback to a default color if no group color is defined
+                    color_rgb = (0.5, 0.5, 0.5, 0.7)
+
+                for filename, data in group_files:
+                    if len(data["rt"]) > 0 and len(data["intensity"]) > 0:
+                        all_rt_values.extend(data["rt"])
+
+                        ax.plot(
+                            data["rt"],
+                            data["intensity"],
+                            label=filename,
+                            color=color_rgb,
+                            linewidth=1,
+                        )
+                        plots_made += 1
 
             if plots_made == 0:
                 ax.text(

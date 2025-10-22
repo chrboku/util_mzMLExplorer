@@ -84,6 +84,10 @@ class CompoundManager:
         if "RT_end_min" not in compounds_data.columns:
             compounds_data["RT_end_min"] = None
 
+        # Add Group column if it doesn't exist (optional column)
+        if "Group" not in compounds_data.columns:
+            compounds_data["Group"] = None
+
         # Get existing compound names to avoid duplicates
         existing_compounds = (
             set(self.compounds_data["Name"].tolist())

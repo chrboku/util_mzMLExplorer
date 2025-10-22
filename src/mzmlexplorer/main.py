@@ -134,7 +134,9 @@ class MzMLExplorerMainWindow(QMainWindow):
             self.show_compound_context_menu
         )
         self.compounds_table.setAcceptDrops(True)
-        self.compounds_table.setSortingEnabled(True)
+        self.compounds_table.setSortingEnabled(
+            False
+        )  # Disable sorting to maintain group structure
 
         # Configure table headers
         header = self.compounds_table.horizontalHeader()
@@ -375,6 +377,13 @@ class MzMLExplorerMainWindow(QMainWindow):
 
             # Generate compounds template
             compounds_template_data = {
+                "Group": [
+                    "Methylxanthines",
+                    "Methylxanthines",
+                    "",  # No group
+                    "Test Group A;Test Group B",  # Multiple groups
+                    "",  # No group
+                ],
                 "Name": [
                     "Caffeine",
                     "Theophylline",
@@ -707,47 +716,134 @@ class MzMLExplorerMainWindow(QMainWindow):
         if compounds_data.empty:
             return
 
-        # Set row count
-        self.compounds_table.setRowCount(len(compounds_data))
+        # Build group structure
+        group_dict = {}  # {group_name: [compound_indices]}
+        ungrouped_compounds = []  # Compounds without a group
 
-        # Populate table
-        for row_idx, (_, compound) in enumerate(compounds_data.iterrows()):
+        for idx, (_, compound) in enumerate(compounds_data.iterrows()):
             compound_name = compound["Name"]
+            groups_str = compound.get("Group", "")
 
-            # Compound name
-            name_item = QTableWidgetItem(compound_name)
-            name_item.setData(Qt.ItemDataRole.UserRole, compound.to_dict())
-            self.compounds_table.setItem(row_idx, 0, name_item)
-
-            # Retention time info
-            rt_text = ""
-            if "RT_minutes" in compound and pd.notna(compound["RT_minutes"]):
-                avg_rt = compound["RT_minutes"]
-                rt_text = f"{avg_rt:.1f} min"
-            elif compound.get("RT_start_min") and compound.get("RT_end_min"):
-                rt_start = compound["RT_start_min"]
-                rt_end = compound["RT_end_min"]
-                # Check if using default range (0-100 min)
-                if rt_start == 0.0 and rt_end == 100.0:
-                    rt_text = "full range"
+            # Parse groups (semicolon-separated)
+            # Check if group is not None/NaN and has actual content
+            if (
+                pd.notna(groups_str)
+                and groups_str is not None
+                and str(groups_str).strip()
+                and str(groups_str).strip().lower() != "none"
+            ):
+                groups = [g.strip() for g in str(groups_str).split(";") if g.strip()]
+                if groups:  # Only process if we have actual groups after splitting
+                    for group in groups:
+                        if group not in group_dict:
+                            group_dict[group] = []
+                        group_dict[group].append(idx)
                 else:
-                    rt_text = f"{rt_start:.1f}-{rt_end:.1f} min"
+                    # No valid groups after parsing - add to ungrouped
+                    ungrouped_compounds.append(idx)
             else:
+                # No group specified - add to ungrouped
+                ungrouped_compounds.append(idx)
+
+        # Calculate total rows needed (group headers + compounds)
+        # Add 1 for ungrouped compounds header if there are any ungrouped
+        total_rows = (
+            len(ungrouped_compounds)
+            + (1 if len(ungrouped_compounds) > 0 else 0)
+            + sum(len(indices) for indices in group_dict.values())
+            + len(group_dict)
+        )
+        self.compounds_table.setRowCount(total_rows)
+
+        current_row = 0
+
+        # Add grouped compounds (sorted by group name)
+        for group_name in sorted(group_dict.keys()):
+            compound_indices = group_dict[group_name]
+
+            # Add group header row (group name displayed as a compound name)
+            group_header_item = QTableWidgetItem(group_name)
+            group_header_item.setFont(QFont("", -1, QFont.Weight.Bold))
+            group_header_item.setBackground(QColor(230, 230, 230))
+            self.compounds_table.setItem(current_row, 0, group_header_item)
+
+            # Make other columns in group header empty but with same background
+            for col in range(1, 3):
+                empty_item = QTableWidgetItem("")
+                empty_item.setBackground(QColor(230, 230, 230))
+                empty_item.setFlags(Qt.ItemFlag.NoItemFlags)  # Make non-selectable
+                self.compounds_table.setItem(current_row, col, empty_item)
+
+            current_row += 1
+
+            # Add compounds under this group
+            for idx in compound_indices:
+                compound = compounds_data.iloc[idx]
+                self._add_compound_row(current_row, compound, indent=True)
+                current_row += 1
+
+        # Add ungrouped compounds in their own group
+        if ungrouped_compounds:
+            # Add empty group header for ungrouped compounds
+            group_header_item = QTableWidgetItem(" - no group")
+            group_header_item.setFont(QFont("", -1, QFont.Weight.Bold))
+            group_header_item.setBackground(QColor(245, 245, 245))
+            self.compounds_table.setItem(current_row, 0, group_header_item)
+
+            # Make other columns in group header empty but with same background
+            for col in range(1, 3):
+                empty_item = QTableWidgetItem("")
+                empty_item.setBackground(QColor(245, 245, 245))
+                empty_item.setFlags(Qt.ItemFlag.NoItemFlags)  # Make non-selectable
+                self.compounds_table.setItem(current_row, col, empty_item)
+
+            current_row += 1
+
+            # Add ungrouped compounds
+            for idx in ungrouped_compounds:
+                compound = compounds_data.iloc[idx]
+                self._add_compound_row(current_row, compound, indent=True)
+                current_row += 1
+
+    def _add_compound_row(self, row_idx, compound, indent=False):
+        """Helper method to add a compound row to the table"""
+        compound_name = compound["Name"]
+
+        # Compound name (with indent if under a group)
+        display_name = f"  {compound_name}" if indent else compound_name
+        name_item = QTableWidgetItem(display_name)
+        name_item.setData(Qt.ItemDataRole.UserRole, compound.to_dict())
+        self.compounds_table.setItem(row_idx, 0, name_item)
+
+        # Retention time info
+        rt_text = ""
+        if "RT_minutes" in compound and pd.notna(compound["RT_minutes"]):
+            avg_rt = compound["RT_minutes"]
+            rt_text = f"{avg_rt:.1f} min"
+        elif compound.get("RT_start_min") and compound.get("RT_end_min"):
+            rt_start = compound["RT_start_min"]
+            rt_end = compound["RT_end_min"]
+            # Check if using default range (0-100 min)
+            if rt_start == 0.0 and rt_end == 100.0:
                 rt_text = "full range"
+            else:
+                rt_text = f"{rt_start:.1f}-{rt_end:.1f} min"
+        else:
+            rt_text = "full range"
 
-            rt_item = QTableWidgetItem(rt_text)
-            self.compounds_table.setItem(row_idx, 1, rt_item)
+        rt_item = QTableWidgetItem(rt_text)
+        self.compounds_table.setItem(row_idx, 1, rt_item)
 
-            # Compound type
-            compound_type = compound.get("compound_type", "formula")
-            type_display = {
-                "formula": "Formula",
-                "mass": "Mass",
-                "mz_only": "Adduct",
-            }.get(compound_type, compound_type)
+        # Compound type
+        compound_type = compound.get("compound_type", "formula")
+        type_display = {
+            "formula": "Formula",
+            "mass": "Mass",
+            "mz_only": "Adduct",
+        }.get(compound_type, compound_type)
 
-            type_item = QTableWidgetItem(type_display)
-            self.compounds_table.setItem(row_idx, 2, type_item)
+        type_item = QTableWidgetItem(type_display)
+        self.compounds_table.setItem(row_idx, 2, type_item)
 
     def show_files_context_menu(self, position):
         """Show context menu for file operations"""
@@ -832,11 +928,17 @@ class MzMLExplorerMainWindow(QMainWindow):
         if item is None:
             return
 
-        # Get the compound data from the first column (name column)
+        # Get the compound data from the Name column (column 0)
         row = item.row()
         name_item = self.compounds_table.item(row, 0)
+
+        # Skip if this is a group header row (no compound data)
+        if not name_item:
+            return
+
         compound_data = name_item.data(Qt.ItemDataRole.UserRole)
 
+        # Skip if this is a group header (no UserRole data)
         if not compound_data:
             return
 
@@ -1098,11 +1200,18 @@ class MzMLExplorerMainWindow(QMainWindow):
         filter_type, filter_params = self._parse_filter_text(filter_text)
 
         for i in range(self.compounds_table.rowCount()):
-            name_item = self.compounds_table.item(i, 0)
+            name_item = self.compounds_table.item(i, 0)  # Column 0 is the Name column
+
+            # Handle group header rows (no compound data)
+            if not name_item:
+                # Keep group headers visible
+                continue
+
             compound_data = name_item.data(Qt.ItemDataRole.UserRole)
 
+            # This is a group header if there's no compound data
             if not compound_data:
-                self.compounds_table.setRowHidden(i, True)
+                # Keep group headers visible
                 continue
 
             compound_name = compound_data["Name"]

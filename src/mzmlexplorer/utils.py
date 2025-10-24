@@ -16,6 +16,16 @@ ATOMIC_MASSES = {
     "S": 31.972071174,
 }
 
+# Heavy isotope labels and their mass differences relative to the common isotope
+ISOTOPE_DATA = {
+    "C": {"label": "13C", "mass_delta": 1.003354835},
+    "H": {"label": "2H", "mass_delta": 1.006276745},
+    "N": {"label": "15N", "mass_delta": 0.997034893},
+    "O": {"label": "18O", "mass_delta": 2.004245205},
+    "S": {"label": "34S", "mass_delta": 1.9957959},
+    "Cl": {"label": "37Cl", "mass_delta": 1.997048},
+}
+
 
 def parse_molecular_formula(formula: str) -> Dict[str, int]:
     """

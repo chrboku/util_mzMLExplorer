@@ -9,6 +9,7 @@ from .utils import (
     calculate_mz_from_formula,
     parse_molecular_formula,
     calculate_molecular_mass,
+    ISOTOPE_DATA,
 )
 
 
@@ -372,6 +373,112 @@ class CompoundManager:
         except Exception as e:
             print(f"Error calculating m/z for {compound_name} with {adduct}: {str(e)}")
             return None
+
+    def _get_compound_composition(self, compound_name: str) -> Dict[str, int]:
+        """Return parsed elemental composition for the compound if available."""
+        compound = self.get_compound_by_name(compound_name)
+        if compound is None:
+            return {}
+
+        formula = compound.get("ChemicalFormula")
+        if isinstance(formula, str) and formula.strip():
+            try:
+                return parse_molecular_formula(formula.strip())
+            except Exception:
+                return {}
+        return {}
+
+    def _get_adduct_charge(self, adduct: str) -> Optional[float]:
+        """Look up the charge for an adduct if defined in the adduct table."""
+        if self.adducts_data.empty:
+            return None
+
+        adduct_row = self.adducts_data[self.adducts_data["Adduct"] == adduct]
+        if not adduct_row.empty:
+            try:
+                return float(adduct_row.iloc[0]["Charge"])
+            except Exception:
+                return None
+        return None
+
+    def get_isotope_label(self, element: str) -> Optional[str]:
+        """Return the heavy isotope label for a given element."""
+        isotope_info = ISOTOPE_DATA.get(element)
+        if isotope_info:
+            return isotope_info["label"]
+        return None
+
+    def get_isotopolog_elements(self, compound_name: str) -> Dict[str, Optional[int]]:
+        """Return elements eligible for isotopolog calculations with their counts."""
+        composition = self._get_compound_composition(compound_name)
+
+        elements: Dict[str, Optional[int]] = {}
+        for element, count in composition.items():
+            if element in ISOTOPE_DATA:
+                elements[element] = int(count)
+
+        if not elements and "C" in ISOTOPE_DATA:
+            # Default to carbon if no composition is available
+            elements["C"] = composition.get("C")
+
+        return elements
+
+    def get_isotopolog_counts(
+        self, element: str, total_count: Optional[int]
+    ) -> List[int]:
+        """Return the list of labeled atom counts to show for a given element."""
+        if element not in ISOTOPE_DATA:
+            return []
+
+        counts = set()
+
+        max_base = 3
+        if total_count is not None:
+            try:
+                total_int = int(total_count)
+            except (TypeError, ValueError):
+                total_int = None
+        else:
+            total_int = None
+
+        if total_int is not None and total_int > 0:
+            max_base = min(3, total_int)
+
+        for num in range(1, max_base + 1):
+            counts.add(num)
+
+        if total_int is not None and total_int > 0:
+            for num in range(total_int, total_int - 3, -1):
+                if num >= 1:
+                    counts.add(num)
+
+        return sorted(counts)
+
+    def calculate_isotopolog_mz(
+        self, compound_name: str, adduct: str, element: str, labeled_count: int
+    ) -> Optional[float]:
+        """Calculate m/z for a specific isotopolog and adduct selection."""
+        if labeled_count <= 0:
+            return None
+
+        isotope_info = ISOTOPE_DATA.get(element)
+        if not isotope_info:
+            return None
+
+        base_mz = self.calculate_compound_mz(compound_name, adduct)
+        if base_mz is None:
+            return None
+
+        mass_delta = isotope_info.get("mass_delta")
+        if mass_delta is None:
+            return None
+
+        charge = self._get_adduct_charge(adduct)
+        shift = mass_delta * labeled_count
+        if charge and charge != 0:
+            shift /= abs(charge)
+
+        return base_mz + shift
 
     def _calculate_mz_from_mass(self, molecular_mass: float, adduct: str) -> float:
         """

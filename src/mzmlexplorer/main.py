@@ -988,6 +988,18 @@ class MzMLExplorerMainWindow(QMainWindow):
             no_adducts_action.setEnabled(False)
             menu.addAction(no_adducts_action)
 
+        # Add isotopolog submenu (requires at least one adduct option)
+        separator_action = None
+        if menu.actions():
+            separator_action = menu.addSeparator()
+
+        isotopolog_added = self._add_isotopolog_menu(
+            menu, compound_data, adducts_info, can_calculate
+        )
+
+        if not isotopolog_added and separator_action is not None:
+            menu.removeAction(separator_action)
+
         # Add separator before multi-adduct options
         if menu.actions():
             menu.addSeparator()
@@ -1050,6 +1062,108 @@ class MzMLExplorerMainWindow(QMainWindow):
         )
 
         menu.addAction(action)
+
+    def _add_isotopolog_menu(
+        self, menu, compound_data, adducts_info, can_calculate
+    ) -> bool:
+        """Add an isotopolog submenu allowing selection of labeled variants."""
+        compound_name = compound_data["Name"]
+
+        # Gather available adducts (specified first, then remaining if calculable)
+        available_adducts = list(adducts_info["specified"])
+        if can_calculate:
+            available_adducts.extend(adducts_info["remaining"])
+
+        # Remove duplicates while preserving order
+        seen_adducts = set()
+        ordered_adducts = []
+        for adduct in available_adducts:
+            if adduct not in seen_adducts:
+                ordered_adducts.append(adduct)
+                seen_adducts.add(adduct)
+
+        if not ordered_adducts:
+            return False
+
+        element_map = self.compound_manager.get_isotopolog_elements(compound_name)
+        if not element_map:
+            return False
+
+        isotopolog_menu = None
+        any_added = False
+
+        for element, total_count in element_map.items():
+            isotope_label = self.compound_manager.get_isotope_label(element)
+            if not isotope_label:
+                continue
+
+            counts = self.compound_manager.get_isotopolog_counts(element, total_count)
+            if not counts:
+                continue
+
+            element_menu = None
+
+            for count in counts:
+                display_label = f"[{isotope_label}]{count}"
+                count_actions = []
+
+                for adduct in ordered_adducts:
+                    isotopolog_mz = self.compound_manager.calculate_isotopolog_mz(
+                        compound_name, adduct, element, count
+                    )
+
+                    adduct_display = self.compound_manager.get_adduct_display_name(
+                        compound_name, adduct
+                    )
+
+                    if isotopolog_mz is None:
+                        action_text = f"{adduct_display} (m/z unavailable)"
+                        action = QAction(action_text, self)
+                        action.setEnabled(False)
+                    else:
+                        action_text = f"{adduct_display} (m/z: {isotopolog_mz:.4f})"
+                        action = QAction(action_text, self)
+
+                        precalc = self.compound_manager.get_precalculated_data(
+                            compound_name, adduct
+                        )
+                        polarity = None
+                        if precalc:
+                            polarity = precalc.get("polarity")
+                        if polarity is None:
+                            polarity = self.compound_manager._determine_polarity(adduct)
+
+                        adduct_label = f"{adduct_display} {display_label}"
+
+                        action.triggered.connect(
+                            lambda checked,
+                            c=compound_data,
+                            label=adduct_label,
+                            mz=isotopolog_mz,
+                            pol=polarity: self.show_eic_window(c, label, mz, pol)
+                        )
+
+                    count_actions.append(action)
+
+                if not count_actions:
+                    continue
+
+                if isotopolog_menu is None:
+                    isotopolog_menu = menu.addMenu("Isotopologs")
+
+                if element_menu is None:
+                    element_menu = isotopolog_menu.addMenu(element)
+
+                count_menu = element_menu.addMenu(display_label)
+                for action in count_actions:
+                    count_menu.addAction(action)
+
+                any_added = True
+
+        if not any_added and isotopolog_menu is not None:
+            isotopolog_menu.menuAction().setEnabled(False)
+
+        return any_added
 
     def _add_multi_adduct_actions(
         self, menu, compound_data, adducts_info, can_calculate

@@ -1495,9 +1495,11 @@ class EICWindow(QWidget):
         if start_rt >= end_rt:
             return
 
-        # Collect data for boxplot and table
+        # Collect data for boxplot, table, and apex detection
         boxplot_data = {}  # group_name -> list of integrated areas
         table_data = []  # list of tuples (group, sample_name, peak_area)
+        apex_rt = None
+        apex_intensity = float("-inf")
 
         separate_groups = self.separate_groups_cb.isChecked()
 
@@ -1524,6 +1526,19 @@ class EICWindow(QWidget):
             integrated_area = self._calculate_peak_area_with_boundaries(
                 original_rt, intensity, start_rt, end_rt
             )
+
+            # Track apex: highest intensity within the integration window
+            for rt_val, intensity_val in zip(original_rt, intensity):
+                try:
+                    rt_float = float(rt_val)
+                    intensity_float = float(intensity_val)
+                except (TypeError, ValueError):
+                    continue
+
+                if start_rt <= rt_float <= end_rt and not np.isnan(intensity_float):
+                    if intensity_float > apex_intensity:
+                        apex_intensity = intensity_float
+                        apex_rt = rt_float
 
             if integrated_area > 0:  # Only add non-zero areas
                 if group not in boxplot_data:
@@ -1584,7 +1599,12 @@ class EICWindow(QWidget):
             )
 
         ax.set_ylabel("Integrated Peak Area")
-        ax.set_title(f"Peak Integration ({start_rt:.2f} - {end_rt:.2f} min)")
+        if apex_rt is not None:
+            ax.set_title(
+                f"Peak Integration ({start_rt:.2f} - {end_rt:.2f} min, apex {apex_rt:.2f} min)"
+            )
+        else:
+            ax.set_title(f"Peak Integration ({start_rt:.2f} - {end_rt:.2f} min)")
         ax.grid(True, alpha=0.3)
 
         # Always set y-axis to start from 0

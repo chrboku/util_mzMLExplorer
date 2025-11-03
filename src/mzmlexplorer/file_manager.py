@@ -480,6 +480,10 @@ class FileManager:
             Tuple of (retention_times, intensities) arrays
         """
 
+        print(
+            f"Extracting EIC from {os.path.basename(filepath)}, target m/z: {target_mz}, polarity: {polarity}, RT: {rt_start}-{rt_end}, method: {calculation_method}, tolerance: {mz_tolerance}"
+        )
+
         if polarity.lower() in ["positive", "pos", "pos.", "+"]:
             polarity = "+"
         elif polarity.lower() in ["negative", "neg", "neg.", "-"]:

@@ -238,17 +238,20 @@ class CompoundManager:
 
     def _determine_polarity(self, adduct: str) -> Optional[str]:
         """Determine polarity from adduct string"""
+        print(f"Determining polarity for adduct: {adduct}")
+        polarity = None
         if adduct.endswith("+") or adduct.endswith("]+"):
-            return "positive"
+            polarity = "positive"
         elif adduct.endswith("-") or adduct.endswith("]-"):
-            return "negative"
+            polarity = "negative"
         else:
             # Check in adducts data table
             adduct_row = self.adducts_data[self.adducts_data["Adduct"] == adduct]
             if not adduct_row.empty:
                 charge = adduct_row.iloc[0]["Charge"]
-                return "positive" if charge > 0 else "negative"
-            return None
+                polarity = "positive" if charge > 0 else "negative"
+        print(f"   - Polarity determined: {polarity}")
+        return polarity
 
     def get_precalculated_data(self, compound_name: str, adduct: str) -> Optional[Dict]:
         """Get pre-calculated m/z, polarity and display name for compound-adduct combination"""

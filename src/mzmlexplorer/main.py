@@ -1172,32 +1172,51 @@ class MzMLExplorerMainWindow(QMainWindow):
         compound_name = compound_data["Name"]
         compound_type = compound_data.get("compound_type", "formula")
 
-        # Check if multi-adduct options should be enabled
-        # Enable for compounds with formula or mass, disable for m/z only compounds
-        enable_multi_adduct = compound_type in ["formula", "mass"]
+        # Compounds with formula or mass can calculate the full adduct list
+        can_show_all_adducts = compound_type in ["formula", "mass"]
 
         # Option 1: Show predefined adducts in multi-EIC window
         specified_adducts = adducts_info["specified"]
-        if specified_adducts:
+
+        valid_predefined_adducts = []
+        for adduct in specified_adducts:
+            precalc = self.compound_manager.get_precalculated_data(
+                compound_name, adduct
+            )
+            mz_value = None
+            if precalc:
+                mz_value = precalc.get("mz")
+            if mz_value is None:
+                mz_value = self.compound_manager.calculate_compound_mz(
+                    compound_name, adduct
+                )
+            if mz_value is not None:
+                valid_predefined_adducts.append(adduct)
+
+        if valid_predefined_adducts:
             predefined_action = QAction("📊 Show Predefined Adducts (Multi-EIC)", self)
-            predefined_action.setEnabled(enable_multi_adduct)
-            if enable_multi_adduct:
-                predefined_action.triggered.connect(
-                    lambda checked, c=compound_data: self.show_multi_adduct_window(
-                        c, show_predefined_only=True
-                    )
+            predefined_action.setEnabled(True)
+            predefined_action.triggered.connect(
+                lambda checked, c=compound_data: self.show_multi_adduct_window(
+                    c, show_predefined_only=True
                 )
-            else:
-                # Add tooltip explaining why it's disabled
-                predefined_action.setToolTip(
-                    "Multi-adduct view not available for specific m/z adducts. "
-                    "Please provide chemical formula or mass to calculate adducts."
-                )
+            )
+            menu.addAction(predefined_action)
+        elif specified_adducts:
+            # Provide contextual feedback when adducts exist but no m/z can be derived
+            predefined_action = QAction(
+                "📊 Show Predefined Adducts (Multi-EIC) - no valid m/z", self
+            )
+            predefined_action.setEnabled(False)
+            predefined_action.setToolTip(
+                "All predefined adducts for this compound are missing calculable m/z values."
+            )
             menu.addAction(predefined_action)
 
         # Option 2: Show all possible adducts in multi-EIC window
         # This option is only shown if we can calculate adducts (formula or mass available)
-        if can_calculate and enable_multi_adduct:
+        all_adducts_action = None
+        if can_calculate and can_show_all_adducts:
             all_adducts_action = QAction("📊 Show All Adducts (Multi-EIC)", self)
             all_adducts_action.triggered.connect(
                 lambda checked, c=compound_data: self.show_multi_adduct_window(
@@ -1207,11 +1226,13 @@ class MzMLExplorerMainWindow(QMainWindow):
             menu.addAction(all_adducts_action)
 
         # If no multi-adduct options are available for m/z only compounds, show informational message
-        if not enable_multi_adduct and not specified_adducts:
-            info_action = QAction("ℹ️ Multi-adduct view requires formula or mass", self)
+        if not can_show_all_adducts and not valid_predefined_adducts:
+            info_action = QAction(
+                "ℹ️ Multi-adduct view requires formula, mass, or valid m/z adducts",
+                self,
+            )
             info_action.setEnabled(False)
             menu.addAction(info_action)
-            menu.addAction(all_adducts_action)
 
     def show_multi_adduct_window(self, compound, show_predefined_only=True):
         """Show multi-adduct EIC window"""
@@ -1231,11 +1252,26 @@ class MzMLExplorerMainWindow(QMainWindow):
                     compound_name
                 )
                 for adduct in specified_adducts:
-                    mz_value = self.compound_manager.calculate_compound_mz(
+                    precalc = self.compound_manager.get_precalculated_data(
                         compound_name, adduct
                     )
-                    polarity = self.compound_manager._determine_polarity(adduct)
-                    adducts_data.append((adduct, mz_value, polarity))
+                    mz_value = None
+                    polarity = None
+
+                    if precalc:
+                        mz_value = precalc.get("mz")
+                        polarity = precalc.get("polarity")
+
+                    if mz_value is None:
+                        mz_value = self.compound_manager.calculate_compound_mz(
+                            compound_name, adduct
+                        )
+
+                    if polarity is None:
+                        polarity = self.compound_manager._determine_polarity(adduct)
+
+                    if mz_value is not None:
+                        adducts_data.append((adduct, mz_value, polarity))
             else:
                 # Get all possible adducts
                 if self.compound_manager.can_calculate_adducts_from_formula(
@@ -1259,7 +1295,8 @@ class MzMLExplorerMainWindow(QMainWindow):
                             compound_name, adduct
                         )
                         polarity = self.compound_manager._determine_polarity(adduct)
-                        adducts_data.append((adduct, mz_value, polarity))
+                        if mz_value is not None:
+                            adducts_data.append((adduct, mz_value, polarity))
 
             if not adducts_data:
                 QMessageBox.information(

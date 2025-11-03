@@ -194,12 +194,10 @@ class InteractiveEICWidget(QWidget):
 
     def _extract_eic_data(self):
         """Extract EIC data for this adduct"""
-        # Get defaults - convert ppm to Da, but make it more generous
+        # Use the same ppm→Da conversion as the single EIC window so both
+        # visualisations rely on an identical extraction tolerance.
         mz_tolerance_ppm = self.defaults.get("mz_tolerance_ppm", 5.0)
         mz_tolerance_da = (self.mz_value * mz_tolerance_ppm) / 1e6
-
-        # Make tolerance more generous for testing
-        mz_tolerance_da = max(mz_tolerance_da, 0.01)  # At least 0.01 Da
 
         calculation_method = self.defaults.get(
             "calculation_method", "Sum of all signals"
@@ -465,6 +463,20 @@ class InteractiveEICWidget(QWidget):
             # Import here to avoid circular imports
             from .eic_window import EICWindow
 
+            # Ensure the standalone EIC window starts with the same visual baseline
+            # as the multi-adduct view (no group time shifting by default).
+            if isinstance(self.defaults, dict) and self.defaults:
+                eic_defaults = self.defaults.copy()
+            else:
+                eic_defaults = {}
+
+            # Ensure required keys exist and align the view defaults with the matrix view
+            eic_defaults.setdefault("mz_tolerance_ppm", 5.0)
+            eic_defaults.setdefault("rt_shift_min", 1.0)
+            eic_defaults.setdefault("crop_rt_window", False)
+            eic_defaults.setdefault("normalize_samples", False)
+            eic_defaults["separate_groups"] = False
+
             # Create and show the individual EIC window
             eic_window = EICWindow(
                 compound_data=self.compound,  # Use compound_data parameter name
@@ -472,7 +484,7 @@ class InteractiveEICWidget(QWidget):
                 file_manager=self.file_manager,
                 mz_value=self.mz_value,  # Pass the m/z value
                 polarity=self.polarity,  # Pass the polarity
-                defaults=self.defaults,
+                defaults=eic_defaults,
                 parent=self.parent(),
             )
             eic_window.show()
@@ -551,10 +563,9 @@ class MultiAdductWindow(QWidget):
             return 0
 
         try:
-            # Get defaults for EIC extraction
+            # Use the same tolerance conversion as the single viewer
             mz_tolerance_ppm = self.defaults.get("mz_tolerance_ppm", 5.0)
             mz_tolerance_da = (mz_value * mz_tolerance_ppm) / 1e6
-            mz_tolerance_da = max(mz_tolerance_da, 0.01)  # At least 0.01 Da
             calculation_method = self.defaults.get(
                 "calculation_method", "Sum of all signals"
             )

@@ -941,6 +941,7 @@ class EICExtractionWorker(QThread):
         rt_end,
         eic_method="Sum of all signals",
         adduct=None,
+        polarity=None,
     ):
         super().__init__()
         self.file_manager = file_manager
@@ -950,22 +951,21 @@ class EICExtractionWorker(QThread):
         self.rt_end = rt_end
         self.eic_method = eic_method
         self.adduct = adduct
+        self.polarity = self._normalize_polarity(polarity)
 
-        # Determine polarity from adduct
-        self.polarity = self._determine_polarity(adduct)
-
-    def _determine_polarity(self, adduct):
-        """Determine polarity from adduct string"""
-        if not adduct:
+    def _normalize_polarity(self, polarity):
+        """Convert different polarity representations to '+', '-', or None."""
+        if polarity is None:
             return None
 
-        # Check for explicit polarity markers
-        if "+" in adduct:
-            return "+"
-        elif "-" in adduct:
-            return "-"
-        else:
-            return None
+        if isinstance(polarity, str):
+            polarity = polarity.strip().lower()
+            if polarity in {"+", "positive", "pos", "pos."}:
+                return "+"
+            if polarity in {"-", "negative", "neg", "neg."}:
+                return "-"
+
+        return None
 
     def run(self):
         try:
@@ -2224,6 +2224,7 @@ class EICWindow(QWidget):
             None,  # Don't filter RT during extraction
             self.eic_method_combo.currentText(),
             self.adduct,  # Pass adduct for polarity determination
+            polarity=self.polarity,
         )
 
         self.extraction_worker.progress.connect(self.progress_bar.setValue)

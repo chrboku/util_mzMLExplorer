@@ -38,7 +38,6 @@ from PyQt6.QtWidgets import QSizePolicy
 from .utils import calculate_cosine_similarity, calculate_similarity_statistics
 import numpy as np
 from typing import Dict, Tuple, Optional, List
-import matplotlib.pyplot as plt
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 import seaborn as sns
@@ -1176,7 +1175,9 @@ class EICWindow(QWidget):
         # Set initial sizes (75% EIC, 25% boxplot)
         self.eic_boxplot_splitter.setSizes([750, 250])
         self.eic_boxplot_splitter.setStretchFactor(0, 1)  # EIC chart is stretchable
-        self.eic_boxplot_splitter.setStretchFactor(1, 0)  # Boxplot maintains proportion
+        self.eic_boxplot_splitter.setStretchFactor(
+            1, 1
+        )  # Boxplot adapts with available space
 
         # Add the splitter to the main layout
         layout.addWidget(self.eic_boxplot_splitter)
@@ -1294,7 +1295,15 @@ class EICWindow(QWidget):
         # Tab 1: Boxplot
         self.boxplot_figure = Figure(figsize=(10, 3))
         self.boxplot_canvas = FigureCanvas(self.boxplot_figure)
+        self.boxplot_canvas.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
+        self.boxplot_canvas.setMinimumSize(0, 0)
         self.boxplot_widget.addTab(self.boxplot_canvas, "Boxplot")
+
+        self.boxplot_widget.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
 
         # Tab 2: Peak Area Table
         peak_area_tab = QWidget()
@@ -1563,11 +1572,16 @@ class EICWindow(QWidget):
         groups = list(boxplot_data.keys())
         data_lists = [boxplot_data[group] for group in groups]
 
-        # Create boxplot
-        bp = ax.boxplot(data_lists, labels=groups, patch_artist=True)
+        # Create horizontal boxplot so groups appear on the y-axis
+        bp = ax.boxplot(
+            data_lists,
+            labels=groups,
+            patch_artist=True,
+            vert=False,
+        )
 
         # Color the boxes according to group colors
-        for i, (group, patch) in enumerate(zip(groups, bp["boxes"])):
+        for group, patch in zip(groups, bp["boxes"]):
             group_color = self.file_manager.get_group_color(group)
             if group_color:
                 color = QColor(group_color)
@@ -1577,9 +1591,9 @@ class EICWindow(QWidget):
 
         # Add jitter points
         for i, (group, values) in enumerate(zip(groups, data_lists)):
-            # Add some jitter to x positions
-            x_pos = i + 1
-            jitter_x = np.random.normal(x_pos, 0.05, len(values))  # Small jitter
+            # Add some jitter to y positions around the boxplot line index
+            y_pos = i + 1
+            jitter_y = np.random.normal(y_pos, 0.05, len(values))  # Small jitter
 
             group_color = self.file_manager.get_group_color(group)
             if group_color:
@@ -1589,8 +1603,8 @@ class EICWindow(QWidget):
                 color_rgb = (0.5, 0.5, 0.5)  # Default gray
 
             ax.scatter(
-                jitter_x,
                 values,
+                jitter_y,
                 alpha=0.6,
                 color=color_rgb,
                 s=30,
@@ -1598,7 +1612,8 @@ class EICWindow(QWidget):
                 linewidth=0.5,
             )
 
-        ax.set_ylabel("Integrated Peak Area")
+        ax.set_xlabel("Integrated Peak Area")
+        ax.set_ylabel("Group")
         if apex_rt is not None:
             ax.set_title(
                 f"Peak Integration ({start_rt:.2f} - {end_rt:.2f} min, apex {apex_rt:.2f} min)"
@@ -1607,14 +1622,13 @@ class EICWindow(QWidget):
             ax.set_title(f"Peak Integration ({start_rt:.2f} - {end_rt:.2f} min)")
         ax.grid(True, alpha=0.3)
 
-        # Always set y-axis to start from 0
-        ax.set_ylim(bottom=0)
-
-        # Rotate x-axis labels if needed
-        plt.setp(ax.get_xticklabels(), rotation=45, ha="right")
+        # Always set x-axis to start from 0 and adapt upper bound to data range
+        data_max = max((max(values) for values in data_lists if values), default=0)
+        upper_bound = data_max * 1.05 if data_max > 0 else 1.0
+        ax.set_xlim(left=0, right=upper_bound)
 
         self.boxplot_figure.tight_layout()
-        self.boxplot_canvas.draw()
+        self.boxplot_canvas.draw_idle()
 
         # Update the peak area table
         self._update_peak_area_table(table_data)

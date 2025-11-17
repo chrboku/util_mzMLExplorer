@@ -238,7 +238,6 @@ class CompoundManager:
 
     def _determine_polarity(self, adduct: str) -> Optional[str]:
         """Determine polarity from adduct string"""
-        print(f"Determining polarity for adduct: {adduct}")
         polarity = None
         if adduct.endswith("+") or adduct.endswith("]+"):
             polarity = "positive"
@@ -250,7 +249,6 @@ class CompoundManager:
             if not adduct_row.empty:
                 charge = adduct_row.iloc[0]["Charge"]
                 polarity = "positive" if charge > 0 else "negative"
-        print(f"   - Polarity determined: {polarity}")
         return polarity
 
     def get_precalculated_data(self, compound_name: str, adduct: str) -> Optional[Dict]:

@@ -50,6 +50,66 @@ from .utils import (
 from natsort import natsorted, natsort_keygen
 
 
+class CollapsibleBox(QWidget):
+    """A collapsible widget with a clickable header"""
+
+    def __init__(self, title="", parent=None):
+        super().__init__(parent)
+
+        self.toggle_button = QPushButton(title)
+        self.toggle_button.setCheckable(True)
+        self.toggle_button.setChecked(False)
+        self.toggle_button.setStyleSheet("""
+            QPushButton {
+                text-align: left;
+                padding: 5px;
+                border: 1px solid #ccc;
+                background-color: #f0f0f0;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #e0e0e0;
+            }
+        """)
+        self.toggle_button.clicked.connect(self.toggle_content)
+
+        self.content_area = QWidget()
+        self.content_layout = QVBoxLayout(self.content_area)
+        self.content_layout.setContentsMargins(0, 0, 0, 0)
+        self.content_area.setVisible(False)
+
+        main_layout = QVBoxLayout(self)
+        main_layout.setSpacing(0)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.addWidget(self.toggle_button)
+        main_layout.addWidget(self.content_area)
+
+    def toggle_content(self):
+        """Toggle visibility of content area"""
+        is_visible = self.content_area.isVisible()
+        self.content_area.setVisible(not is_visible)
+        # Update button text to show collapse state
+        current_text = self.toggle_button.text()
+        if "▼" in current_text:
+            self.toggle_button.setText(current_text.replace("▼", "▶"))
+        elif "▶" in current_text:
+            self.toggle_button.setText(current_text.replace("▶", "▼"))
+        else:
+            if not is_visible:
+                self.toggle_button.setText("▼ " + current_text)
+            else:
+                self.toggle_button.setText("▶ " + current_text)
+
+    def add_widget(self, widget):
+        """Add a widget to the content area"""
+        self.content_layout.addWidget(widget)
+
+    def set_expanded(self, expanded):
+        """Set the expanded state"""
+        if expanded != self.content_area.isVisible():
+            self.toggle_content()
+
+
 class MSMSPopupWindow(QWidget):
     """Popup window for displaying a single MSMS spectrum in a larger view"""
 
@@ -1095,6 +1155,9 @@ class EICWindow(QWidget):
         self.boxplot_widget = None
         self.boxplot_canvas = None
 
+        # Initialize group settings for EIC plotting
+        self.group_settings = {}  # Will be populated when EIC data is loaded
+
         self.init_ui()
         self.extract_eic_data()
 
@@ -1149,6 +1212,10 @@ class EICWindow(QWidget):
         self.progress_bar = QProgressBar()
         self.progress_bar.setVisible(False)
         layout.addWidget(self.progress_bar)
+
+        # Group settings table
+        self.create_group_settings_table()
+        layout.addWidget(self.group_settings_box)
 
         layout.addStretch()
         return panel
@@ -1286,6 +1353,141 @@ class EICWindow(QWidget):
         layout.addRow(self.normalize_cb)
 
         return group
+
+    def create_group_settings_table(self):
+        """Create the group settings table for EIC display controls"""
+        # Create a collapsible box for the table
+        self.group_settings_box = CollapsibleBox("Group Display Settings")
+
+        # Create the table
+        self.group_settings_table = QTableWidget()
+        self.group_settings_table.setColumnCount(4)
+        self.group_settings_table.setHorizontalHeaderLabels(
+            ["Scaling", "Plot", "Neg.", "Line Width"]
+        )
+
+        # Configure table appearance
+        self.group_settings_table.setAlternatingRowColors(True)
+        self.group_settings_table.horizontalHeader().setStretchLastSection(False)
+        self.group_settings_table.verticalHeader().setVisible(True)
+        self.group_settings_table.setMaximumHeight(800)
+        self.group_settings_table.setMinimumHeight(340)
+
+        # Set column widths
+        self.group_settings_table.setColumnWidth(0, 95)  # Scaling column
+        self.group_settings_table.setColumnWidth(1, 30)  # Plot checkbox column
+        self.group_settings_table.setColumnWidth(2, 30)  # Negative checkbox column
+        self.group_settings_table.setColumnWidth(3, 60)  # Line Width column
+
+        # Add table to collapsible box
+        self.group_settings_box.add_widget(self.group_settings_table)
+
+    def populate_group_settings_table(self):
+        """Populate the group settings table with current groups"""
+        table = self.group_settings_table
+
+        if table is None:
+            return
+
+        # Get unique groups from EIC data
+        groups = set()
+        for data in self.eic_data.values():
+            if "group" in data["metadata"]:
+                groups.add(data["metadata"]["group"])
+
+        # Sort groups naturally
+        sorted_groups = natsorted(groups)
+
+        # Set row count
+        table.setRowCount(len(sorted_groups))
+
+        # Initialize group settings if not already done
+        for group in sorted_groups:
+            if group not in self.group_settings:
+                self.group_settings[group] = {
+                    "scaling": 1.0,
+                    "plot": True,
+                    "negative": False,
+                    "line_width": 1.0,
+                }
+
+        # Populate table rows
+        for row, group in enumerate(sorted_groups):
+            # Set row header (group name) with group color
+            header_item = QTableWidgetItem(group)
+
+            # Get and apply the group color
+            group_color = self.file_manager.get_group_color(group)
+            if group_color:
+                # group_color is already a QColor, create QBrush from it
+                header_item.setForeground(QColor(group_color))
+
+            table.setVerticalHeaderItem(row, header_item)
+
+            # Column 0: Scaling factor (QDoubleSpinBox)
+            scaling_spin = QDoubleSpinBox()
+            scaling_spin.setRange(0.00001, 100000.0)
+            scaling_spin.setValue(self.group_settings[group]["scaling"])
+            scaling_spin.setDecimals(5)
+            scaling_spin.setSingleStep(0.1)
+            scaling_spin.valueChanged.connect(
+                lambda value, g=group: self.on_group_setting_changed(
+                    g, "scaling", value
+                )
+            )
+            table.setCellWidget(row, 0, scaling_spin)
+
+            # Column 1: Plot checkbox
+            plot_checkbox = QCheckBox()
+            plot_checkbox.setChecked(self.group_settings[group]["plot"])
+            plot_checkbox.stateChanged.connect(
+                lambda state, g=group: self.on_group_setting_changed(
+                    g, "plot", state == Qt.CheckState.Checked.value
+                )
+            )
+            # Center the checkbox
+            checkbox_widget = QWidget()
+            checkbox_layout = QHBoxLayout(checkbox_widget)
+            checkbox_layout.addWidget(plot_checkbox)
+            checkbox_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            checkbox_layout.setContentsMargins(0, 0, 0, 0)
+            table.setCellWidget(row, 1, checkbox_widget)
+
+            # Column 2: Negative intensities checkbox
+            negative_checkbox = QCheckBox()
+            negative_checkbox.setChecked(self.group_settings[group]["negative"])
+            negative_checkbox.stateChanged.connect(
+                lambda state, g=group: self.on_group_setting_changed(
+                    g, "negative", state == Qt.CheckState.Checked.value
+                )
+            )
+            # Center the checkbox
+            neg_checkbox_widget = QWidget()
+            neg_checkbox_layout = QHBoxLayout(neg_checkbox_widget)
+            neg_checkbox_layout.addWidget(negative_checkbox)
+            neg_checkbox_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            neg_checkbox_layout.setContentsMargins(0, 0, 0, 0)
+            table.setCellWidget(row, 2, neg_checkbox_widget)
+
+            # Column 3: Line width (QDoubleSpinBox)
+            width_spin = QDoubleSpinBox()
+            width_spin.setRange(0.5, 10.0)
+            width_spin.setValue(self.group_settings[group]["line_width"])
+            width_spin.setDecimals(1)
+            width_spin.setSingleStep(0.5)
+            width_spin.valueChanged.connect(
+                lambda value, g=group: self.on_group_setting_changed(
+                    g, "line_width", value
+                )
+            )
+            table.setCellWidget(row, 3, width_spin)
+
+    def on_group_setting_changed(self, group, setting, value):
+        """Handle changes to group settings"""
+        if group in self.group_settings:
+            self.group_settings[group][setting] = value
+            # Update the plot when settings change without resetting the view
+            self.update_plot(preserve_view=True)
 
     def create_boxplot_widget(self):
         """Create the tabbed widget for boxplots and peak area table"""
@@ -2276,6 +2478,9 @@ class EICWindow(QWidget):
         # Calculate group shifts
         self.calculate_group_shifts()
 
+        # Populate group settings table with extracted groups
+        self.populate_group_settings_table()
+
         # Update plot
         self.update_plot()
 
@@ -2308,10 +2513,23 @@ class EICWindow(QWidget):
         for i, group in enumerate(sorted_groups):
             self.group_shifts[group] = i * shift_amount
 
-    def update_plot(self):
-        """Update the EIC plot"""
+    def update_plot(self, preserve_view=False):
+        """Update the EIC plot
+
+        Args:
+            preserve_view: If True, maintain current zoom/pan state instead of resetting view
+        """
         if not self.eic_data:
             return
+
+        # Save current axis ranges if we need to preserve the view
+        saved_x_range = None
+        saved_y_range = None
+        if preserve_view and self.chart.axes(Qt.Orientation.Horizontal):
+            x_axis = self.chart.axes(Qt.Orientation.Horizontal)[0]
+            y_axis = self.chart.axes(Qt.Orientation.Vertical)[0]
+            saved_x_range = (x_axis.min(), x_axis.max())
+            saved_y_range = (y_axis.min(), y_axis.max())
 
         # Recalculate group shifts with current RT shift value
         self.calculate_group_shifts()
@@ -2376,6 +2594,15 @@ class EICWindow(QWidget):
 
         # Create separate series for each file, but group them for legend display
         for group_name, group_files in groups_data.items():
+            # Check group settings - skip if group should not be plotted
+            group_settings = self.group_settings.get(
+                group_name,
+                {"scaling": 1.0, "plot": True, "negative": False, "line_width": 1.0},
+            )
+
+            if not group_settings["plot"]:
+                continue  # Skip this group if it shouldn't be plotted
+
             first_file_in_group = True
 
             # Get group color and make it transparent
@@ -2384,6 +2611,13 @@ class EICWindow(QWidget):
             for file_data in group_files:
                 rt = file_data["rt"]
                 intensity = file_data["intensity"]
+
+                # Apply group scaling factor
+                intensity = intensity * group_settings["scaling"]
+
+                # Apply negative intensities if enabled for this group
+                if group_settings["negative"]:
+                    intensity = -intensity
 
                 # Create individual series for each file
                 series = QLineSeries()
@@ -2419,14 +2653,14 @@ class EICWindow(QWidget):
                 for x, y in zip(rt, intensity):
                     series.append(float(x), float(y))
 
-                # Apply group color with transparency
+                # Apply group color with transparency and line width
                 if group_color:
                     color = QColor(group_color)
                     color.setAlpha(
                         180
                     )  # Make lines semi-transparent (0-255, 180 = ~70% opacity)
                     pen = QPen(color)
-                    pen.setWidth(2)
+                    pen.setWidthF(group_settings["line_width"])
                     series.setPen(pen)
 
                 # Add series to chart
@@ -2453,18 +2687,36 @@ class EICWindow(QWidget):
         if normalize:
             self.y_axis.setTitleText("Normalized Intensity")
             # For normalized data, set explicit range 0-1 with some padding
-            self.y_axis.setRange(-0.05, 1.05)  # Slight padding for better visualization
+            # Use a timer to ensure the range is applied after series are fully added
+            from PyQt6.QtCore import QTimer
+
+            QTimer.singleShot(50, lambda: self.y_axis.setRange(-0.05, 1.05))
         else:
             self.y_axis.setTitleText("Intensity")
             # For non-normalized data, calculate range from actual data
             self._set_y_axis_from_data()
 
-        # Automatically reset view to show all data after any changes
+        # Restore saved view or reset to show all data
         from PyQt6.QtCore import QTimer
 
-        QTimer.singleShot(
-            50, self.reset_view
-        )  # Small delay to ensure chart is fully updated
+        if preserve_view and saved_x_range and saved_y_range:
+            # Restore the saved axis ranges
+            def restore_ranges():
+                x_axis = self.chart.axes(Qt.Orientation.Horizontal)[0]
+                y_axis = self.chart.axes(Qt.Orientation.Vertical)[0]
+                x_axis.setRange(saved_x_range[0], saved_x_range[1])
+                # For normalized data, enforce the normalized range
+                if normalize:
+                    y_axis.setRange(-0.05, 1.05)
+                else:
+                    y_axis.setRange(saved_y_range[0], saved_y_range[1])
+
+            QTimer.singleShot(60, restore_ranges)
+        else:
+            # Automatically reset view to show all data after any changes
+            QTimer.singleShot(
+                50, self.reset_view
+            )  # Small delay to ensure chart is fully updated
 
         # Update series cache for hover detection
         if hasattr(self.chart_view, "update_series_cache"):

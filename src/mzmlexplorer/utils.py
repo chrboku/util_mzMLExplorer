@@ -14,6 +14,7 @@ ATOMIC_MASSES = {
     "O": 15.994914620,
     "P": 30.973761998,
     "S": 31.972071174,
+    "Cl": 34.96885268,
 }
 
 # Heavy isotope labels and their mass differences relative to the common isotope

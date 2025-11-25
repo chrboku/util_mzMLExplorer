@@ -2674,7 +2674,7 @@ class EICWindow(QWidget):
         # Show legend with better formatting
         legend = self.chart.legend()
         legend.setVisible(True)
-        legend.setAlignment(Qt.AlignmentFlag.AlignTop)
+        legend.setAlignment(Qt.AlignmentFlag.AlignRight)
         legend.setMarkerShape(legend.MarkerShape.MarkerShapeRectangle)
 
         # Hide legend markers for series with empty names

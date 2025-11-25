@@ -45,6 +45,7 @@ from .multi_adduct_window import MultiAdductWindow
 from natsort import natsorted, index_natsorted
 
 import toml
+import concurrent.futures
 
 
 class MzMLExplorerMainWindow(QMainWindow):
@@ -1769,7 +1770,8 @@ class MzMLExplorerMainWindow(QMainWindow):
         self.memory_settings = {
             "keep_in_memory": self.settings.value(
                 "memory/keep_in_memory", False, type=bool
-            )
+            ),
+            "parallel_tasks": int(self.settings.value("memory/parallel_tasks", 4)),
         }
 
         # Apply memory settings to file manager
@@ -1797,6 +1799,9 @@ class MzMLExplorerMainWindow(QMainWindow):
         """Save memory settings"""
         self.settings.setValue(
             "memory/keep_in_memory", self.memory_settings["keep_in_memory"]
+        )
+        self.settings.setValue(
+            "memory/parallel_tasks", self.memory_settings["parallel_tasks"]
         )
 
     def update_memory_label(self):
@@ -1851,12 +1856,96 @@ class MzMLExplorerMainWindow(QMainWindow):
                 "Options have been saved and applied successfully!",
             )
 
+    def _load_single_file_worker(self, row_data):
+        """Worker function to load a single file in a separate thread"""
+        idx, row = row_data
+        filepath = row["Filepath"]
+
+        try:
+            # Create a new reader for this thread
+            reader = pymzml.run.Reader(filepath)
+            ms1_spectra_data = []
+            ms2_spectra_data = []
+
+            for spectrum in reader:
+                if spectrum.ms_level == 1:  # MS1 spectra
+                    spectrum_data = {
+                        "scan_time": spectrum.scan_time_in_minutes(),
+                        "mz": spectrum.mz,
+                        "intensity": spectrum.i,
+                        "polarity": self.file_manager._get_spectrum_polarity(spectrum),
+                    }
+                    ms1_spectra_data.append(spectrum_data)
+                elif spectrum.ms_level == 2:  # MS2/MSMS spectra
+                    try:
+                        # Get precursor information
+                        precursor_mz = None
+                        if (
+                            hasattr(spectrum, "selected_precursors")
+                            and spectrum.selected_precursors
+                        ):
+                            precursor_info = spectrum.selected_precursors[0]
+                            if "mz" in precursor_info:
+                                precursor_mz = float(precursor_info["mz"])
+
+                        # Alternative method to get precursor m/z
+                        if precursor_mz is None and hasattr(spectrum, "element"):
+                            for elem in spectrum.element.iter():
+                                if elem.tag.endswith("precursorList"):
+                                    for precursor in elem:
+                                        if precursor.tag.endswith("precursor"):
+                                            for selected_ion in precursor:
+                                                if selected_ion.tag.endswith(
+                                                    "selectedIonList"
+                                                ):
+                                                    for ion in selected_ion:
+                                                        for cv_param in ion:
+                                                            if (
+                                                                cv_param.tag.endswith(
+                                                                    "cvParam"
+                                                                )
+                                                                and cv_param.get(
+                                                                    "accession"
+                                                                )
+                                                                == "MS:1000744"
+                                                            ):  # selected ion m/z
+                                                                precursor_mz = float(
+                                                                    cv_param.get(
+                                                                        "value"
+                                                                    )
+                                                                )
+                                                                break
+
+                        spectrum_data = {
+                            "scan_time": spectrum.scan_time_in_minutes(),
+                            "mz": spectrum.mz,
+                            "intensity": spectrum.i,
+                            "polarity": self.file_manager._get_spectrum_polarity(
+                                spectrum
+                            ),
+                            "precursor_mz": precursor_mz,
+                            "scan_id": spectrum.ID
+                            if hasattr(spectrum, "ID")
+                            else f"RT_{spectrum.scan_time_in_minutes():.2f}",
+                        }
+                        ms2_spectra_data.append(spectrum_data)
+                    except Exception as e:
+                        print(f"Error processing MS2 spectrum in {filepath}: {e}")
+                        continue
+
+            return idx, filepath, ms1_spectra_data, ms2_spectra_data
+
+        except Exception as e:
+            print(f"Error loading file {filepath}: {e}")
+            return idx, filepath, [], []
+
     def load_files_to_memory_with_progress(self):
-        """Load files to memory with a progress dialog"""
+        """Load files to memory with a progress dialog using parallel processing"""
         if self.file_manager.files_data.empty:
             return
 
         num_files = len(self.file_manager.files_data)
+        parallel_tasks = self.memory_settings.get("parallel_tasks", 4)
 
         # Create progress dialog
         progress = QProgressDialog(
@@ -1870,105 +1959,45 @@ class MzMLExplorerMainWindow(QMainWindow):
         # Clear any existing cache first
         self.file_manager._clear_memory_cache()
 
-        # Load files one by one with progress updates
-        for i, (_, row) in enumerate(self.file_manager.files_data.iterrows()):
-            if progress.wasCanceled():
-                self.file_manager.set_memory_mode(False)
-                QMessageBox.information(
-                    self, "Cancelled", "Memory loading was cancelled."
-                )
-                return
+        # Prepare data for parallel execution
+        rows = list(self.file_manager.files_data.iterrows())
 
-            filepath = row["Filepath"]
-            filename = row["filename"]
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=parallel_tasks
+        ) as executor:
+            futures = {
+                executor.submit(self._load_single_file_worker, row): row for row in rows
+            }
 
-            progress.setLabelText(f"Loading {filename}...")
-            progress.setValue(i)
-            QApplication.processEvents()  # Update UI
+            completed_count = 0
+            for future in concurrent.futures.as_completed(futures):
+                if progress.wasCanceled():
+                    executor.shutdown(wait=False)
+                    self.file_manager.set_memory_mode(False)
+                    QMessageBox.information(
+                        self, "Cancelled", "Memory loading was cancelled."
+                    )
+                    return
 
-            try:
-                # Load single file
-                reader = self.file_manager.get_mzml_reader(filepath)
-                ms1_spectra_data = []
-                ms2_spectra_data = []
+                try:
+                    idx, filepath, ms1_data, ms2_data = future.result()
 
-                for spectrum in reader:
-                    if spectrum.ms_level == 1:  # MS1 spectra
-                        spectrum_data = {
-                            "scan_time": spectrum.scan_time_in_minutes(),
-                            "mz": spectrum.mz,
-                            "intensity": spectrum.i,
-                            "polarity": self.file_manager._get_spectrum_polarity(
-                                spectrum
-                            ),
-                        }
-                        ms1_spectra_data.append(spectrum_data)
-                    elif spectrum.ms_level == 2:  # MS2/MSMS spectra
-                        try:
-                            # Get precursor information
-                            precursor_mz = None
-                            if (
-                                hasattr(spectrum, "selected_precursors")
-                                and spectrum.selected_precursors
-                            ):
-                                precursor_info = spectrum.selected_precursors[0]
-                                if "mz" in precursor_info:
-                                    precursor_mz = float(precursor_info["mz"])
+                    # Store in cache
+                    self.file_manager.cached_data[filepath] = {
+                        "ms1": ms1_data,
+                        "ms2": ms2_data,
+                    }
 
-                            # Alternative method to get precursor m/z
-                            if precursor_mz is None and hasattr(spectrum, "element"):
-                                for elem in spectrum.element.iter():
-                                    if elem.tag.endswith("precursorList"):
-                                        for precursor in elem:
-                                            if precursor.tag.endswith("precursor"):
-                                                for selected_ion in precursor:
-                                                    if selected_ion.tag.endswith(
-                                                        "selectedIonList"
-                                                    ):
-                                                        for ion in selected_ion:
-                                                            for cv_param in ion:
-                                                                if (
-                                                                    cv_param.tag.endswith(
-                                                                        "cvParam"
-                                                                    )
-                                                                    and cv_param.get(
-                                                                        "accession"
-                                                                    )
-                                                                    == "MS:1000744"
-                                                                ):  # selected ion m/z
-                                                                    precursor_mz = float(
-                                                                        cv_param.get(
-                                                                            "value"
-                                                                        )
-                                                                    )
-                                                                    break
+                    completed_count += 1
+                    progress.setValue(completed_count)
+                    filename = os.path.basename(filepath)
+                    progress.setLabelText(
+                        f"Loaded {filename} ({completed_count}/{num_files})"
+                    )
+                    QApplication.processEvents()
 
-                            spectrum_data = {
-                                "scan_time": spectrum.scan_time_in_minutes(),
-                                "mz": spectrum.mz,
-                                "intensity": spectrum.i,
-                                "polarity": self.file_manager._get_spectrum_polarity(
-                                    spectrum
-                                ),
-                                "precursor_mz": precursor_mz,
-                                "scan_id": spectrum.ID
-                                if hasattr(spectrum, "ID")
-                                else f"RT_{spectrum.scan_time_in_minutes():.2f}",
-                            }
-                            ms2_spectra_data.append(spectrum_data)
-                        except Exception as e:
-                            print(f"Error processing MS2 spectrum: {e}")
-                            continue
-
-                # Store both MS1 and MS2 data
-                self.file_manager.cached_data[filepath] = {
-                    "ms1": ms1_spectra_data,
-                    "ms2": ms2_spectra_data,
-                }
-                reader.close()
-
-            except Exception as e:
-                print(f"Error loading {filepath} to memory: {str(e)}")
+                except Exception as e:
+                    print(f"Error in future result: {e}")
 
         progress.setValue(num_files)
         progress.close()
@@ -2362,6 +2391,13 @@ class UnifiedOptionsDialog(QDialog):
         self.keep_in_memory_cb.toggled.connect(self.on_memory_mode_changed)
         form_layout.addRow("Keep all mzML data in memory:", self.keep_in_memory_cb)
 
+        # Parallel tasks spinbox
+        self.parallel_tasks_spin = QSpinBox()
+        self.parallel_tasks_spin.setRange(1, 32)
+        self.parallel_tasks_spin.setValue(self.memory_settings.get("parallel_tasks", 4))
+        self.parallel_tasks_spin.setSuffix(" threads")
+        form_layout.addRow("Number of parallel tasks:", self.parallel_tasks_spin)
+
         layout.addLayout(form_layout)
 
         # Current memory usage
@@ -2505,6 +2541,7 @@ class UnifiedOptionsDialog(QDialog):
 
         # Reset memory settings
         self.keep_in_memory_cb.setChecked(False)
+        self.parallel_tasks_spin.setValue(4)
         self.update_memory_warning()
 
     def get_values(self):
@@ -2517,7 +2554,10 @@ class UnifiedOptionsDialog(QDialog):
             "normalize_samples": self.normalize_cb.isChecked(),
         }
 
-        memory_values = {"keep_in_memory": self.keep_in_memory_cb.isChecked()}
+        memory_values = {
+            "keep_in_memory": self.keep_in_memory_cb.isChecked(),
+            "parallel_tasks": self.parallel_tasks_spin.value(),
+        }
 
         return eic_values, memory_values
 

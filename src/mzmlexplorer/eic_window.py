@@ -1093,6 +1093,7 @@ class EICWindow(QWidget):
         self.eic_data = {}
         self.group_shifts = {}
         self.integration_callback = integration_callback
+        self.grouping_column = "group"  # Default grouping column
 
         # Store defaults (use application defaults if none provided)
         self.defaults = (
@@ -1322,6 +1323,14 @@ class EICWindow(QWidget):
         # Initialize Da value based on default ppm
         self.update_mz_tolerance_da()
 
+        # Grouping column selector
+        self.grouping_column_combo = QComboBox()
+        self._populate_grouping_columns()
+        self.grouping_column_combo.currentTextChanged.connect(
+            self.on_grouping_column_changed
+        )
+        layout.addRow("Group by Column:", self.grouping_column_combo)
+
         # Group separation
         self.separate_groups_cb = QCheckBox("Separate by groups")
         self.separate_groups_cb.setChecked(
@@ -1383,17 +1392,37 @@ class EICWindow(QWidget):
         self.group_settings_box.add_widget(self.group_settings_table)
 
     def populate_group_settings_table(self):
-        """Populate the group settings table with current groups"""
+        """Populate the group settings table with current groups
+
+        Shows all groups from the entire sample matrix, not just those
+        with data in the current compound.
+        """
         table = self.group_settings_table
 
         if table is None:
             return
 
-        # Get unique groups from EIC data
+        # Get unique groups from the entire sample matrix (files_data)
         groups = set()
+
+        if (
+            hasattr(self.file_manager, "files_data")
+            and self.file_manager.files_data is not None
+        ):
+            # Get all possible group values from the entire sample matrix
+            if self.grouping_column in self.file_manager.files_data.columns:
+                group_values = (
+                    self.file_manager.files_data[self.grouping_column].dropna().unique()
+                )
+                for value in group_values:
+                    groups.add(str(value))
+
+        # Also include groups from current EIC data (in case some aren't in files_data)
         for data in self.eic_data.values():
-            if "group" in data["metadata"]:
-                groups.add(data["metadata"]["group"])
+            if self.grouping_column in data["metadata"]:
+                group_value = data["metadata"][self.grouping_column]
+                # Convert to string to ensure consistency
+                groups.add(str(group_value) if group_value is not None else "Unknown")
 
         # Sort groups naturally
         sorted_groups = natsorted(groups)
@@ -1417,7 +1446,7 @@ class EICWindow(QWidget):
             header_item = QTableWidgetItem(group)
 
             # Get and apply the group color
-            group_color = self.file_manager.get_group_color(group)
+            group_color = self._get_group_color(group)
             if group_color:
                 # group_color is already a QColor, create QBrush from it
                 header_item.setForeground(QColor(group_color))
@@ -1481,6 +1510,47 @@ class EICWindow(QWidget):
                 )
             )
             table.setCellWidget(row, 3, width_spin)
+
+    def _populate_grouping_columns(self):
+        """Populate the grouping column selector with available columns"""
+        self.grouping_column_combo.clear()
+
+        # Get available columns from files_data
+        files_data = self.file_manager.get_files_data()
+        if not files_data.empty:
+            # Exclude system columns that shouldn't be used for grouping
+            exclude_columns = {"Filepath", "filename"}
+            available_columns = [
+                col for col in files_data.columns if col not in exclude_columns
+            ]
+
+            # Sort columns with 'group' and 'color' first if they exist
+            priority_columns = []
+            if "group" in available_columns:
+                priority_columns.append("group")
+                available_columns.remove("group")
+            if "color" in available_columns:
+                priority_columns.append("color")
+                available_columns.remove("color")
+
+            # Combine priority columns with the rest
+            all_columns = priority_columns + sorted(available_columns)
+
+            self.grouping_column_combo.addItems(all_columns)
+
+            # Set default to 'group' if available
+            if "group" in all_columns:
+                self.grouping_column_combo.setCurrentText("group")
+
+    def on_grouping_column_changed(self, column_name):
+        """Handle changes to the grouping column selection"""
+        if column_name:
+            self.grouping_column = column_name
+            # Recalculate group shifts and update the plot
+            if self.eic_data:
+                self.calculate_group_shifts()
+                self.populate_group_settings_table()
+                self.update_plot()
 
     def on_group_setting_changed(self, group, setting, value):
         """Handle changes to group settings"""
@@ -1722,7 +1792,9 @@ class EICWindow(QWidget):
             if len(rt) == 0 or len(intensity) == 0:
                 continue
 
-            group = metadata.get("group", "Unknown")
+            # Get group value from the selected grouping column
+            group_value = metadata.get(self.grouping_column, "Unknown")
+            group = str(group_value) if group_value is not None else "Unknown"
             sample_name = metadata.get("filename", "Unknown")
 
             # Remove file extension from sample name for cleaner display
@@ -1784,7 +1856,7 @@ class EICWindow(QWidget):
 
         # Color the boxes according to group colors
         for group, patch in zip(groups, bp["boxes"]):
-            group_color = self.file_manager.get_group_color(group)
+            group_color = self._get_group_color(group)
             if group_color:
                 color = QColor(group_color)
                 patch.set_facecolor(
@@ -1797,7 +1869,7 @@ class EICWindow(QWidget):
             y_pos = i + 1
             jitter_y = np.random.normal(y_pos, 0.05, len(values))  # Small jitter
 
-            group_color = self.file_manager.get_group_color(group)
+            group_color = self._get_group_color(group)
             if group_color:
                 color = QColor(group_color)
                 color_rgb = (color.red() / 255, color.green() / 255, color.blue() / 255)
@@ -2495,15 +2567,35 @@ class EICWindow(QWidget):
         QMessageBox.critical(self, "Error", f"EIC extraction failed: {error_message}")
 
     def calculate_group_shifts(self):
-        """Calculate RT shifts for group separation"""
-        if not self.eic_data:
-            return
+        """Calculate RT shifts for group separation
 
-        # Get unique groups
+        This method gets ALL possible groups from the entire sample matrix,
+        not just the ones present in the current EIC data. This ensures
+        consistent ordering and spacing even when some groups have no data.
+        """
+        # Get unique groups from the entire sample matrix (files_data)
         groups = set()
-        for data in self.eic_data.values():
-            if "group" in data["metadata"]:
-                groups.add(data["metadata"]["group"])
+
+        if (
+            hasattr(self.file_manager, "files_data")
+            and self.file_manager.files_data is not None
+        ):
+            # Get all possible group values from the entire sample matrix
+            if self.grouping_column in self.file_manager.files_data.columns:
+                group_values = (
+                    self.file_manager.files_data[self.grouping_column].dropna().unique()
+                )
+                for value in group_values:
+                    groups.add(str(value))
+
+        # Also include groups from current EIC data (in case some aren't in files_data)
+        if self.eic_data:
+            for data in self.eic_data.values():
+                if self.grouping_column in data["metadata"]:
+                    group_value = data["metadata"][self.grouping_column]
+                    groups.add(
+                        str(group_value) if group_value is not None else "Unknown"
+                    )
 
         # Sort groups and assign shifts (using natural sort)
         sorted_groups = natsorted(groups)
@@ -2512,6 +2604,45 @@ class EICWindow(QWidget):
         self.group_shifts = {}
         for i, group in enumerate(sorted_groups):
             self.group_shifts[group] = i * shift_amount
+
+    def _get_group_color(self, group_name):
+        """Get the color for a group based on the selected grouping column
+
+        Args:
+            group_name: The name/value of the group
+
+        Returns:
+            QColor or color string if found, None otherwise
+        """
+        # If grouping by 'color' column, use the color value directly
+        if self.grouping_column == "color":
+            # Find any file with this color value and return it
+            for data in self.eic_data.values():
+                metadata = data.get("metadata", {})
+                if metadata.get("color") == group_name:
+                    # The group_name IS the color in this case
+                    try:
+                        return QColor(group_name)
+                    except:
+                        pass
+            return None
+
+        # If grouping by 'group' column, use the file_manager's group colors
+        if self.grouping_column == "group":
+            return self.file_manager.get_group_color(group_name)
+
+        # For other columns, try to find the corresponding group and use its color
+        # Find any file that has this grouping value and get its group
+        for data in self.eic_data.values():
+            metadata = data.get("metadata", {})
+            if str(metadata.get(self.grouping_column)) == group_name:
+                # Get the actual group for this sample
+                actual_group = metadata.get("group", None)
+                if actual_group:
+                    return self.file_manager.get_group_color(actual_group)
+                break
+
+        return None
 
     def update_plot(self, preserve_view=False):
         """Update the EIC plot
@@ -2573,7 +2704,9 @@ class EICWindow(QWidget):
                 if max_intensity > 0:
                     intensity = intensity / max_intensity  # Normalize to 0-1 range
 
-            group = metadata.get("group", "Unknown")
+            # Get group value from the selected grouping column
+            group_value = metadata.get(self.grouping_column, "Unknown")
+            group = str(group_value) if group_value is not None else "Unknown"
             if group not in groups_data:
                 groups_data[group] = []
 
@@ -2593,20 +2726,48 @@ class EICWindow(QWidget):
             )
 
         # Create separate series for each file, but group them for legend display
-        for group_name, group_files in groups_data.items():
+        # Iterate through groups in the same sorted order as group_shifts
+        sorted_groups = natsorted(groups_data.keys())
+
+        for group_name in sorted_groups:
             # Check group settings - skip if group should not be plotted
             group_settings = self.group_settings.get(
                 group_name,
                 {"scaling": 1.0, "plot": True, "negative": False, "line_width": 1.0},
             )
 
-            if not group_settings["plot"]:
-                continue  # Skip this group if it shouldn't be plotted
+            # Get group color
+            group_color = self._get_group_color(group_name)
+
+            # Always add at least one legend entry per group, even if no data or not plotted
+            # This ensures the legend order matches the separation order
+            group_files = groups_data.get(group_name, [])
+
+            if not group_settings["plot"] or len(group_files) == 0:
+                # Create an invisible/empty series just for the legend entry
+                series = QLineSeries()
+                if separate_groups:
+                    shift = self.group_shifts.get(group_name, 0.0)
+                    legend_name = f"{group_name} (+ {shift:.1f} min)"
+                else:
+                    legend_name = group_name
+                series.setName(legend_name)
+
+                # Apply group color (even for invisible series)
+                if group_color:
+                    color = QColor(group_color)
+                    color.setAlpha(180)
+                    pen = QPen(color)
+                    pen.setWidthF(group_settings.get("line_width", 1.0))
+                    series.setPen(pen)
+
+                # Add the series to chart (won't be visible but shows in legend)
+                self.chart.addSeries(series)
+                series.attachAxis(self.x_axis)
+                series.attachAxis(self.y_axis)
+                continue  # Skip to next group
 
             first_file_in_group = True
-
-            # Get group color and make it transparent
-            group_color = self.file_manager.get_group_color(group_name)
 
             for file_data in group_files:
                 rt = file_data["rt"]

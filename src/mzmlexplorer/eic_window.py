@@ -575,9 +575,7 @@ class InteractiveChartView(QChartView):
             )
 
             self.zoom_anchor_x = self.interaction_start_x_range[0] + rel_x * x_range
-            self.zoom_anchor_y = (
-                self.interaction_start_y_range[1] - rel_y * y_range
-            )  # Y is inverted
+            self.zoom_anchor_y = self.interaction_start_y_range[1] - rel_y * y_range
 
             self.setCursor(Qt.CursorShape.SizeAllCursor)
 
@@ -628,7 +626,7 @@ class InteractiveChartView(QChartView):
                     - self.interaction_start_y_range[0]
                 )
                 self.zoom_anchor_x = self.interaction_start_x_range[0] + rel_x * x_range
-                self.zoom_anchor_y = self.interaction_start_y_range[0] + rel_y * y_range
+                self.zoom_anchor_y = self.interaction_start_y_range[1] - rel_y * y_range
 
         if self.is_panning:
             self._handle_panning(event)

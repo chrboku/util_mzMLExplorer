@@ -365,27 +365,18 @@ class InteractiveEICWidget(QWidget):
             rt_window_end = rt_center + 1.0
 
         else:
-            # No RT info available or using full range, try to find a reasonable zoom based on data
+            # No RT info available or using full range - use entire RT range from all EICs
             if all_rt_values:
                 data_rt_min = min(all_rt_values)
                 data_rt_max = max(all_rt_values)
                 rt_range = data_rt_max - data_rt_min
 
-                if (
-                    rt_range > 5
-                ):  # If data spans more than 5 minutes, zoom to middle portion
-                    center = (data_rt_min + data_rt_max) / 2
-                    zoom_start = center - 2.5
-                    zoom_end = center + 2.5
-                    rt_window_start = center - 2.5
-                    rt_window_end = center + 2.5
-                else:
-                    # Use full data range with small margin
-                    margin = max(0.5, rt_range * 0.1)
-                    zoom_start = max(0, data_rt_min - margin)
-                    zoom_end = data_rt_max + margin
-                    rt_window_start = data_rt_min
-                    rt_window_end = data_rt_max
+                # Use full data range with small margin
+                margin = max(0.5, rt_range * 0.1)
+                zoom_start = max(0, data_rt_min - margin)
+                zoom_end = data_rt_max + margin
+                rt_window_start = data_rt_min
+                rt_window_end = data_rt_max
             else:
                 # No data, don't zoom
                 return

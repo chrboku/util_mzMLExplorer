@@ -4933,15 +4933,12 @@ class MSMSViewerWindow(QWidget):
         # Pre-process data: sort by intensity and find global m/z range
         self._preprocess_spectra_data()
 
-        # Create main layout - no splitter needed
-        main_widget = QWidget()
-        main_layout = QVBoxLayout(main_widget)
-        main_layout.setContentsMargins(1, 1, 1, 1)
-        main_layout.setSpacing(1)
+        # Create main splitter for vertical resizing (top: heatmap, bottom: spectra grid)
+        main_splitter = QSplitter(Qt.Orientation.Vertical)
 
-        # Top: Inter-file similarity overview
+        # Top: Inter-file similarity overview (heatmap)
         inter_file_widget = self._create_similarity_overview_widget()
-        main_layout.addWidget(inter_file_widget)
+        main_splitter.addWidget(inter_file_widget)
 
         # Bottom: Spectra grid
         # Create scroll area for the spectra grid
@@ -4999,8 +4996,15 @@ class MSMSViewerWindow(QWidget):
 
             row += 1
 
-        main_layout.addWidget(scroll_area)
-        layout.addWidget(main_widget)
+        # Add scroll area to splitter
+        main_splitter.addWidget(scroll_area)
+
+        # Set initial sizes for splitter (heatmap gets less space initially)
+        # Total height ~1000, give 200 to heatmap, 800 to spectra grid
+        main_splitter.setSizes([200, 800])
+
+        # Add splitter to main layout
+        layout.addWidget(main_splitter)
 
         # Close button - compact
         close_btn = QPushButton("Close")

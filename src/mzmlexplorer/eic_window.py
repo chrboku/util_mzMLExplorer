@@ -40,6 +40,7 @@ from .utils import calculate_cosine_similarity, calculate_similarity_statistics
 import numpy as np
 from typing import Dict, Tuple, Optional, List
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 from matplotlib.figure import Figure
 import seaborn as sns
 from .utils import (
@@ -51,6 +52,8 @@ from .utils import (
 from natsort import natsorted, natsort_keygen
 from scipy.cluster import hierarchy
 from scipy.spatial.distance import squareform
+from sklearn.decomposition import PCA
+from sklearn.preprocessing import StandardScaler
 
 
 class CollapsibleBox(QWidget):
@@ -1706,6 +1709,25 @@ class EICWindow(QWidget):
         similarity_layout.addWidget(self.similarity_table)
         self.boxplot_widget.addTab(similarity_tab, "Peak shape similarity")
 
+        # Tab 5: PCA of correlation coefficients
+        pca_tab = QWidget()
+        pca_layout = QVBoxLayout(pca_tab)
+
+        # PCA plot
+        self.pca_figure = Figure(figsize=(8, 6))
+        self.pca_canvas = FigureCanvas(self.pca_figure)
+        self.pca_canvas.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
+        self.pca_canvas.setMinimumSize(0, 0)
+
+        # Add navigation toolbar for zoom and pan
+        self.pca_toolbar = NavigationToolbar(self.pca_canvas, pca_tab)
+
+        pca_layout.addWidget(self.pca_toolbar)
+        pca_layout.addWidget(self.pca_canvas)
+        self.boxplot_widget.addTab(pca_tab, "Peak shape similarity PCA")
+
         # Initially hide the boxplot widget
         self.boxplot_widget.setVisible(False)
 
@@ -1953,6 +1975,9 @@ class EICWindow(QWidget):
 
         # Update the peak shape similarity table
         self._update_similarity_table(start_rt, end_rt)
+
+        # Update the PCA plot
+        self._update_pca_plot(start_rt, end_rt)
 
         # Record peak integration data if callback is provided
         if self.integration_callback:
@@ -2608,6 +2633,258 @@ class EICWindow(QWidget):
 
         # Auto-resize columns
         self.similarity_table.resizeColumnsToContents()
+
+    def _update_pca_plot(self, start_rt, end_rt):
+        """
+        Update the PCA plot using pairwise correlation coefficients as features.
+        Each sample is a point, and the features are correlation coefficients with all other samples.
+
+        Args:
+            start_rt: Start retention time for the peak region
+            end_rt: End retention time for the peak region
+        """
+        if not self.eic_data:
+            return
+
+        # Extract peak regions for all samples
+        sample_data = {}
+        sample_metadata = {}
+
+        for filepath, data in self.eic_data.items():
+            rt = np.array(data["rt"])
+            intensity = np.array(data["intensity"])
+            metadata = data["metadata"]
+
+            if len(rt) == 0:
+                continue
+
+            # Get sample name and group
+            sample_name = metadata.get("filename", "Unknown")
+            if "." in sample_name:
+                sample_name = sample_name.rsplit(".", 1)[0]
+
+            group_value = metadata.get(self.grouping_column, "Unknown")
+            group = str(group_value) if group_value is not None else "Unknown"
+
+            # Extract peak region
+            mask = (rt >= start_rt) & (rt <= end_rt)
+            peak_rt = rt[mask]
+            peak_intensity = intensity[mask]
+
+            if len(peak_rt) >= 2:  # Need at least 2 points
+                sample_data[sample_name] = {"rt": peak_rt, "intensity": peak_intensity}
+                sample_metadata[sample_name] = {"group": group}
+
+        if len(sample_data) < 3:
+            # Need at least 3 samples for meaningful PCA
+            self.pca_figure.clear()
+            ax = self.pca_figure.add_subplot(111)
+            ax.text(
+                0.5,
+                0.5,
+                "Need at least 3 samples for PCA",
+                ha="center",
+                va="center",
+                fontsize=12,
+            )
+            ax.axis("off")
+            self.pca_canvas.draw_idle()
+            return
+
+        # Calculate pairwise correlations
+        sample_names = natsorted(list(sample_data.keys()), key=natsort_keygen())
+        n_samples = len(sample_names)
+
+        # Create correlation matrix (n x n)
+        corr_matrix = np.ones((n_samples, n_samples))
+
+        for i in range(n_samples):
+            for j in range(i + 1, n_samples):
+                sample1 = sample_names[i]
+                sample2 = sample_names[j]
+
+                corr = self._supersample_and_correlate(
+                    sample_data[sample1]["rt"],
+                    sample_data[sample1]["intensity"],
+                    sample_data[sample2]["rt"],
+                    sample_data[sample2]["intensity"],
+                )
+
+                # Store in both positions (matrix is symmetric)
+                corr_matrix[i, j] = corr
+                corr_matrix[j, i] = corr
+
+        # Handle NaN values by replacing with 0 (no correlation)
+        corr_matrix_clean = np.nan_to_num(corr_matrix, nan=0.0)
+
+        # Perform PCA on the correlation matrix
+        # Each row represents a sample, each column represents correlation with another sample
+        try:
+            # Standardize the features (correlation coefficients)
+            scaler = StandardScaler()
+            corr_matrix_scaled = scaler.fit_transform(corr_matrix_clean)
+
+            # Apply PCA
+            pca = PCA(n_components=min(2, n_samples - 1))  # Get first 2 components
+            pca_scores = pca.fit_transform(corr_matrix_scaled)
+
+            # Get explained variance
+            explained_var = pca.explained_variance_ratio_
+
+            # Create the PCA plot
+            self.pca_figure.clear()
+            ax = self.pca_figure.add_subplot(111)
+
+            # Get colors for each sample based on group
+            colors = []
+            group_color_map = {}
+
+            # Reset annotations list for this update
+            self._pca_annotations = []
+
+            for sample_name in sample_names:
+                group = sample_metadata[sample_name]["group"]
+
+                # Get or assign color for this group
+                if group not in group_color_map:
+                    group_color = self._get_group_color(group)
+                    if group_color:
+                        color = QColor(group_color)
+                        group_color_map[group] = (
+                            color.red() / 255,
+                            color.green() / 255,
+                            color.blue() / 255,
+                        )
+                    else:
+                        # Default color if not defined
+                        group_color_map[group] = (0.5, 0.5, 0.5)
+
+                colors.append(group_color_map[group])
+
+            # Plot the points
+            for i, (sample_name, color) in enumerate(zip(sample_names, colors)):
+                if pca_scores.shape[1] >= 2:
+                    x, y = pca_scores[i, 0], pca_scores[i, 1]
+                else:
+                    x, y = pca_scores[i, 0], 0
+
+                # Plot the point
+                scatter = ax.scatter(
+                    x, y, c=[color], s=100, alpha=0.7, edgecolors="black", linewidth=1.5
+                )
+
+                # Add sample name as annotation (initially invisible, shown on hover)
+                # Position will be adjusted dynamically in hover handler
+                annotation = ax.annotate(
+                    sample_name,
+                    xy=(x, y),
+                    xytext=(5, 5),
+                    textcoords="offset points",
+                    fontsize=9,
+                    bbox=dict(boxstyle="round,pad=0.5", fc="yellow", alpha=0.8),
+                    visible=False,
+                )
+
+                # Store annotation for hover functionality
+                self._pca_annotations.append((scatter, annotation, (x, y), sample_name))
+
+            # Set labels with explained variance
+            if len(explained_var) >= 2:
+                ax.set_xlabel(f"PC1 ({explained_var[0] * 100:.1f}%)", fontsize=11)
+                ax.set_ylabel(f"PC2 ({explained_var[1] * 100:.1f}%)", fontsize=11)
+            elif len(explained_var) == 1:
+                ax.set_xlabel(f"PC1 ({explained_var[0] * 100:.1f}%)", fontsize=11)
+                ax.set_ylabel("PC2 (0.0%)", fontsize=11)
+            else:
+                ax.set_xlabel("PC1", fontsize=11)
+                ax.set_ylabel("PC2", fontsize=11)
+
+            ax.set_title("PCA of Sample Correlations", fontsize=12, fontweight="bold")
+            ax.grid(True, alpha=0.3)
+            ax.axhline(y=0, color="k", linestyle="--", alpha=0.3, linewidth=0.5)
+            ax.axvline(x=0, color="k", linestyle="--", alpha=0.3, linewidth=0.5)
+
+            self.pca_figure.tight_layout()
+
+            # Set up hover functionality
+            self._setup_pca_hover()
+
+            self.pca_canvas.draw_idle()
+
+        except Exception as e:
+            print(f"Error performing PCA: {e}")
+            self.pca_figure.clear()
+            ax = self.pca_figure.add_subplot(111)
+            ax.text(
+                0.5,
+                0.5,
+                f"Error performing PCA: {str(e)}",
+                ha="center",
+                va="center",
+                fontsize=10,
+                color="red",
+            )
+            ax.axis("off")
+            self.pca_canvas.draw_idle()
+
+    def _setup_pca_hover(self):
+        """Set up hover functionality for PCA plot to show sample names"""
+        if not hasattr(self, "_pca_annotations"):
+            return
+
+        def on_hover(event):
+            if event.inaxes is None:
+                return
+
+            # Check if mouse is near any point
+            for scatter, annotation, (x, y), sample_name in self._pca_annotations:
+                # Calculate distance from mouse to point
+                try:
+                    if event.xdata is not None and event.ydata is not None:
+                        distance = np.sqrt(
+                            (event.xdata - x) ** 2 + (event.ydata - y) ** 2
+                        )
+
+                        # Get axis ranges to determine relative distance
+                        ax = event.inaxes
+                        x_range = ax.get_xlim()[1] - ax.get_xlim()[0]
+                        y_range = ax.get_ylim()[1] - ax.get_ylim()[0]
+                        relative_distance = distance / np.sqrt(x_range**2 + y_range**2)
+
+                        # Show annotation if close enough (within 2% of axis diagonal)
+                        if relative_distance < 0.02:
+                            # Determine annotation position based on point location
+                            # to prevent clipping at edges
+                            x_center = (ax.get_xlim()[0] + ax.get_xlim()[1]) / 2
+
+                            # If point is on the right half, position annotation to the left
+                            # If point is on the left half, position annotation to the right
+                            if x > x_center:
+                                # Right side - position label to the left of point
+                                annotation.set_position((x, y))
+                                annotation.xyann = (-5, 5)
+                                annotation.set_horizontalalignment("right")
+                            else:
+                                # Left side - position label to the right of point
+                                annotation.set_position((x, y))
+                                annotation.xyann = (5, 5)
+                                annotation.set_horizontalalignment("left")
+
+                            annotation.set_visible(True)
+                        else:
+                            annotation.set_visible(False)
+                except (TypeError, AttributeError):
+                    pass
+
+            self.pca_canvas.draw_idle()
+
+        # Store the connection ID to avoid multiple connections
+        if hasattr(self, "_pca_hover_cid"):
+            self.pca_canvas.mpl_disconnect(self._pca_hover_cid)
+
+        self._pca_hover_cid = self.pca_canvas.mpl_connect(
+            "motion_notify_event", on_hover
+        )
 
     def _calculate_peak_area_with_boundaries(
         self, rt_array, intensity_array, start_rt, end_rt

@@ -1,6 +1,6 @@
 [project]
 name = "util-mzmlexplorer"
-version = "5.14.0"
+version = "5.15.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
@@ -17,6 +17,7 @@ dependencies = [
     "seaborn>=0.13.2",
     "scipy>=1.10.0",
     "toml>=0.10.2",
+    "scikit-learn>=1.3.0",
 ]
 
 [project.scripts]

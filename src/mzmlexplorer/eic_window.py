@@ -30,6 +30,7 @@ from PyQt6.QtWidgets import (
     QAbstractItemView,
     QTabWidget,
     QApplication,
+    QWidgetAction,
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QPointF, QMargins
 from PyQt6.QtCharts import QChart, QChartView, QLineSeries, QValueAxis
@@ -48,6 +49,8 @@ from .utils import (
     parse_molecular_formula,
 )
 from natsort import natsorted, natsort_keygen
+from scipy.cluster import hierarchy
+from scipy.spatial.distance import squareform
 
 
 class CollapsibleBox(QWidget):
@@ -1569,7 +1572,7 @@ class EICWindow(QWidget):
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
         )
         self.boxplot_canvas.setMinimumSize(0, 0)
-        self.boxplot_widget.addTab(self.boxplot_canvas, "Boxplot")
+        self.boxplot_widget.addTab(self.boxplot_canvas, "Boxplot peak areas")
 
         self.boxplot_widget.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
@@ -1612,7 +1615,7 @@ class EICWindow(QWidget):
         )
 
         peak_area_layout.addWidget(self.peak_area_table)
-        self.boxplot_widget.addTab(peak_area_tab, "Peak Area Table")
+        self.boxplot_widget.addTab(peak_area_tab, "Peak area table")
 
         # Tab 3: Summary Statistics Table
         summary_stats_tab = QWidget()
@@ -1665,7 +1668,43 @@ class EICWindow(QWidget):
         )
 
         summary_stats_layout.addWidget(self.summary_stats_table)
-        self.boxplot_widget.addTab(summary_stats_tab, "Summary Statistics")
+        self.boxplot_widget.addTab(summary_stats_tab, "Peak area group summaries")
+
+        # Tab 4: Peak Shape Similarity (Matrix)
+        similarity_tab = QWidget()
+        similarity_layout = QVBoxLayout(similarity_tab)
+
+        # Buttons for similarity table
+        similarity_buttons_layout = QHBoxLayout()
+
+        self.copy_similarity_excel_btn = QPushButton("Copy as Excel Tab-delimited")
+        self.copy_similarity_excel_btn.clicked.connect(
+            self._copy_similarity_table_excel
+        )
+        similarity_buttons_layout.addWidget(self.copy_similarity_excel_btn)
+
+        self.copy_similarity_r_btn = QPushButton("Copy as R matrix")
+        self.copy_similarity_r_btn.clicked.connect(self._copy_similarity_table_r)
+        similarity_buttons_layout.addWidget(self.copy_similarity_r_btn)
+
+        similarity_buttons_layout.addStretch()
+        similarity_layout.addLayout(similarity_buttons_layout)
+
+        # Peak shape similarity table (as matrix)
+        self.similarity_table = QTableWidget()
+        self.similarity_table.setAlternatingRowColors(True)
+        self.similarity_table.setSortingEnabled(
+            False
+        )  # Disable sorting for matrix view
+        self.similarity_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.ResizeToContents
+        )
+        self.similarity_table.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectRows
+        )
+
+        similarity_layout.addWidget(self.similarity_table)
+        self.boxplot_widget.addTab(similarity_tab, "Peak shape similarity")
 
         # Initially hide the boxplot widget
         self.boxplot_widget.setVisible(False)
@@ -1740,6 +1779,10 @@ class EICWindow(QWidget):
         # Clear the peak area table
         if hasattr(self, "peak_area_table"):
             self.peak_area_table.setRowCount(0)
+
+        # Clear the similarity table
+        if hasattr(self, "similarity_table"):
+            self.similarity_table.setRowCount(0)
 
         if hasattr(self, "boundary_info_label"):
             self.boundary_info_label.setText("")
@@ -1907,6 +1950,9 @@ class EICWindow(QWidget):
 
         # Update the summary statistics table
         self._update_summary_stats_table(table_data)
+
+        # Update the peak shape similarity table
+        self._update_similarity_table(start_rt, end_rt)
 
         # Record peak integration data if callback is provided
         if self.integration_callback:
@@ -2240,6 +2286,328 @@ class EICWindow(QWidget):
         # Copy to clipboard
         clipboard_text = "\n".join(r_code_lines)
         QApplication.clipboard().setText(clipboard_text)
+
+    def _copy_similarity_table_excel(self):
+        """Copy peak shape similarity matrix data in Excel tab-delimited format"""
+        if self.similarity_table.rowCount() == 0:
+            return
+
+        # Get column headers (sample names)
+        col_headers = []
+        for col in range(self.similarity_table.columnCount()):
+            header_item = self.similarity_table.horizontalHeaderItem(col)
+            if header_item:
+                col_headers.append(header_item.text())
+
+        # Get row headers (sample names)
+        row_headers = []
+        for row in range(self.similarity_table.rowCount()):
+            header_item = self.similarity_table.verticalHeaderItem(row)
+            if header_item:
+                row_headers.append(header_item.text())
+
+        # Build data lines
+        data_lines = []
+
+        # First line: empty cell + column headers
+        data_lines.append("\t" + "\t".join(col_headers))
+
+        # Data rows: row header + values
+        for row in range(self.similarity_table.rowCount()):
+            row_data = [row_headers[row] if row < len(row_headers) else ""]
+            for col in range(self.similarity_table.columnCount()):
+                item = self.similarity_table.item(row, col)
+                if item:
+                    value = item.data(Qt.ItemDataRole.UserRole)
+                    if value is not None:
+                        row_data.append(str(value))
+                    else:
+                        row_data.append(item.text())
+                else:
+                    row_data.append("")
+            data_lines.append("\t".join(row_data))
+
+        # Copy to clipboard
+        clipboard_text = "\n".join(data_lines)
+        QApplication.clipboard().setText(clipboard_text)
+
+    def _copy_similarity_table_r(self):
+        """Copy peak shape similarity matrix data as R matrix code"""
+        if self.similarity_table.rowCount() == 0:
+            return
+
+        # Get sample names from headers
+        sample_names = []
+        for col in range(self.similarity_table.columnCount()):
+            header_item = self.similarity_table.horizontalHeaderItem(col)
+            if header_item:
+                sample_names.append(header_item.text())
+
+        # Collect matrix values
+        matrix_values = []
+        for row in range(self.similarity_table.rowCount()):
+            row_values = []
+            for col in range(self.similarity_table.columnCount()):
+                item = self.similarity_table.item(row, col)
+                if item:
+                    value = item.data(Qt.ItemDataRole.UserRole)
+                    if value is not None:
+                        row_values.append(str(value))
+                    else:
+                        row_values.append("NA")
+                else:
+                    row_values.append("NA")
+            matrix_values.append(", ".join(row_values))
+
+        # Build R matrix code
+        r_code_lines = ["# Peak shape similarity correlation matrix"]
+        r_code_lines.append("similarity_matrix <- matrix(")
+        r_code_lines.append("  c(" + ",\n    ".join(matrix_values) + "),")
+        r_code_lines.append(f"  nrow = {self.similarity_table.rowCount()},")
+        r_code_lines.append(f"  ncol = {self.similarity_table.columnCount()},")
+        r_code_lines.append("  byrow = TRUE")
+        r_code_lines.append(")")
+
+        # Add row and column names
+        sample_names_r = [f'"{name}"' for name in sample_names]
+        r_code_lines.append(
+            f"rownames(similarity_matrix) <- c({', '.join(sample_names_r)})"
+        )
+        r_code_lines.append(
+            f"colnames(similarity_matrix) <- c({', '.join(sample_names_r)})"
+        )
+
+        # Copy to clipboard
+        clipboard_text = "\n".join(r_code_lines)
+        QApplication.clipboard().setText(clipboard_text)
+
+    def _supersample_and_correlate(self, rt1, intensity1, rt2, intensity2):
+        """
+        Calculate Pearson correlation between two EIC segments using supersampling.
+
+        This method handles different retention times between samples by:
+        1. Creating a union of all unique RT values from both samples
+        2. Interpolating intensities for missing RT points using linear interpolation
+        3. Calculating Pearson correlation coefficient on the supersampled data
+
+        Args:
+            rt1: Retention time array for sample 1
+            rt2: Retention time array for sample 2
+            intensity1: Intensity array for sample 1
+            intensity2: Intensity array for sample 2
+
+        Returns:
+            Pearson correlation coefficient (float)
+        """
+        if len(rt1) < 2 or len(rt2) < 2:
+            return np.nan
+
+        # Convert to numpy arrays
+        rt1 = np.array(rt1)
+        intensity1 = np.array(intensity1)
+        rt2 = np.array(rt2)
+        intensity2 = np.array(intensity2)
+
+        # Get union of all unique RT values
+        all_rt = np.unique(np.concatenate([rt1, rt2]))
+        all_rt = np.sort(all_rt)
+
+        # Interpolate intensities for both samples at all RT points
+        # Use linear interpolation between points
+        interp_intensity1 = np.interp(all_rt, rt1, intensity1)
+        interp_intensity2 = np.interp(all_rt, rt2, intensity2)
+
+        # Calculate Pearson correlation coefficient
+        # Remove any NaN values
+        valid_mask = ~(np.isnan(interp_intensity1) | np.isnan(interp_intensity2))
+        if np.sum(valid_mask) < 2:
+            return np.nan
+
+        clean_intensity1 = interp_intensity1[valid_mask]
+        clean_intensity2 = interp_intensity2[valid_mask]
+
+        # Calculate correlation
+        if (
+            len(clean_intensity1) < 2
+            or np.std(clean_intensity1) == 0
+            or np.std(clean_intensity2) == 0
+        ):
+            return np.nan
+
+        correlation = np.corrcoef(clean_intensity1, clean_intensity2)[0, 1]
+        return correlation
+
+    def _get_color_for_correlation(self, correlation):
+        """
+        Get a color for a correlation coefficient value.
+        Green for high correlation (close to 1), red for low correlation (close to 0 or negative).
+
+        Args:
+            correlation: Correlation coefficient value (-1 to 1)
+
+        Returns:
+            QColor object
+        """
+        if np.isnan(correlation):
+            return QColor(200, 200, 200)  # Gray for NaN
+
+        # Clamp correlation to [-1, 1]
+        correlation = max(-1, min(1, correlation))
+
+        # Map correlation to color
+        # High correlation (0.8 to 1.0) -> Green
+        # Medium correlation (0.4 to 0.8) -> Yellow/Orange
+        # Low correlation (-1.0 to 0.4) -> Red
+
+        if correlation >= 0.8:
+            # Green for high correlation
+            # Interpolate from light green (0.8) to dark green (1.0)
+            t = (correlation - 0.8) / 0.2
+            green_val = int(200 + 55 * t)  # 200 to 255
+            return QColor(50, green_val, 50)
+        elif correlation >= 0.4:
+            # Yellow/Orange for medium correlation
+            # Interpolate from orange (0.4) to light green (0.8)
+            t = (correlation - 0.4) / 0.4
+            red_val = int(255 - 205 * t)  # 255 to 50
+            green_val = int(150 + 50 * t)  # 150 to 200
+            return QColor(red_val, green_val, 50)
+        else:
+            # Red for low correlation
+            # Interpolate from dark red (-1 or 0) to orange (0.4)
+            if correlation < 0:
+                correlation = 0  # Treat negative correlations as very low
+            t = correlation / 0.4
+            red_val = int(150 + 105 * t)  # 150 to 255
+            green_val = int(50 + 100 * t)  # 50 to 150
+            return QColor(red_val, green_val, 50)
+
+    def _update_similarity_table(self, start_rt, end_rt):
+        """
+        Update the peak shape similarity table with pairwise correlations as an n×n matrix.
+        Uses hierarchical clustering to reorder rows and columns for better visualization.
+
+        Args:
+            start_rt: Start retention time for the peak region
+            end_rt: End retention time for the peak region
+        """
+        if not self.eic_data:
+            return
+
+        # Extract peak regions for all samples
+        sample_data = {}
+        for filepath, data in self.eic_data.items():
+            rt = np.array(data["rt"])
+            intensity = np.array(data["intensity"])
+            metadata = data["metadata"]
+
+            if len(rt) == 0:
+                continue
+
+            # Get sample name
+            sample_name = metadata.get("filename", "Unknown")
+            if "." in sample_name:
+                sample_name = sample_name.rsplit(".", 1)[0]
+
+            # Extract peak region
+            mask = (rt >= start_rt) & (rt <= end_rt)
+            peak_rt = rt[mask]
+            peak_intensity = intensity[mask]
+
+            if len(peak_rt) >= 2:  # Need at least 2 points
+                sample_data[sample_name] = {"rt": peak_rt, "intensity": peak_intensity}
+
+        if len(sample_data) < 2:
+            # Need at least 2 samples for comparison
+            self.similarity_table.setRowCount(0)
+            return
+
+        # Calculate pairwise correlations and store in a matrix
+        sample_names = natsorted(list(sample_data.keys()), key=natsort_keygen())
+        n_samples = len(sample_names)
+
+        # Create correlation matrix (n x n)
+        corr_matrix = np.ones(
+            (n_samples, n_samples)
+        )  # Diagonal is 1.0 (self-correlation)
+
+        for i in range(n_samples):
+            for j in range(i + 1, n_samples):
+                sample1 = sample_names[i]
+                sample2 = sample_names[j]
+
+                corr = self._supersample_and_correlate(
+                    sample_data[sample1]["rt"],
+                    sample_data[sample1]["intensity"],
+                    sample_data[sample2]["rt"],
+                    sample_data[sample2]["intensity"],
+                )
+
+                # Store in both positions (matrix is symmetric)
+                corr_matrix[i, j] = corr
+                corr_matrix[j, i] = corr
+
+        # Perform hierarchical clustering to reorder samples
+        if n_samples >= 2:
+            try:
+                # Convert correlation to distance (1 - correlation)
+                # Replace NaN values with 0 correlation (distance = 1) for clustering
+                corr_matrix_clean = np.nan_to_num(corr_matrix, nan=0.0)
+                distance_matrix = 1 - corr_matrix_clean
+
+                # Ensure diagonal is zero (self-distance = 0)
+                np.fill_diagonal(distance_matrix, 0)
+
+                # Convert to condensed distance matrix (upper triangle)
+                condensed_dist = squareform(distance_matrix, checks=False)
+
+                # Perform hierarchical clustering using average linkage
+                linkage_matrix = hierarchy.linkage(condensed_dist, method="average")
+
+                # Get optimal leaf ordering from dendrogram
+                dendro = hierarchy.dendrogram(linkage_matrix, no_plot=True)
+                cluster_order = dendro["leaves"]
+
+                # Reorder sample names and correlation matrix
+                sample_names = [sample_names[i] for i in cluster_order]
+                corr_matrix = corr_matrix[cluster_order, :][:, cluster_order]
+
+            except Exception as e:
+                # If clustering fails, keep original order
+                print(f"Warning: Hierarchical clustering failed: {e}")
+                pass
+
+        # Update similarity table as n×n matrix
+        # Rows = samples, Columns = samples
+        self.similarity_table.setRowCount(n_samples)
+        self.similarity_table.setColumnCount(n_samples)
+        self.similarity_table.setHorizontalHeaderLabels(sample_names)
+        self.similarity_table.setVerticalHeaderLabels(sample_names)
+
+        # Disable sorting for matrix view
+        self.similarity_table.setSortingEnabled(False)
+
+        # Fill the matrix
+        for i in range(n_samples):
+            for j in range(n_samples):
+                corr_val = corr_matrix[i, j]
+
+                if np.isnan(corr_val):
+                    item = QTableWidgetItem("NaN")
+                else:
+                    item = QTableWidgetItem(f"{corr_val:.4f}")
+                    item.setData(Qt.ItemDataRole.UserRole, corr_val)
+
+                    # Set background color
+                    color = self._get_color_for_correlation(corr_val)
+                    item.setBackground(QBrush(color))
+
+                # Center align the text
+                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                self.similarity_table.setItem(i, j, item)
+
+        # Auto-resize columns
+        self.similarity_table.resizeColumnsToContents()
 
     def _calculate_peak_area_with_boundaries(
         self, rt_array, intensity_array, start_rt, end_rt
@@ -5130,18 +5498,29 @@ class MSMSViewerWindow(QWidget):
                 [f.split(".")[0] for f in files]
             )  # Show filename without extension
             inter_table.setVerticalHeaderLabels([f.split(".")[0] for f in files])
-            inter_table.setFixedHeight(min(150, 30 + len(files) * 35))
+            inter_table.setMinimumHeight(min(150, 30 + len(files) * 35))
             inter_table.setSizePolicy(
-                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
             )
 
             # Set table properties for better display
             inter_table.horizontalHeader().setDefaultSectionSize(100)
             inter_table.verticalHeader().setDefaultSectionSize(20)
 
+            # Enable context menu
+            inter_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+            inter_table.customContextMenuRequested.connect(
+                lambda pos: self._show_similarity_context_menu(inter_table, pos)
+            )
+
+            # Store reference to inter_table for context menu handler
+            self.inter_table = inter_table
+
             # Fill the table
             for i, file1 in enumerate(files):
                 for j, file2 in enumerate(files):
+                    similarities = []  # Initialize similarities for all cases
+
                     if i == j:
                         # Diagonal - show intra-file median similarity with distinct styling
                         if file1 in self.intra_file_similarities:
@@ -5176,7 +5555,6 @@ class MSMSViewerWindow(QWidget):
                         key1 = (file1, file2)
                         key2 = (file2, file1)
 
-                        similarities = None
                         if key1 in self.inter_file_similarities:
                             similarities = self.inter_file_similarities[key1]
                         elif key2 in self.inter_file_similarities:
@@ -5211,6 +5589,20 @@ class MSMSViewerWindow(QWidget):
                     font = item.font()
                     font.setPointSize(7)
                     item.setFont(font)
+
+                    # Store metadata for context menu (file indices and similarity data)
+                    item.setData(
+                        Qt.ItemDataRole.UserRole,
+                        {
+                            "file1_idx": i,
+                            "file2_idx": j,
+                            "file1_name": file1,
+                            "file2_name": file2,
+                            "similarities": similarities,
+                            "is_diagonal": i == j,
+                        },
+                    )
+
                     inter_table.setItem(i, j, item)
 
             layout.addWidget(inter_table)
@@ -5319,12 +5711,304 @@ class MSMSViewerWindow(QWidget):
 
         return chart_view
 
+    def _show_similarity_context_menu(self, table, pos):
+        """Show context menu for similarity table cells"""
+        item = table.itemAt(pos)
+        if not item:
+            return
+
+        # Get stored metadata
+        metadata = item.data(Qt.ItemDataRole.UserRole)
+        if not metadata:
+            return
+
+        file1_idx = metadata["file1_idx"]
+        file2_idx = metadata["file2_idx"]
+        file1_name = metadata["file1_name"]
+        file2_name = metadata["file2_name"]
+        similarities = metadata["similarities"]
+        is_diagonal = metadata["is_diagonal"]
+
+        # Get spectrum data for the two files
+        file1_data = None
+        file2_data = None
+        for filepath, data in self.processed_data:
+            if data["filename"] == file1_name:
+                file1_data = data
+            if data["filename"] == file2_name:
+                file2_data = data
+
+        if not file1_data or not file2_data:
+            return
+
+        # Count number of signals in each file
+        num_signals_file1 = sum(len(spec["mz"]) for spec in file1_data["spectra"])
+        num_signals_file2 = sum(len(spec["mz"]) for spec in file2_data["spectra"])
+
+        # Get precursor information (use first spectrum from each file as representative)
+        file1_spectra = file1_data["spectra"]
+        file2_spectra = file2_data["spectra"]
+
+        # Create context menu
+        menu = QMenu(self)
+        menu.setStyleSheet("""
+            QMenu {
+                background-color: white;
+                border: 1px solid #ccc;
+                padding: 5px;
+            }
+            QMenu::item {
+                padding: 5px 20px;
+            }
+            QMenu::item:selected {
+                background-color: #e0e0e0;
+            }
+        """)
+
+        # Add information section
+        info_section = QLabel()
+        info_text = f"<b>Comparison Information</b><br>"
+        info_text += f"File A: {file1_name}<br>"
+        info_text += f"File B: {file2_name}<br>"
+        info_text += f"<br>"
+        info_text += f"<b>Signals:</b><br>"
+        info_text += f"  Spectrum A: {num_signals_file1} signals across {len(file1_spectra)} spectra<br>"
+        info_text += f"  Spectrum B: {num_signals_file2} signals across {len(file2_spectra)} spectra<br>"
+        info_text += f"<br>"
+
+        # Add precursor info if available
+        if file1_spectra and file2_spectra:
+            info_text += f"<b>Representative Precursor Info:</b><br>"
+            info_text += f"  Spectrum A: m/z = {file1_spectra[0]['precursor_mz']:.4f}, "
+            info_text += (
+                f"Intensity = {file1_spectra[0].get('precursor_intensity', 0):.2e}<br>"
+            )
+            info_text += f"  Spectrum B: m/z = {file2_spectra[0]['precursor_mz']:.4f}, "
+            info_text += (
+                f"Intensity = {file2_spectra[0].get('precursor_intensity', 0):.2e}<br>"
+            )
+
+        info_section.setText(info_text)
+        info_section.setStyleSheet("padding: 10px; background-color: #f9f9f9;")
+        info_section.setWordWrap(True)
+
+        # Add the info label as a widget action
+        info_action = QAction(self)
+        info_action.setEnabled(False)
+        menu.addAction(info_action)
+
+        # Create a custom widget to hold the label
+        info_widget = QWidget()
+        info_layout = QVBoxLayout(info_widget)
+        info_layout.addWidget(info_section)
+        info_layout.setContentsMargins(0, 0, 0, 0)
+
+        widget_action = QWidgetAction(self)
+        widget_action.setDefaultWidget(info_widget)
+        menu.addAction(widget_action)
+
+        menu.addSeparator()
+
+        # Add mirror plot action (only for off-diagonal or if there are multiple spectra)
+        if not is_diagonal or len(file1_spectra) >= 2:
+            mirror_action = QAction("Show Mirror Plot", self)
+            mirror_action.triggered.connect(
+                lambda: self._show_mirror_plot(file1_data, file2_data, is_diagonal)
+            )
+            menu.addAction(mirror_action)
+
+        # Show menu at cursor position
+        menu.exec(table.viewport().mapToGlobal(pos))
+
+    def _show_mirror_plot(self, file1_data, file2_data, is_diagonal):
+        """Show mirror plot dialog for two files or two spectra from same file"""
+        if is_diagonal and len(file1_data["spectra"]) >= 2:
+            # For diagonal, compare first two spectra from the same file
+            spectrum_a = file1_data["spectra"][0]
+            spectrum_b = file1_data["spectra"][1]
+            title_a = f"{file1_data['filename']} - RT: {spectrum_a['rt']:.2f} min"
+            title_b = f"{file1_data['filename']} - RT: {spectrum_b['rt']:.2f} min"
+        else:
+            # For off-diagonal, compare first spectrum from each file
+            spectrum_a = file1_data["spectra"][0] if file1_data["spectra"] else None
+            spectrum_b = file2_data["spectra"][0] if file2_data["spectra"] else None
+
+            if not spectrum_a or not spectrum_b:
+                QMessageBox.warning(
+                    self, "No Spectra", "No spectra available for comparison."
+                )
+                return
+
+            title_a = f"{file1_data['filename']} - RT: {spectrum_a['rt']:.2f} min"
+            title_b = f"{file2_data['filename']} - RT: {spectrum_b['rt']:.2f} min"
+
+        # Calculate cosine similarity between these two spectra
+        similarity = calculate_cosine_similarity(spectrum_a, spectrum_b)
+
+        # Create and show mirror plot dialog
+        dialog = MirrorPlotDialog(
+            spectrum_a, spectrum_b, title_a, title_b, similarity, self
+        )
+        dialog.exec()
+
     def closeEvent(self, event):
         """Clean up when closing the window"""
         if hasattr(self, "extraction_worker") and self.extraction_worker.isRunning():
             self.extraction_worker.quit()
             self.extraction_worker.wait()
         event.accept()
+
+
+class MirrorPlotDialog(QDialog):
+    """Dialog for displaying two MSMS spectra as a mirror plot"""
+
+    def __init__(
+        self, spectrum_a, spectrum_b, title_a, title_b, similarity, parent=None
+    ):
+        super().__init__(parent)
+
+        self.spectrum_a = spectrum_a
+        self.spectrum_b = spectrum_b
+        self.title_a = title_a
+        self.title_b = title_b
+        self.similarity = similarity
+
+        self.init_ui()
+
+    def init_ui(self):
+        """Initialize the mirror plot dialog UI"""
+        self.setWindowTitle("Mirror Plot Comparison")
+        self.setGeometry(200, 200, 900, 700)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(10, 10, 10, 10)
+
+        # Header with similarity score
+        header = QLabel(
+            f"<b>Mirror Plot Comparison</b><br>Cosine Similarity: {self.similarity:.4f}"
+        )
+        header.setStyleSheet("font-size: 14px; padding: 10px;")
+        header.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(header)
+
+        # Create matplotlib figure for mirror plot
+        from matplotlib.figure import Figure
+        from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+
+        fig = Figure(figsize=(9, 7))
+        canvas = FigureCanvas(fig)
+
+        # Create mirror plot
+        ax = fig.add_subplot(111)
+
+        # Get spectrum data
+        mz_a = self.spectrum_a["mz"]
+        intensity_a = self.spectrum_a["intensity"]
+        mz_b = self.spectrum_b["mz"]
+        intensity_b = self.spectrum_b["intensity"]
+
+        # Normalize intensities to 0-100
+        if len(intensity_a) > 0 and np.max(intensity_a) > 0:
+            intensity_a_norm = (intensity_a / np.max(intensity_a)) * 100
+        else:
+            intensity_a_norm = intensity_a
+
+        if len(intensity_b) > 0 and np.max(intensity_b) > 0:
+            intensity_b_norm = (intensity_b / np.max(intensity_b)) * 100
+        else:
+            intensity_b_norm = intensity_b
+
+        # Plot spectrum A (top, positive direction)
+        ax.vlines(
+            mz_a,
+            0,
+            intensity_a_norm,
+            colors="blue",
+            alpha=0.7,
+            linewidth=1.5,
+            label=self.title_a,
+        )
+
+        # Plot spectrum B (bottom, negative direction)
+        ax.vlines(
+            mz_b,
+            0,
+            -intensity_b_norm,
+            colors="red",
+            alpha=0.7,
+            linewidth=1.5,
+            label=self.title_b,
+        )
+
+        # Styling
+        ax.set_xlabel("m/z", fontsize=12)
+        ax.set_ylabel("Relative Intensity (%)", fontsize=12)
+        ax.set_title(
+            f"Mirror Plot (Cosine Similarity: {self.similarity:.4f})",
+            fontsize=13,
+            fontweight="bold",
+        )
+        ax.axhline(y=0, color="black", linewidth=0.8)
+        ax.legend(loc="upper right", fontsize=10)
+        ax.grid(True, alpha=0.3)
+
+        # Set y-axis limits
+        ax.set_ylim(-105, 105)
+
+        # Adjust layout
+        fig.tight_layout()
+
+        layout.addWidget(canvas)
+
+        # Add detailed information section
+        info_box = QGroupBox("Spectrum Details")
+        info_layout = QVBoxLayout(info_box)
+
+        info_text = QLabel()
+        info_html = f"<table style='width:100%; font-size:11px;'>"
+        info_html += f"<tr><th style='text-align:left; padding:5px;'>Spectrum</th>"
+        info_html += f"<th style='text-align:left; padding:5px;'>Precursor m/z</th>"
+        info_html += (
+            f"<th style='text-align:left; padding:5px;'>Precursor Intensity</th>"
+        )
+        info_html += f"<th style='text-align:left; padding:5px;'>Signals</th>"
+        info_html += f"<th style='text-align:left; padding:5px;'>RT (min)</th></tr>"
+
+        info_html += f"<tr style='background-color:#e3f2fd;'>"
+        info_html += f"<td style='padding:5px;'>A: {self.title_a}</td>"
+        info_html += (
+            f"<td style='padding:5px;'>{self.spectrum_a['precursor_mz']:.4f}</td>"
+        )
+        info_html += f"<td style='padding:5px;'>{self.spectrum_a.get('precursor_intensity', 0):.2e}</td>"
+        info_html += f"<td style='padding:5px;'>{len(mz_a)}</td>"
+        info_html += f"<td style='padding:5px;'>{self.spectrum_a['rt']:.2f}</td></tr>"
+
+        info_html += f"<tr style='background-color:#ffebee;'>"
+        info_html += f"<td style='padding:5px;'>B: {self.title_b}</td>"
+        info_html += (
+            f"<td style='padding:5px;'>{self.spectrum_b['precursor_mz']:.4f}</td>"
+        )
+        info_html += f"<td style='padding:5px;'>{self.spectrum_b.get('precursor_intensity', 0):.2e}</td>"
+        info_html += f"<td style='padding:5px;'>{len(mz_b)}</td>"
+        info_html += f"<td style='padding:5px;'>{self.spectrum_b['rt']:.2f}</td></tr>"
+
+        info_html += "</table>"
+        info_text.setText(info_html)
+        info_text.setWordWrap(True)
+        info_layout.addWidget(info_text)
+
+        layout.addWidget(info_box)
+
+        # Close button
+        close_btn = QPushButton("Close")
+        close_btn.setMaximumWidth(100)
+        close_btn.clicked.connect(self.accept)
+
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+        btn_layout.addWidget(close_btn)
+        btn_layout.addStretch()
+        layout.addLayout(btn_layout)
 
 
 class EmbeddedScatterPlotView(QWidget):

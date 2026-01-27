@@ -1,6 +1,6 @@
 [project]
 name = "util-mzmlexplorer"
-version = "5.13.2"
+version = "5.14.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
@@ -15,6 +15,7 @@ dependencies = [
     "psutil>=5.9.0",
     "matplotlib>=3.10.6",
     "seaborn>=0.13.2",
+    "scipy>=1.10.0",
     "toml>=0.10.2",
 ]
 

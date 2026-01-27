@@ -69,6 +69,13 @@ class MzMLExplorerMainWindow(QMainWindow):
         # Key: (compound_name, ion_name) -> dict with integration data
         self.peak_integration_data = {}
 
+        # Compound file monitoring
+        self.compound_file_path = None
+        self.compound_file_size = None
+        self.compound_file_mtime = None
+        self.compound_file_monitor_timer = None
+        self.compound_file_monitoring_active = False
+
         # Load settings after data storage is initialized
         self.load_eic_defaults()
 
@@ -299,6 +306,9 @@ class MzMLExplorerMainWindow(QMainWindow):
         )
 
         if reply == QMessageBox.StandardButton.Yes:
+            # Stop monitoring compound file
+            self.stop_compound_file_monitoring()
+
             # Clear compounds data
             self.compound_manager.compounds_data = pd.DataFrame()
             self.compound_manager.compound_adduct_data = {}
@@ -1560,6 +1570,9 @@ class MzMLExplorerMainWindow(QMainWindow):
                     f"Compounds imported from {file_path}. Total: {compound_count} compounds"
                 )
 
+                # Start monitoring the compound file for changes
+                self.start_compound_file_monitoring(file_path)
+
     def load_compounds_from_excel(self, file_path):
         """Load compounds from Excel file (existing functionality)"""
         # Load all sheets from Excel file
@@ -1592,6 +1605,9 @@ class MzMLExplorerMainWindow(QMainWindow):
             f"Compounds loaded via drag & drop. Total: {compound_count} compounds"
         )
 
+        # Start monitoring the compound file for changes
+        self.start_compound_file_monitoring(file_path)
+
     def load_stylesheet(self):
         """Load the CSS stylesheet"""
         stylesheet_path = os.path.join(os.path.dirname(__file__), "style.css")
@@ -1601,6 +1617,9 @@ class MzMLExplorerMainWindow(QMainWindow):
 
     def closeEvent(self, event):
         """Clean up when closing the application"""
+        # Stop monitoring compound file
+        self.stop_compound_file_monitoring()
+
         # Close all EIC windows
         for window in self.eic_windows:
             window.close()
@@ -1680,6 +1699,99 @@ class MzMLExplorerMainWindow(QMainWindow):
         except Exception as e:
             self.memory_label.setText("Memory: Error")
         self.settings.sync()
+
+    def start_compound_file_monitoring(self, file_path):
+        """Start monitoring the compound file for changes"""
+        import os
+
+        # Stop any existing monitoring
+        self.stop_compound_file_monitoring()
+
+        # Store file information
+        self.compound_file_path = file_path
+        try:
+            stat = os.stat(file_path)
+            self.compound_file_size = stat.st_size
+            self.compound_file_mtime = stat.st_mtime
+            self.compound_file_monitoring_active = True
+
+            # Create and start timer (check every 2 seconds)
+            self.compound_file_monitor_timer = QTimer()
+            self.compound_file_monitor_timer.timeout.connect(
+                self.check_compound_file_changes
+            )
+            self.compound_file_monitor_timer.start(2000)  # 2000 ms = 2 seconds
+
+        except Exception as e:
+            # If we can't stat the file, don't start monitoring
+            self.compound_file_path = None
+            self.compound_file_size = None
+            self.compound_file_mtime = None
+            self.compound_file_monitoring_active = False
+
+    def stop_compound_file_monitoring(self):
+        """Stop monitoring the compound file"""
+        if self.compound_file_monitor_timer:
+            self.compound_file_monitor_timer.stop()
+            self.compound_file_monitor_timer = None
+
+        self.compound_file_path = None
+        self.compound_file_size = None
+        self.compound_file_mtime = None
+        self.compound_file_monitoring_active = False
+
+    def check_compound_file_changes(self):
+        """Check if the compound file has changed"""
+        import os
+
+        if not self.compound_file_monitoring_active or not self.compound_file_path:
+            return
+
+        try:
+            # Check if file still exists
+            if not os.path.exists(self.compound_file_path):
+                return
+
+            # Get current file stats
+            stat = os.stat(self.compound_file_path)
+            current_size = stat.st_size
+            current_mtime = stat.st_mtime
+
+            # Check if file has changed (size or modification time)
+            if (
+                current_size != self.compound_file_size
+                or current_mtime != self.compound_file_mtime
+            ):
+                # File has changed - prompt user
+                reply = QMessageBox.question(
+                    self,
+                    "Compound File Changed",
+                    f"The compound file has been modified:\n\n{self.compound_file_path}\n\n"
+                    "Do you want to re-import it?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.Yes,
+                )
+
+                if reply == QMessageBox.StandardButton.Yes:
+                    # Clear existing compounds
+                    self.compound_manager.compounds_data = pd.DataFrame()
+                    self.compound_manager.compound_adduct_data = {}
+
+                    # Re-import the file
+                    self.load_compounds_from_file(self.compound_file_path)
+
+                    # Update file stats after reload
+                    stat = os.stat(self.compound_file_path)
+                    self.compound_file_size = stat.st_size
+                    self.compound_file_mtime = stat.st_mtime
+                else:
+                    # User declined - stop monitoring
+                    self.stop_compound_file_monitoring()
+                    self.statusBar().showMessage("Compound file monitoring stopped.")
+
+        except Exception as e:
+            # Error accessing file - silently continue monitoring
+            pass
 
     def show_options_dialog(self):
         """Show the unified options configuration dialog"""

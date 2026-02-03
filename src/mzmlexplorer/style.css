@@ -50,3 +50,49 @@ QMenu::separator {
     background-color: #c0c0c0;
     margin: 3px 0px;
 }
+
+/* Tree widget styling for compounds table */
+QTreeWidget {
+    background-color: white;
+    border: 1px solid #c0c0c0;
+    border-radius: 4px;
+    alternate-row-color: #f9f9f9;
+}
+
+QTreeWidget::item {
+    padding: 4px;
+    border: none;
+}
+
+QTreeWidget::item:hover {
+    background-color: #e6f3ff;
+}
+
+QTreeWidget::item:selected {
+    background-color: #cce5ff;
+    color: black;
+}
+
+QTreeWidget::branch:has-siblings:!adjoins-item {
+    border-image: none;
+}
+
+QTreeWidget::branch:has-siblings:adjoins-item {
+    border-image: none;
+}
+
+QTreeWidget::branch:!has-children:!has-siblings:adjoins-item {
+    border-image: none;
+}
+
+QTreeWidget::branch:closed:has-children:has-siblings,
+QTreeWidget::branch:closed:has-children:!has-siblings {
+    border-image: none;
+    image: url(none);
+}
+
+QTreeWidget::branch:open:has-children:has-siblings,
+QTreeWidget::branch:open:has-children:!has-siblings {
+    border-image: none;
+    image: url(none);
+}

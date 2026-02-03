@@ -274,11 +274,14 @@ class MSMSPopupWindow(QWidget):
         # Connect selection change
         self.table_widget.itemSelectionChanged.connect(self.on_table_selection_changed)
 
-        # Resize columns to content
+        # Resize columns to content - allow interactive resizing
         header = self.table_widget.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        header.setStretchLastSection(True)
+        # Set initial column widths
+        header.resizeSection(0, 120)
+        header.resizeSection(1, 120)
+        header.resizeSection(2, 120)
 
         # Set minimum height
         self.table_widget.setMinimumHeight(200)
@@ -1381,12 +1384,15 @@ class EICWindow(QWidget):
 
         # Configure table appearance
         self.group_settings_table.setAlternatingRowColors(True)
+        self.group_settings_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Interactive
+        )
         self.group_settings_table.horizontalHeader().setStretchLastSection(False)
         self.group_settings_table.verticalHeader().setVisible(True)
         self.group_settings_table.setMaximumHeight(800)
         self.group_settings_table.setMinimumHeight(340)
 
-        # Set column widths
+        # Set initial column widths
         self.group_settings_table.setColumnWidth(0, 95)  # Scaling column
         self.group_settings_table.setColumnWidth(1, 30)  # Plot checkbox column
         self.group_settings_table.setColumnWidth(2, 30)  # Negative checkbox column
@@ -1609,9 +1615,9 @@ class EICWindow(QWidget):
         # Configure table appearance
         self.peak_area_table.setAlternatingRowColors(True)
         self.peak_area_table.setSortingEnabled(True)
-        self.peak_area_table.horizontalHeader().setStretchLastSection(True)
+        self.peak_area_table.horizontalHeader().setStretchLastSection(False)
         self.peak_area_table.horizontalHeader().setSectionResizeMode(
-            QHeaderView.ResizeMode.ResizeToContents
+            QHeaderView.ResizeMode.Interactive
         )
         self.peak_area_table.setSelectionBehavior(
             QAbstractItemView.SelectionBehavior.SelectRows
@@ -1662,9 +1668,9 @@ class EICWindow(QWidget):
         # Configure summary table appearance
         self.summary_stats_table.setAlternatingRowColors(True)
         self.summary_stats_table.setSortingEnabled(True)
-        self.summary_stats_table.horizontalHeader().setStretchLastSection(True)
+        self.summary_stats_table.horizontalHeader().setStretchLastSection(False)
         self.summary_stats_table.horizontalHeader().setSectionResizeMode(
-            QHeaderView.ResizeMode.ResizeToContents
+            QHeaderView.ResizeMode.Interactive
         )
         self.summary_stats_table.setSelectionBehavior(
             QAbstractItemView.SelectionBehavior.SelectRows
@@ -1700,7 +1706,7 @@ class EICWindow(QWidget):
             False
         )  # Disable sorting for matrix view
         self.similarity_table.horizontalHeader().setSectionResizeMode(
-            QHeaderView.ResizeMode.ResizeToContents
+            QHeaderView.ResizeMode.Interactive
         )
         self.similarity_table.setSelectionBehavior(
             QAbstractItemView.SelectionBehavior.SelectRows
@@ -5780,7 +5786,10 @@ class MSMSViewerWindow(QWidget):
                 QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
             )
 
-            # Set table properties for better display
+            # Set table properties for better display - allow interactive resizing
+            inter_table.horizontalHeader().setSectionResizeMode(
+                QHeaderView.ResizeMode.Interactive
+            )
             inter_table.horizontalHeader().setDefaultSectionSize(100)
             inter_table.verticalHeader().setDefaultSectionSize(20)
 

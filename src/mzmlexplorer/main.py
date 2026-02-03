@@ -11,6 +11,7 @@ from PyQt6.QtWidgets import (
     QTableWidgetItem,
     QTreeWidget,
     QTreeWidgetItem,
+    QTreeWidgetItemIterator,
     QLabel,
     QDoubleSpinBox,
     QLineEdit,
@@ -127,13 +128,13 @@ class MzMLExplorerMainWindow(QMainWindow):
         filter_layout.addWidget(self.compound_filter)
         right_layout.addLayout(filter_layout)
 
-        self.compounds_table = QTableWidget()
+        self.compounds_table = QTreeWidget()
         self.compounds_table.setColumnCount(3)
-        self.compounds_table.setHorizontalHeaderLabels(
+        self.compounds_table.setHeaderLabels(
             ["Name", "Retention Time", "Type"]
         )
         self.compounds_table.setSelectionBehavior(
-            QTableWidget.SelectionBehavior.SelectRows
+            QTreeWidget.SelectionBehavior.SelectRows
         )
         self.compounds_table.setContextMenuPolicy(
             Qt.ContextMenuPolicy.CustomContextMenu
@@ -146,11 +147,14 @@ class MzMLExplorerMainWindow(QMainWindow):
             False
         )  # Disable sorting to maintain group structure
 
-        # Configure table headers
-        header = self.compounds_table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        # Configure tree headers
+        header = self.compounds_table.header()
+        header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        header.setStretchLastSection(False)
+        # Set initial column widths
+        header.resizeSection(0, 300)
+        header.resizeSection(1, 150)
+        header.resizeSection(2, 100)
 
         right_layout.addWidget(self.compounds_table)
 
@@ -570,14 +574,16 @@ class MzMLExplorerMainWindow(QMainWindow):
 
                 self.files_table.setItem(i, j, item)
 
-        # Adjust column widths
+        # Adjust column widths - allow interactive resizing
         self.files_table.horizontalHeader().setSectionResizeMode(
-            QHeaderView.ResizeMode.ResizeToContents
+            QHeaderView.ResizeMode.Interactive
         )
+        self.files_table.horizontalHeader().setStretchLastSection(True)
 
     def update_compounds_table(self):
         """Update the compounds table with loaded data"""
-        self.compounds_table.setRowCount(0)
+        self.compounds_table.clear()
+        self.compounds_table.setHeaderLabels(["Name", "Retention Time", "Type"])
         compounds_data = self.compound_manager.get_compounds_data()
 
         if compounds_data.empty:
@@ -612,68 +618,42 @@ class MzMLExplorerMainWindow(QMainWindow):
                 # No group specified - add to ungrouped
                 ungrouped_compounds.append(idx)
 
-        # Calculate total rows needed (group headers + compounds)
-        # Add 1 for ungrouped compounds header if there are any ungrouped
-        total_rows = (
-            len(ungrouped_compounds)
-            + (1 if len(ungrouped_compounds) > 0 else 0)
-            + sum(len(indices) for indices in group_dict.values())
-            + len(group_dict)
-        )
-        self.compounds_table.setRowCount(total_rows)
-
-        current_row = 0
-
         # Add grouped compounds (sorted by group name)
         for group_name in sorted(group_dict.keys()):
             compound_indices = group_dict[group_name]
 
-            # Add group header row (group name displayed as a compound name)
-            group_header_item = QTableWidgetItem(group_name)
-            group_header_item.setFont(QFont("", -1, QFont.Weight.Bold))
-            group_header_item.setBackground(QColor(230, 230, 230))
-            self.compounds_table.setItem(current_row, 0, group_header_item)
-
-            # Make other columns in group header empty but with same background
-            for col in range(1, 3):
-                empty_item = QTableWidgetItem("")
-                empty_item.setBackground(QColor(230, 230, 230))
-                empty_item.setFlags(Qt.ItemFlag.NoItemFlags)  # Make non-selectable
-                self.compounds_table.setItem(current_row, col, empty_item)
-
-            current_row += 1
+            # Add group header as a top-level item
+            group_item = QTreeWidgetItem(self.compounds_table)
+            group_item.setText(0, group_name)
+            group_item.setFont(0, QFont("", -1, QFont.Weight.Bold))
+            group_item.setBackground(0, QColor(230, 230, 230))
+            group_item.setBackground(1, QColor(230, 230, 230))
+            group_item.setBackground(2, QColor(230, 230, 230))
+            group_item.setExpanded(True)  # Expand by default
 
             # Add compounds under this group
             for idx in compound_indices:
                 compound = compounds_data.iloc[idx]
-                self._add_compound_row(current_row, compound, indent=True)
-                current_row += 1
+                self._add_compound_row_tree(group_item, compound)
 
         # Add ungrouped compounds in their own group
         if ungrouped_compounds:
             # Add empty group header for ungrouped compounds
-            group_header_item = QTableWidgetItem(" - no group")
-            group_header_item.setFont(QFont("", -1, QFont.Weight.Bold))
-            group_header_item.setBackground(QColor(245, 245, 245))
-            self.compounds_table.setItem(current_row, 0, group_header_item)
-
-            # Make other columns in group header empty but with same background
-            for col in range(1, 3):
-                empty_item = QTableWidgetItem("")
-                empty_item.setBackground(QColor(245, 245, 245))
-                empty_item.setFlags(Qt.ItemFlag.NoItemFlags)  # Make non-selectable
-                self.compounds_table.setItem(current_row, col, empty_item)
-
-            current_row += 1
+            group_item = QTreeWidgetItem(self.compounds_table)
+            group_item.setText(0, " - no group")
+            group_item.setFont(0, QFont("", -1, QFont.Weight.Bold))
+            group_item.setBackground(0, QColor(245, 245, 245))
+            group_item.setBackground(1, QColor(245, 245, 245))
+            group_item.setBackground(2, QColor(245, 245, 245))
+            group_item.setExpanded(True)  # Expand by default
 
             # Add ungrouped compounds
             for idx in ungrouped_compounds:
                 compound = compounds_data.iloc[idx]
-                self._add_compound_row(current_row, compound, indent=True)
-                current_row += 1
+                self._add_compound_row_tree(group_item, compound)
 
     def _add_compound_row(self, row_idx, compound, indent=False):
-        """Helper method to add a compound row to the table"""
+        """Helper method to add a compound row to the table (legacy compatibility)"""
         compound_name = compound["Name"]
 
         # Compound name (with indent if under a group)
@@ -711,6 +691,43 @@ class MzMLExplorerMainWindow(QMainWindow):
 
         type_item = QTableWidgetItem(type_display)
         self.compounds_table.setItem(row_idx, 2, type_item)
+
+    def _add_compound_row_tree(self, parent_item, compound):
+        """Helper method to add a compound row to the tree widget"""
+        compound_name = compound["Name"]
+
+        # Create tree item as child of parent
+        item = QTreeWidgetItem(parent_item)
+        item.setText(0, compound_name)
+        item.setData(0, Qt.ItemDataRole.UserRole, compound.to_dict())
+
+        # Retention time info
+        rt_text = ""
+        if "RT_minutes" in compound and pd.notna(compound["RT_minutes"]):
+            avg_rt = compound["RT_minutes"]
+            rt_text = f"{avg_rt:.1f} min"
+        elif compound.get("RT_start_min") and compound.get("RT_end_min"):
+            rt_start = compound["RT_start_min"]
+            rt_end = compound["RT_end_min"]
+            # Check if using default range (0-100 min)
+            if rt_start == 0.0 and rt_end == 100.0:
+                rt_text = "full range"
+            else:
+                rt_text = f"{rt_start:.1f}-{rt_end:.1f} min"
+        else:
+            rt_text = "full range"
+
+        item.setText(1, rt_text)
+
+        # Compound type
+        compound_type = compound.get("compound_type", "formula")
+        type_display = {
+            "formula": "Formula",
+            "mass": "Mass",
+            "mz_only": "Adduct",
+        }.get(compound_type, compound_type)
+
+        item.setText(2, type_display)
 
     def show_files_context_menu(self, position):
         """Show context menu for file operations"""
@@ -795,15 +812,8 @@ class MzMLExplorerMainWindow(QMainWindow):
         if item is None:
             return
 
-        # Get the compound data from the Name column (column 0)
-        row = item.row()
-        name_item = self.compounds_table.item(row, 0)
-
-        # Skip if this is a group header row (no compound data)
-        if not name_item:
-            return
-
-        compound_data = name_item.data(Qt.ItemDataRole.UserRole)
+        # Get the compound data from the item
+        compound_data = item.data(0, Qt.ItemDataRole.UserRole)
 
         # Skip if this is a group header (no UserRole data)
         if not compound_data:
@@ -1210,26 +1220,26 @@ class MzMLExplorerMainWindow(QMainWindow):
 
         if not filter_text:
             # Show all compounds if filter is empty
-            for i in range(self.compounds_table.rowCount()):
-                self.compounds_table.setRowHidden(i, False)
+            iterator = QTreeWidgetItemIterator(self.compounds_table)
+            while iterator.value():
+                item = iterator.value()
+                item.setHidden(False)
+                iterator += 1
             return
 
         # Parse filter text
         filter_type, filter_params = self._parse_filter_text(filter_text)
 
-        for i in range(self.compounds_table.rowCount()):
-            name_item = self.compounds_table.item(i, 0)  # Column 0 is the Name column
-
-            # Handle group header rows (no compound data)
-            if not name_item:
-                # Keep group headers visible
-                continue
-
-            compound_data = name_item.data(Qt.ItemDataRole.UserRole)
+        # Iterate through all items in the tree
+        iterator = QTreeWidgetItemIterator(self.compounds_table)
+        while iterator.value():
+            item = iterator.value()
+            compound_data = item.data(0, Qt.ItemDataRole.UserRole)
 
             # This is a group header if there's no compound data
             if not compound_data:
-                # Keep group headers visible
+                # Keep group headers visible, but they'll be hidden if all children are hidden
+                iterator += 1
                 continue
 
             compound_name = compound_data["Name"]
@@ -1293,7 +1303,19 @@ class MzMLExplorerMainWindow(QMainWindow):
                     show_compound = filter_params.lower() in compound_name.lower()
 
             # Show/hide compound based on filter result
-            self.compounds_table.setRowHidden(i, not show_compound)
+            item.setHidden(not show_compound)
+            iterator += 1
+
+        # Hide group headers if all their children are hidden
+        root = self.compounds_table.invisibleRootItem()
+        for i in range(root.childCount()):
+            group_item = root.child(i)
+            all_children_hidden = True
+            for j in range(group_item.childCount()):
+                if not group_item.child(j).isHidden():
+                    all_children_hidden = False
+                    break
+            group_item.setHidden(all_children_hidden)
 
     def _parse_filter_text(self, filter_text):
         """

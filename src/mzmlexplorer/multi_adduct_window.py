@@ -114,7 +114,6 @@ class InteractiveEICWidget(QWidget):
                 margin: 1px;
                 border: 1px solid #ccc;
                 border-radius: 3px;
-                font-size: 9px;
                 font-weight: bold;
             }
             QLabel:hover {
@@ -657,11 +656,10 @@ class MultiAdductWindow(QWidget):
         header_label.setStyleSheet("""
             QLabel { 
                 background-color: #e8f4f8; 
-                padding: 8px; 
-                margin: 5px;
+                padding: 1px; 
+                margin: 1px;
                 border: 2px solid #4a90e2;
                 border-radius: 5px;
-                font-size: 12px;
             }
         """)
         layout.addWidget(header_label)
@@ -735,9 +733,8 @@ class MultiAdductWindow(QWidget):
         status_label.setStyleSheet("""
             QLabel { 
                 background-color: #f9f9f9; 
-                padding: 5px; 
+                padding: 1px; 
                 border-top: 1px solid #ccc;
-                font-size: 10px;
                 color: #666;
             }
         """)

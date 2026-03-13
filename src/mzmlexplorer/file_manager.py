@@ -3,6 +3,8 @@ File manager for handling mzML files and their metadata
 """
 
 import os
+import hashlib
+import pickle
 import pandas as pd
 import pymzml
 from typing import Dict, List, Optional, Tuple
@@ -43,6 +45,61 @@ class FileManager:
             # Clear memory cache and revert to file-based reading
             self._clear_memory_cache()
 
+    # ------------------------------------------------------------------
+    # Cache helpers
+    # ------------------------------------------------------------------
+
+    def _compute_file_hash(self, filepath: str) -> str:
+        """Compute SHA-256 hash of a file."""
+        h = hashlib.sha256()
+        with open(filepath, "rb") as f:
+            for chunk in iter(lambda: f.read(65536), b""):
+                h.update(chunk)
+        return h.hexdigest()
+
+    def _get_cache_path(self, filepath: str) -> str:
+        """Return the cache file path for a given mzML file."""
+        return filepath + ".cached.pkl"
+
+    def _load_from_cache(self, filepath: str):
+        """
+        Load parsed mzML data from disk cache if the stored hash matches the file.
+
+        Returns the cached data dict (``{"ms1": ..., "ms2": ...}``) on a hit,
+        or ``None`` on a miss / stale cache.
+        """
+        cache_path = self._get_cache_path(filepath)
+        if not os.path.exists(cache_path):
+            return None
+        try:
+            file_hash = self._compute_file_hash(filepath)
+            with open(cache_path, "rb") as f:
+                cached_hash, data = pickle.load(f)
+            if cached_hash == file_hash:
+                return data
+            # Hash mismatch – stale cache
+            os.remove(cache_path)
+            return None
+        except Exception as e:
+            print(f"Cache load failed for {os.path.basename(filepath)}: {e}")
+            try:
+                os.remove(cache_path)
+            except OSError:
+                pass
+            return None
+
+    def _save_to_cache(self, filepath: str, data: dict):
+        """Persist parsed mzML data to disk cache alongside the source file."""
+        cache_path = self._get_cache_path(filepath)
+        try:
+            file_hash = self._compute_file_hash(filepath)
+            with open(cache_path, "wb") as f:
+                pickle.dump((file_hash, data), f)
+        except Exception as e:
+            print(f"Cache save failed for {os.path.basename(filepath)}: {e}")
+
+    # ------------------------------------------------------------------
+
     def _load_all_files_to_memory(self):
         """Load all mzML files into memory cache (for use without progress dialog)"""
         if self.files_data.empty:
@@ -54,6 +111,13 @@ class FileManager:
         for _, row in self.files_data.iterrows():
             filepath = row["Filepath"]
             try:
+                # Try disk cache first
+                cached = self._load_from_cache(filepath)
+                if cached is not None:
+                    print(f"Loaded {os.path.basename(filepath)} from cache.")
+                    self.cached_data[filepath] = cached
+                    continue
+
                 print(f"Loading {os.path.basename(filepath)}...")
                 # Read all spectra into memory
                 reader = pymzml.run.Reader(filepath)
@@ -156,6 +220,9 @@ class FileManager:
                 }
                 reader.close()
 
+                # Persist to disk cache for future runs
+                self._save_to_cache(filepath, self.cached_data[filepath])
+
             except Exception as e:
                 print(f"Error loading {filepath} to memory: {str(e)}")
 
@@ -240,6 +307,26 @@ class FileManager:
         new_files_df["filename"] = new_files_df["Filepath"].apply(
             lambda x: os.path.basename(x)
         )
+
+        # Add Dilution column with default value of 1 if not present
+        if "Dilution" not in new_files_df.columns:
+            new_files_df["Dilution"] = 1.0
+        else:
+            new_files_df["Dilution"] = pd.to_numeric(
+                new_files_df["Dilution"], errors="coerce"
+            ).fillna(1.0)
+
+        # Add injection_volume column with default value of 1 if not present
+        if "injection_volume" not in new_files_df.columns:
+            new_files_df["injection_volume"] = 1.0
+        else:
+            new_files_df["injection_volume"] = pd.to_numeric(
+                new_files_df["injection_volume"], errors="coerce"
+            ).fillna(1.0)
+
+        # Ensure Quantification column exists (empty if not provided)
+        if "Quantification" not in new_files_df.columns:
+            new_files_df["Quantification"] = ""
 
         # Combine with existing data
         if self.files_data.empty:
@@ -330,24 +417,42 @@ class FileManager:
 
         display_data = self.files_data.copy()
 
-        # Reorder columns: filename first, then other columns, filepath last
+        # Derive sample name from path (filename without extension)
+        display_data["Sample Name"] = display_data["Filepath"].apply(
+            lambda p: os.path.splitext(os.path.basename(p))[0]
+        )
+
+        # Reorder columns: group, Sample Name, color, then remaining columns, filepath last
         columns = list(display_data.columns)
 
-        # Remove filename and Filepath from their current positions
-        if "filename" in columns:
-            columns.remove("filename")
-        if "Filepath" in columns:
-            columns.remove("Filepath")
+        for col in ("filename", "Filepath", "Sample Name", "group", "color"):
+            if col in columns:
+                columns.remove(col)
 
-        # Create new column order
-        new_columns = (
-            ["filename"] + [col for col in columns if col != "filename"] + ["Filepath"]
-        )
+        rest = columns  # everything that isn't in the fixed-position set
+
+        new_columns = ["group", "Sample Name", "color"] + rest + ["Filepath"]
 
         # Filter to only include columns that exist
         existing_columns = [col for col in new_columns if col in display_data.columns]
 
-        return display_data[existing_columns]
+        # Sort by group then Filepath (natural sort)
+        sort_keys = []
+        if "group" in display_data.columns:
+            sort_keys.append("group")
+        sort_keys.append("Filepath")
+
+        sorted_data = display_data[existing_columns].copy()
+        if sort_keys:
+            # Use natsorted index for natural ordering
+            from natsort import natsort_keygen
+
+            nk = natsort_keygen()
+            sorted_data = sorted_data.iloc[
+                index_natsorted(zip(*(sorted_data[k].astype(str) for k in sort_keys)))
+            ].reset_index(drop=True)
+
+        return sorted_data
 
     def get_group_color(self, group: str) -> Optional[str]:
         """Get the color assigned to a group"""
@@ -657,6 +762,183 @@ class FileManager:
         if not file_row.empty:
             return file_row.iloc[0].to_dict()
         return {}
+
+    def get_quantification_data(
+        self, filepath: str, compound_name: str
+    ) -> Optional[Tuple[float, str]]:
+        """
+        Get quantification data (abundance, unit) for a specific file and compound.
+
+        Args:
+            filepath: Path to the mzML file
+            compound_name: Name of the compound
+
+        Returns:
+            Tuple of (abundance, unit) if found, None otherwise
+        """
+        import json
+
+        file_row = self.files_data[self.files_data["Filepath"] == filepath]
+        if file_row.empty:
+            return None
+
+        quant_str = file_row.iloc[0].get("Quantification", "")
+        if not quant_str or pd.isna(quant_str):
+            return None
+
+        try:
+            # Parse JSON quantification data
+            quant_data = json.loads(quant_str)
+            if compound_name in quant_data:
+                data = quant_data[compound_name]
+                if isinstance(data, list) and len(data) == 2:
+                    abundance = float(data[0])
+                    unit = str(data[1])
+                    return (abundance, unit)
+        except (json.JSONDecodeError, ValueError, KeyError, TypeError) as e:
+            print(
+                f"Error parsing quantification data '{quant_str}' for {filepath}: {e}"
+            )
+            return None
+
+        return None
+
+    def get_dilution_factor(self, filepath: str) -> float:
+        """
+        Get the dilution factor for a specific file.
+
+        Args:
+            filepath: Path to the mzML file
+
+        Returns:
+            Dilution factor (default: 1.0)
+        """
+        file_row = self.files_data[self.files_data["Filepath"] == filepath]
+        if file_row.empty:
+            return 1.0
+
+        dilution = file_row.iloc[0].get("Dilution", 1.0)
+        try:
+            return float(dilution) if not pd.isna(dilution) else 1.0
+        except (ValueError, TypeError):
+            return 1.0
+
+    def get_injection_volume(self, filepath: str) -> float:
+        """
+        Get the injection volume for a specific file.
+
+        Args:
+            filepath: Path to the mzML file
+
+        Returns:
+            Injection volume (default: 1.0)
+        """
+        file_row = self.files_data[self.files_data["Filepath"] == filepath]
+        if file_row.empty:
+            return 1.0
+
+        if "injection_volume" not in file_row.columns:
+            return 1.0
+
+        inj_vol = file_row.iloc[0].get("injection_volume", 1.0)
+        try:
+            return float(inj_vol) if not pd.isna(inj_vol) else 1.0
+        except (ValueError, TypeError):
+            return 1.0
+
+    def get_mz_stats_in_rt_window(
+        self,
+        filepath: str,
+        target_mz: float,
+        mz_tolerance: float,
+        start_rt: float,
+        end_rt: float,
+        polarity: Optional[str] = None,
+    ) -> Optional[dict]:
+        """
+        Collect all m/z values (weighted by intensity) of peaks within
+        [target_mz - mz_tolerance, target_mz + mz_tolerance] and
+        [start_rt, end_rt] for MS1 spectra.
+
+        Returns a dict with keys 'mean_mz', 'p10_mz', 'p90_mz', or None if
+        no matching peaks were found.
+        """
+        # Normalize polarity to '+'/'-'/None
+        if polarity is not None:
+            p = str(polarity).strip().lower()
+            if p in {"+", "positive", "pos", "pos."}:
+                polarity = "+"
+            elif p in {"-", "negative", "neg", "neg."}:
+                polarity = "-"
+            else:
+                polarity = None
+
+        mz_values = []
+        weights = []
+
+        try:
+            if self.keep_in_memory and filepath in self.cached_data:
+                spectra = self.cached_data[filepath].get("ms1", [])
+                for sd in spectra:
+                    rt = sd["scan_time"]
+                    if rt < start_rt or rt > end_rt:
+                        continue
+                    if polarity is not None and sd["polarity"] is not None:
+                        if sd["polarity"] != polarity:
+                            continue
+                    mz_arr = sd["mz"]
+                    int_arr = sd["intensity"]
+                    mask = np.abs(mz_arr - target_mz) <= mz_tolerance
+                    if np.any(mask):
+                        mz_values.extend(mz_arr[mask].tolist())
+                        weights.extend(int_arr[mask].tolist())
+            else:
+                reader = pymzml.run.Reader(filepath)
+                for spectrum in reader:
+                    if spectrum.ms_level != 1:
+                        continue
+                    rt = spectrum.scan_time_in_minutes()
+                    if rt < start_rt or rt > end_rt:
+                        continue
+                    if polarity is not None:
+                        sp = self._get_spectrum_polarity(spectrum)
+                        if sp is not None and sp != polarity:
+                            continue
+                    mz_arr = spectrum.mz
+                    int_arr = spectrum.i
+                    mask = np.abs(mz_arr - target_mz) <= mz_tolerance
+                    if np.any(mask):
+                        mz_values.extend(mz_arr[mask].tolist())
+                        weights.extend(int_arr[mask].tolist())
+        except Exception as e:
+            print(f"Error computing m/z stats for {filepath}: {e}")
+            return None
+
+        if not mz_values:
+            return None
+
+        mz_arr = np.array(mz_values)
+        w_arr = np.array(weights, dtype=float)
+
+        # Weighted percentile helper
+        def weighted_percentile(data, weights, perc):
+            idx = np.argsort(data)
+            d_sorted = data[idx]
+            w_sorted = weights[idx]
+            cumw = np.cumsum(w_sorted)
+            cumw = cumw / cumw[-1]
+            return float(np.interp(perc / 100.0, cumw, d_sorted))
+
+        total_w = w_arr.sum()
+        mean_mz = (
+            float(np.dot(mz_arr, w_arr) / total_w)
+            if total_w > 0
+            else float(np.mean(mz_arr))
+        )
+        p10_mz = weighted_percentile(mz_arr, w_arr, 10)
+        p90_mz = weighted_percentile(mz_arr, w_arr, 90)
+
+        return {"mean_mz": mean_mz, "p10_mz": p10_mz, "p90_mz": p90_mz}
 
     def close_readers(self):
         """Close all mzML readers to free memory"""

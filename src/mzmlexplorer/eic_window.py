@@ -32,10 +32,10 @@ from PyQt6.QtWidgets import (
     QApplication,
     QWidgetAction,
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QPointF, QMargins
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QPointF, QMargins, QRect
 from PyQt6.QtCharts import QChart, QChartView, QLineSeries, QValueAxis
 from PyQt6.QtGui import QPen, QColor, QPainter, QMouseEvent, QAction, QBrush
-from PyQt6.QtWidgets import QSizePolicy
+from PyQt6.QtWidgets import QSizePolicy, QStyledItemDelegate, QStyleOptionViewItem
 from .utils import calculate_cosine_similarity, calculate_similarity_statistics
 import numpy as np
 from typing import Dict, Tuple, Optional, List
@@ -54,6 +54,120 @@ from scipy.cluster import hierarchy
 from scipy.spatial.distance import squareform
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
+
+
+class NumericTableWidgetItem(QTableWidgetItem):
+    """QTableWidgetItem that sorts numerically using the UserRole value."""
+
+    def __lt__(self, other):
+        try:
+            v1 = self.data(Qt.ItemDataRole.UserRole)
+            v2 = other.data(Qt.ItemDataRole.UserRole)
+            if v1 is not None and v2 is not None:
+                return float(v1) < float(v2)
+        except (TypeError, ValueError):
+            pass
+        return super().__lt__(other)
+
+
+class BarDelegate(QStyledItemDelegate):
+    """
+    Item delegate that paints a horizontal background bar proportional to the
+    cell's numeric value relative to the column maximum.
+
+    The bar is drawn in the group colour (passed per-row via UserRole + 1) at
+    alpha 0.5, and the text is then drawn on top.
+    """
+
+    # Qt.ItemDataRole values we piggy-back on
+    BAR_FRAC_ROLE = Qt.ItemDataRole.UserRole + 2  # float  0.0-1.0
+    BAR_COLOR_ROLE = Qt.ItemDataRole.UserRole + 3  # QColor
+
+    def paint(self, painter: QPainter, option: QStyleOptionViewItem, index):
+        # Let the base class draw the standard background (selection highlight etc.)
+        super().paint(painter, option, index)
+
+        frac = index.data(self.BAR_FRAC_ROLE)
+        color = index.data(self.BAR_COLOR_ROLE)
+
+        if frac is None or color is None or frac <= 0:
+            return
+
+        bar_width = int(option.rect.width() * min(frac, 1.0))
+        bar_rect = option.rect.adjusted(0, 1, 0, -1)
+        bar_rect.setWidth(bar_width)
+
+        if isinstance(color, QColor):
+            bar_color = QColor(color)
+        else:
+            bar_color = QColor(color)
+        bar_color.setAlphaF(0.5)
+
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+        painter.fillRect(bar_rect, bar_color)
+        painter.restore()
+
+        # Re-draw the text on top so it stays readable
+        painter.save()
+        text = index.data(Qt.ItemDataRole.DisplayRole)
+        if text and False:
+            painter.drawText(
+                option.rect.adjusted(4, 0, -4, 0),
+                Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                str(text),
+            )
+        painter.restore()
+
+
+class CenteredBarDelegate(QStyledItemDelegate):
+    """
+    Item delegate that paints a centered horizontal bar indicating ppm deviation
+    from the theoretical m/z value.
+
+    The bar extends from the cell centre toward the left (negative deviation) or
+    right (positive deviation).  The half-width of the cell represents the m/z
+    tolerance in ppm, so the leftmost edge = -tolerance and the rightmost = +tolerance.
+    The bar is drawn in the group colour at alpha 0.5 so the cell text stays readable.
+    """
+
+    PPM_DEVIATION_ROLE = Qt.ItemDataRole.UserRole + 4  # float  (ppm deviation)
+    PPM_RANGE_ROLE = Qt.ItemDataRole.UserRole + 5  # float  (tolerance ± ppm)
+    PPM_BAR_COLOR_ROLE = Qt.ItemDataRole.UserRole + 6  # QColor
+
+    def paint(self, painter: QPainter, option: QStyleOptionViewItem, index):
+        super().paint(painter, option, index)
+
+        ppm_dev = index.data(self.PPM_DEVIATION_ROLE)
+        ppm_range = index.data(self.PPM_RANGE_ROLE)
+        color = index.data(self.PPM_BAR_COLOR_ROLE)
+
+        if ppm_dev is None or ppm_range is None or ppm_range <= 0:
+            return
+
+        frac = max(-1.0, min(1.0, ppm_dev / ppm_range))  # -1.0 … +1.0
+        if abs(frac) < 1e-6:
+            return
+
+        rect = option.rect
+        center_x = rect.left() + rect.width() / 2
+        bar_w = max(1, int(abs(frac) * rect.width() / 2))
+        bar_top = rect.top() + 2
+        bar_h = max(1, rect.height() - 4)
+
+        if frac > 0:
+            bar_rect = QRect(int(center_x), bar_top, bar_w, bar_h)
+        else:
+            bar_rect = QRect(int(center_x) - bar_w, bar_top, bar_w, bar_h)
+
+        # Negative offset → dodgerblue, positive → firebrick (direction is always clear)
+        bar_color = QColor("dodgerblue") if frac < 0 else QColor("firebrick")
+        bar_color.setAlphaF(0.5)
+
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+        painter.fillRect(bar_rect, bar_color)
+        painter.restore()
 
 
 class CollapsibleBox(QWidget):
@@ -158,7 +272,6 @@ class MSMSPopupWindow(QWidget):
                 margin: 2px;
                 border: 1px solid #ccc;
                 border-radius: 3px;
-                font-size: 11px;
             }
         """)
         header_label.setMaximumHeight(50)  # Set maximum height for minimal appearance
@@ -513,7 +626,6 @@ class InteractiveChartView(QChartView):
                 border: 1px solid #333;
                 border-radius: 3px;
                 padding: 3px 6px;
-                font-size: 10px;
                 font-weight: bold;
             }
         """)
@@ -708,7 +820,6 @@ class InteractiveChartView(QChartView):
                         border: 1px solid {color_hex};
                         border-radius: 3px;
                         padding: 3px 6px;
-                        font-size: 10px;
                         font-weight: bold;
                         color: {color_hex};
                     }}
@@ -1099,6 +1210,7 @@ class EICWindow(QWidget):
         self.file_manager = file_manager
         self.eic_data = {}
         self.group_shifts = {}
+        self.file_shifts = {}
         self.integration_callback = integration_callback
         self.grouping_column = "group"  # Default grouping column
 
@@ -1108,7 +1220,7 @@ class EICWindow(QWidget):
             if defaults is not None
             else {
                 "mz_tolerance_ppm": 5.0,
-                "separate_groups": True,
+                "separation_mode": "By group",
                 "rt_shift_min": 1.0,
                 "crop_rt_window": False,
                 "normalize_samples": False,
@@ -1167,7 +1279,17 @@ class EICWindow(QWidget):
         self.group_settings = {}  # Will be populated when EIC data is loaded
 
         self.init_ui()
+        self._load_stylesheet()
         self.extract_eic_data()
+
+    def _load_stylesheet(self):
+        """Apply the shared application stylesheet so table styles are consistent."""
+        import os
+
+        stylesheet_path = os.path.join(os.path.dirname(__file__), "style.css")
+        if os.path.exists(stylesheet_path):
+            with open(stylesheet_path, "r") as f:
+                self.setStyleSheet(f.read())
 
     def init_ui(self):
         """Initialize the user interface"""
@@ -1293,7 +1415,63 @@ class EICWindow(QWidget):
         )
         layout.addWidget(rt_info)
 
+        # SMILES structure display
+        smiles = self.compound_data.get("SMILES") or self.compound_data.get("smiles")
+        if smiles and pd.notna(smiles) and str(smiles).strip():
+            smiles = str(smiles).strip()
+            struct_widget = self._create_structure_widget(smiles)
+            if struct_widget is not None:
+                layout.addWidget(struct_widget)
+
         return group
+
+    def _create_structure_widget(self, smiles: str):
+        """Render a SMILES string as a widget showing the SMILES text and, if rdkit
+        is available, a 2-D structure image below it.
+        """
+        container = QWidget()
+        container_layout = QVBoxLayout(container)
+        container_layout.setContentsMargins(0, 0, 0, 0)
+        container_layout.setSpacing(2)
+
+        # Always show the SMILES string as text
+        smiles_label = QLabel(f"<b>SMILES:</b><br><small>{smiles}</small>")
+        smiles_label.setWordWrap(True)
+        smiles_label.setToolTip(smiles)
+        container_layout.addWidget(smiles_label)
+
+        # Try to render the 2-D structure with rdkit
+        try:
+            from rdkit import Chem
+            from rdkit.Chem.Draw import rdMolDraw2D
+            from PyQt6.QtGui import QPixmap
+
+            mol = Chem.MolFromSmiles(smiles)
+            if mol is None:
+                raise ValueError("Invalid SMILES")
+
+            drawer = rdMolDraw2D.MolDraw2DCairo(220, 160)
+            drawer.drawOptions().clearBackground = False
+            drawer.drawOptions().addStereoAnnotation = True
+            drawer.DrawMolecule(mol)
+            drawer.FinishDrawing()
+            png_bytes = drawer.GetDrawingText()
+
+            pixmap = QPixmap()
+            pixmap.loadFromData(png_bytes, "PNG")
+
+            img_label = QLabel()
+            img_label.setPixmap(pixmap)
+            img_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            img_label.setToolTip(smiles)
+            container_layout.addWidget(img_label)
+
+        except ImportError:
+            pass  # rdkit not installed — SMILES text already added above
+        except Exception:
+            pass  # Invalid SMILES or rendering error — SMILES text already added above
+
+        return container
 
     def create_control_panel(self) -> QGroupBox:
         """Create the control panel"""
@@ -1338,13 +1516,28 @@ class EICWindow(QWidget):
         )
         layout.addRow("Group by Column:", self.grouping_column_combo)
 
-        # Group separation
-        self.separate_groups_cb = QCheckBox("Separate by groups")
-        self.separate_groups_cb.setChecked(
-            self.defaults["separate_groups"]
-        )  # Use default
-        self.separate_groups_cb.stateChanged.connect(self.update_plot)
-        layout.addRow(self.separate_groups_cb)
+        # Separation mode
+        self.separation_mode_combo = QComboBox()
+        self.separation_mode_combo.addItems(
+            [
+                "None",
+                "By group",
+                "By injection order",
+                "By group, then injection order",
+            ]
+        )
+        default_mode = self.defaults.get("separation_mode", "By group")
+        # Back-compat: translate old boolean defaults if present
+        if (
+            "separate_groups" in self.defaults
+            and "separation_mode" not in self.defaults
+        ):
+            default_mode = "By group" if self.defaults["separate_groups"] else "None"
+        idx = self.separation_mode_combo.findText(default_mode)
+        if idx >= 0:
+            self.separation_mode_combo.setCurrentIndex(idx)
+        self.separation_mode_combo.currentTextChanged.connect(self.update_plot)
+        layout.addRow("Separation:", self.separation_mode_combo)
 
         # RT shift for group separation (more flexible range)
         self.rt_shift_spin = QDoubleSpinBox()
@@ -1367,6 +1560,13 @@ class EICWindow(QWidget):
         self.normalize_cb.setChecked(self.defaults["normalize_samples"])  # Use default
         self.normalize_cb.stateChanged.connect(self.update_plot)
         layout.addRow(self.normalize_cb)
+
+        # Legend position
+        self.legend_position_combo = QComboBox()
+        self.legend_position_combo.addItems(["Right", "Top", "Off"])
+        self.legend_position_combo.setCurrentIndex(0)
+        self.legend_position_combo.currentTextChanged.connect(self.update_plot)
+        layout.addRow("Legend:", self.legend_position_combo)
 
         return group
 
@@ -1559,6 +1759,7 @@ class EICWindow(QWidget):
             # Recalculate group shifts and update the plot
             if self.eic_data:
                 self.calculate_group_shifts()
+                self.calculate_file_shifts()
                 self.populate_group_settings_table()
                 self.update_plot()
 
@@ -1624,6 +1825,14 @@ class EICWindow(QWidget):
         )
 
         peak_area_layout.addWidget(self.peak_area_table)
+
+        # Delegate for in-cell bar on the Peak Area column
+        self._peak_area_bar_delegate = BarDelegate(self.peak_area_table)
+        self.peak_area_table.setItemDelegateForColumn(2, self._peak_area_bar_delegate)
+
+        self.peak_area_table.verticalHeader().setDefaultSectionSize(20)
+        self.peak_area_table.verticalHeader().setMinimumSectionSize(16)
+
         self.boxplot_widget.addTab(peak_area_tab, "Peak area table")
 
         # Tab 3: Summary Statistics Table
@@ -1677,9 +1886,229 @@ class EICWindow(QWidget):
         )
 
         summary_stats_layout.addWidget(self.summary_stats_table)
+
+        # Delegates for in-cell bars on the numeric columns (cols 1-9, i.e. all except Group and RSD)
+        self._summary_bar_delegates = []
+        for _col in range(1, 9):  # Min, P10, P25, Median, Mean, P75, P90, Max
+            _d = BarDelegate(self.summary_stats_table)
+            self.summary_stats_table.setItemDelegateForColumn(_col, _d)
+            self._summary_bar_delegates.append(_d)
+
+        # Compact appearance — stylesheet forces pixel font on every cell
+        self.summary_stats_table.verticalHeader().setDefaultSectionSize(20)
+        self.summary_stats_table.verticalHeader().setMinimumSectionSize(16)
+
         self.boxplot_widget.addTab(summary_stats_tab, "Peak area group summaries")
 
-        # Tab 4: Peak Shape Similarity (Matrix)
+        # Tab 4: m/z statistics per sample
+        self._mz_ppm_mode = False
+        self._mz_stats_sample_rows = []
+        self._mz_stats_group_rows = []
+
+        mz_sample_tab = QWidget()
+        mz_sample_layout = QVBoxLayout(mz_sample_tab)
+
+        mz_sample_buttons = QHBoxLayout()
+        self.copy_mz_sample_excel_btn = QPushButton("Copy as Excel Tab-delimited")
+        self.copy_mz_sample_excel_btn.clicked.connect(self._copy_mz_sample_table_excel)
+        mz_sample_buttons.addWidget(self.copy_mz_sample_excel_btn)
+        self.copy_mz_sample_r_btn = QPushButton("Copy as R dataframe")
+        self.copy_mz_sample_r_btn.clicked.connect(self._copy_mz_sample_table_r)
+        mz_sample_buttons.addWidget(self.copy_mz_sample_r_btn)
+        self.mz_ppm_toggle = QCheckBox("Show ppm deviation from theoretical m/z")
+        self.mz_ppm_toggle.toggled.connect(self._toggle_mz_ppm_mode)
+        mz_sample_buttons.addWidget(self.mz_ppm_toggle)
+        mz_sample_buttons.addStretch()
+        mz_sample_layout.addLayout(mz_sample_buttons)
+
+        self.mz_sample_table = QTableWidget()
+        self.mz_sample_table.setColumnCount(6)
+        self.mz_sample_table.setHorizontalHeaderLabels(
+            ["Group", "Sample Name", "Mean m/z", "m/z P10", "m/z P90", "EIC Width (Da)"]
+        )
+        self.mz_sample_table.setAlternatingRowColors(True)
+        self.mz_sample_table.setSortingEnabled(True)
+        self.mz_sample_table.horizontalHeader().setStretchLastSection(False)
+        self.mz_sample_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Interactive
+        )
+        self.mz_sample_table.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectRows
+        )
+
+        # Compact appearance — stylesheet forces pixel font on every cell
+        self.mz_sample_table.verticalHeader().setDefaultSectionSize(20)
+        self.mz_sample_table.verticalHeader().setMinimumSectionSize(16)
+
+        mz_sample_layout.addWidget(self.mz_sample_table)
+        # Centred bar delegate for ppm deviation visualisation (always shown)
+        self._mz_ppm_bar_delegate_sample = CenteredBarDelegate(self.mz_sample_table)
+        for _col in (2, 3, 4):
+            self.mz_sample_table.setItemDelegateForColumn(
+                _col, self._mz_ppm_bar_delegate_sample
+            )
+        self.boxplot_widget.addTab(mz_sample_tab, "m/z statistics per sample")
+
+        # Tab 5: m/z statistics per group
+        mz_group_tab = QWidget()
+        mz_group_layout = QVBoxLayout(mz_group_tab)
+
+        mz_group_buttons = QHBoxLayout()
+        self.copy_mz_group_excel_btn = QPushButton("Copy as Excel Tab-delimited")
+        self.copy_mz_group_excel_btn.clicked.connect(self._copy_mz_group_table_excel)
+        mz_group_buttons.addWidget(self.copy_mz_group_excel_btn)
+        self.copy_mz_group_r_btn = QPushButton("Copy as R dataframe")
+        self.copy_mz_group_r_btn.clicked.connect(self._copy_mz_group_table_r)
+        mz_group_buttons.addWidget(self.copy_mz_group_r_btn)
+        self.mz_ppm_toggle_group = QCheckBox("Show ppm deviation from theoretical m/z")
+        self.mz_ppm_toggle_group.toggled.connect(self._toggle_mz_ppm_mode)
+        mz_group_buttons.addWidget(self.mz_ppm_toggle_group)
+        mz_group_buttons.addStretch()
+        mz_group_layout.addLayout(mz_group_buttons)
+
+        self.mz_group_table = QTableWidget()
+        self.mz_group_table.setColumnCount(7)
+        self.mz_group_table.setHorizontalHeaderLabels(
+            [
+                "Group",
+                "Mean of Mean m/z",
+                "Mean of P10 m/z",
+                "Mean of P90 m/z",
+                "Std Mean m/z",
+                "Min m/z",
+                "Max m/z",
+            ]
+        )
+        self.mz_group_table.setAlternatingRowColors(True)
+        self.mz_group_table.setSortingEnabled(True)
+        self.mz_group_table.horizontalHeader().setStretchLastSection(False)
+        self.mz_group_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Interactive
+        )
+        self.mz_group_table.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectRows
+        )
+
+        # Compact appearance — stylesheet forces pixel font on every cell
+        self.mz_group_table.verticalHeader().setDefaultSectionSize(20)
+        self.mz_group_table.verticalHeader().setMinimumSectionSize(16)
+
+        mz_group_layout.addWidget(self.mz_group_table)
+        # Centred bar delegate for ppm deviation visualisation (always shown)
+        self._mz_ppm_bar_delegate_group = CenteredBarDelegate(self.mz_group_table)
+        for _col in (1, 2, 3, 5, 6):
+            self.mz_group_table.setItemDelegateForColumn(
+                _col, self._mz_ppm_bar_delegate_group
+            )
+        self.boxplot_widget.addTab(mz_group_tab, "m/z statistics per group")
+
+        # RT statistics per sample
+        self._rt_stats_sample_rows = []
+        self._rt_stats_group_rows = []
+
+        rt_sample_tab = QWidget()
+        rt_sample_layout = QVBoxLayout(rt_sample_tab)
+
+        rt_sample_buttons = QHBoxLayout()
+        self.copy_rt_sample_excel_btn = QPushButton("Copy as Excel Tab-delimited")
+        self.copy_rt_sample_excel_btn.clicked.connect(self._copy_rt_sample_table_excel)
+        rt_sample_buttons.addWidget(self.copy_rt_sample_excel_btn)
+        self.copy_rt_sample_r_btn = QPushButton("Copy as R dataframe")
+        self.copy_rt_sample_r_btn.clicked.connect(self._copy_rt_sample_table_r)
+        rt_sample_buttons.addWidget(self.copy_rt_sample_r_btn)
+        rt_sample_buttons.addStretch()
+        rt_sample_layout.addLayout(rt_sample_buttons)
+
+        self.rt_sample_table = QTableWidget()
+        self.rt_sample_table.setColumnCount(6)
+        self.rt_sample_table.setHorizontalHeaderLabels(
+            [
+                "Group",
+                "Sample Name",
+                "FWHM Left RT",
+                "Apex RT",
+                "FWHM Right RT",
+                "FWHM Width",
+            ]
+        )
+        self.rt_sample_table.setAlternatingRowColors(True)
+        self.rt_sample_table.setSortingEnabled(True)
+        self.rt_sample_table.horizontalHeader().setStretchLastSection(False)
+        self.rt_sample_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Interactive
+        )
+        self.rt_sample_table.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectRows
+        )
+        self.rt_sample_table.verticalHeader().setDefaultSectionSize(20)
+        self.rt_sample_table.verticalHeader().setMinimumSectionSize(16)
+        rt_sample_layout.addWidget(self.rt_sample_table)
+
+        # CenteredBarDelegate for RT-position columns (apex, left, right); BarDelegate for width
+        self._rt_sample_centered_delegate = CenteredBarDelegate(self.rt_sample_table)
+        for _col in (2, 3, 4):
+            self.rt_sample_table.setItemDelegateForColumn(
+                _col, self._rt_sample_centered_delegate
+            )
+        self._rt_sample_width_delegate = BarDelegate(self.rt_sample_table)
+        self.rt_sample_table.setItemDelegateForColumn(5, self._rt_sample_width_delegate)
+
+        self.boxplot_widget.addTab(rt_sample_tab, "RT statistics per sample")
+
+        # RT statistics per group
+        rt_group_tab = QWidget()
+        rt_group_layout = QVBoxLayout(rt_group_tab)
+
+        rt_group_buttons = QHBoxLayout()
+        self.copy_rt_group_excel_btn = QPushButton("Copy as Excel Tab-delimited")
+        self.copy_rt_group_excel_btn.clicked.connect(self._copy_rt_group_table_excel)
+        rt_group_buttons.addWidget(self.copy_rt_group_excel_btn)
+        self.copy_rt_group_r_btn = QPushButton("Copy as R dataframe")
+        self.copy_rt_group_r_btn.clicked.connect(self._copy_rt_group_table_r)
+        rt_group_buttons.addWidget(self.copy_rt_group_r_btn)
+        rt_group_buttons.addStretch()
+        rt_group_layout.addLayout(rt_group_buttons)
+
+        self.rt_group_table = QTableWidget()
+        self.rt_group_table.setColumnCount(7)
+        self.rt_group_table.setHorizontalHeaderLabels(
+            [
+                "Group",
+                "Mean Apex RT",
+                "Std Apex RT",
+                "Mean FWHM Width",
+                "Std FWHM Width",
+                "Min FWHM Width",
+                "Max FWHM Width",
+            ]
+        )
+        self.rt_group_table.setAlternatingRowColors(True)
+        self.rt_group_table.setSortingEnabled(True)
+        self.rt_group_table.horizontalHeader().setStretchLastSection(False)
+        self.rt_group_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Interactive
+        )
+        self.rt_group_table.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectRows
+        )
+        self.rt_group_table.verticalHeader().setDefaultSectionSize(20)
+        self.rt_group_table.verticalHeader().setMinimumSectionSize(16)
+        rt_group_layout.addWidget(self.rt_group_table)
+
+        # CenteredBarDelegate for Mean Apex RT (col 1); BarDelegate for the rest (cols 2–6)
+        self._rt_group_centered_delegate = CenteredBarDelegate(self.rt_group_table)
+        self.rt_group_table.setItemDelegateForColumn(
+            1, self._rt_group_centered_delegate
+        )
+        self._rt_group_bar_delegates = []
+        for _col in range(2, 7):
+            _d = BarDelegate(self.rt_group_table)
+            self.rt_group_table.setItemDelegateForColumn(_col, _d)
+            self._rt_group_bar_delegates.append(_d)
+
+        self.boxplot_widget.addTab(rt_group_tab, "RT statistics per group")
+
+        # Tab 6: Peak Shape Similarity (Matrix)
         similarity_tab = QWidget()
         similarity_layout = QVBoxLayout(similarity_tab)
 
@@ -1712,10 +2141,14 @@ class EICWindow(QWidget):
             QAbstractItemView.SelectionBehavior.SelectRows
         )
 
+        # Compact appearance — stylesheet forces pixel font on every cell
+        self.similarity_table.verticalHeader().setDefaultSectionSize(20)
+        self.similarity_table.verticalHeader().setMinimumSectionSize(16)
+
         similarity_layout.addWidget(self.similarity_table)
         self.boxplot_widget.addTab(similarity_tab, "Peak shape similarity")
 
-        # Tab 5: PCA of correlation coefficients
+        # Tab 7: PCA of correlation coefficients
         pca_tab = QWidget()
         pca_layout = QVBoxLayout(pca_tab)
 
@@ -1733,6 +2166,193 @@ class EICWindow(QWidget):
         pca_layout.addWidget(self.pca_toolbar)
         pca_layout.addWidget(self.pca_canvas)
         self.boxplot_widget.addTab(pca_tab, "Peak shape similarity PCA")
+
+        # Tab 8: Quantification Calibration
+        calibration_tab = QWidget()
+        calibration_layout = QVBoxLayout(calibration_tab)
+
+        # Controls for calibration
+        calibration_controls = QHBoxLayout()
+
+        # Model selection
+        calibration_controls.addWidget(QLabel("Regression Model:"))
+        self.regression_model_combo = QComboBox()
+        self.regression_model_combo.addItems(["Linear", "Quadratic"])
+        self.regression_model_combo.currentTextChanged.connect(
+            self._update_calibration_plot
+        )
+        calibration_controls.addWidget(self.regression_model_combo)
+
+        # Axis transformation selection
+        calibration_controls.addWidget(QLabel("Axis Scale:"))
+        self.axis_transform_combo = QComboBox()
+        self.axis_transform_combo.addItems(["Linear", "Log2/Log2", "Log10/Log10"])
+        self.axis_transform_combo.currentTextChanged.connect(
+            self._update_calibration_plot
+        )
+        calibration_controls.addWidget(self.axis_transform_combo)
+
+        # Injection volume / dilution normalization
+        self.normalize_peak_area_checkbox = QCheckBox(
+            "Normalize peak areas by injection volume × dilution"
+        )
+        self.normalize_peak_area_checkbox.setChecked(False)
+        self.normalize_peak_area_checkbox.setToolTip(
+            "When checked, each peak area is multiplied by the sample's injection volume "
+            "and dilution factor before being used in regression fitting and prediction."
+        )
+        self.normalize_peak_area_checkbox.stateChanged.connect(
+            lambda _: self._update_calibration_table(self._all_peak_data)
+            if hasattr(self, "_all_peak_data")
+            else None
+        )
+        calibration_controls.addWidget(self.normalize_peak_area_checkbox)
+
+        calibration_controls.addStretch()
+        calibration_layout.addLayout(calibration_controls)
+
+        # Splitter for table and plot
+        calibration_splitter = QSplitter(Qt.Orientation.Vertical)
+
+        # Calibration table
+        self.calibration_table = QTableWidget()
+        self.calibration_table.setColumnCount(8)
+        self.calibration_table.setHorizontalHeaderLabels(
+            [
+                "Use",
+                "Sample Name",
+                "Peak Area",
+                "Abundance",
+                "Unit",
+                "Dilution",
+                "Injection Volume",
+                "Correction Factor",
+            ]
+        )
+        self.calibration_table.setAlternatingRowColors(True)
+        self.calibration_table.horizontalHeader().setStretchLastSection(False)
+        self.calibration_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Interactive
+        )
+        self.calibration_table.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectRows
+        )
+        self.calibration_table.verticalHeader().setDefaultSectionSize(20)
+        self.calibration_table.verticalHeader().setMinimumSectionSize(16)
+        self.calibration_table.itemChanged.connect(self._on_calibration_table_changed)
+        calibration_splitter.addWidget(self.calibration_table)
+
+        # Calibration plot
+        self.calibration_figure = Figure(figsize=(8, 6))
+        self.calibration_canvas = FigureCanvas(self.calibration_figure)
+        self.calibration_canvas.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
+        self.calibration_toolbar = NavigationToolbar(
+            self.calibration_canvas, calibration_tab
+        )
+
+        calibration_plot_widget = QWidget()
+        calibration_plot_layout = QVBoxLayout(calibration_plot_widget)
+        calibration_plot_layout.addWidget(self.calibration_toolbar)
+        calibration_plot_layout.addWidget(self.calibration_canvas)
+        calibration_splitter.addWidget(calibration_plot_widget)
+
+        calibration_layout.addWidget(calibration_splitter)
+        self.boxplot_widget.addTab(calibration_tab, "Quantification Calibration")
+
+        # Tab 9: Calculated Abundances
+        calculated_abundances_tab = QWidget()
+        calculated_abundances_layout = QVBoxLayout(calculated_abundances_tab)
+
+        # Buttons for calculated abundances
+        abundances_buttons_layout = QHBoxLayout()
+        self.copy_abundances_excel_btn = QPushButton("Copy as Excel Tab-delimited")
+        self.copy_abundances_excel_btn.clicked.connect(
+            self._copy_abundances_table_excel
+        )
+        abundances_buttons_layout.addWidget(self.copy_abundances_excel_btn)
+
+        self.copy_abundances_r_btn = QPushButton("Copy as R dataframe")
+        self.copy_abundances_r_btn.clicked.connect(self._copy_abundances_table_r)
+        abundances_buttons_layout.addWidget(self.copy_abundances_r_btn)
+
+        abundances_buttons_layout.addStretch()
+        calculated_abundances_layout.addLayout(abundances_buttons_layout)
+
+        # Calculated abundances table
+        self.calculated_abundances_table = QTableWidget()
+        self.calculated_abundances_table.setColumnCount(10)
+        self.calculated_abundances_table.setHorizontalHeaderLabels(
+            [
+                "Type",
+                "Group",
+                "Sample Name",
+                "Peak Area",
+                "Actual Abundance",
+                "Predicted Abundance",
+                "Unit",
+                "Dilution",
+                "Injection Volume",
+                "Correction Factor",
+            ]
+        )
+        self.calculated_abundances_table.setAlternatingRowColors(True)
+        self.calculated_abundances_table.setSortingEnabled(True)
+        self.calculated_abundances_table.horizontalHeader().setStretchLastSection(False)
+        self.calculated_abundances_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Interactive
+        )
+        self.calculated_abundances_table.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectRows
+        )
+        self.calculated_abundances_table.verticalHeader().setDefaultSectionSize(20)
+        self.calculated_abundances_table.verticalHeader().setMinimumSectionSize(16)
+        calculated_abundances_layout.addWidget(self.calculated_abundances_table)
+        self.boxplot_widget.addTab(calculated_abundances_tab, "Calculated Abundances")
+
+        # Tab 10: Quantification Group Summaries
+        quant_summary_tab = QWidget()
+        quant_summary_layout = QVBoxLayout(quant_summary_tab)
+
+        quant_summary_buttons = QHBoxLayout()
+        self.copy_quant_summary_excel_btn = QPushButton("Copy as Excel Tab-delimited")
+        self.copy_quant_summary_excel_btn.clicked.connect(
+            self._copy_quant_summary_table_excel
+        )
+        quant_summary_buttons.addWidget(self.copy_quant_summary_excel_btn)
+        self.copy_quant_summary_r_btn = QPushButton("Copy as R dataframe")
+        self.copy_quant_summary_r_btn.clicked.connect(self._copy_quant_summary_table_r)
+        quant_summary_buttons.addWidget(self.copy_quant_summary_r_btn)
+        quant_summary_buttons.addStretch()
+        quant_summary_layout.addLayout(quant_summary_buttons)
+
+        self.quant_summary_table = QTableWidget()
+        self.quant_summary_table.setColumnCount(7)
+        self.quant_summary_table.setHorizontalHeaderLabels(
+            ["Group", "Min", "Perc_10", "Median", "Mean", "Perc_90", "Max"]
+        )
+        self.quant_summary_table.setAlternatingRowColors(True)
+        self.quant_summary_table.setSortingEnabled(True)
+        self.quant_summary_table.horizontalHeader().setStretchLastSection(False)
+        self.quant_summary_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Interactive
+        )
+        self.quant_summary_table.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectRows
+        )
+        self.quant_summary_table.verticalHeader().setDefaultSectionSize(20)
+        self.quant_summary_table.verticalHeader().setMinimumSectionSize(16)
+        quant_summary_layout.addWidget(self.quant_summary_table)
+
+        # Bar delegates for numeric columns (1–6)
+        self._quant_summary_bar_delegates = []
+        for _col in range(1, 7):
+            _d = BarDelegate(self.quant_summary_table)
+            self.quant_summary_table.setItemDelegateForColumn(_col, _d)
+            self._quant_summary_bar_delegates.append(_d)
+
+        self.boxplot_widget.addTab(quant_summary_tab, "Quantification group summaries")
 
         # Initially hide the boxplot widget
         self.boxplot_widget.setVisible(False)
@@ -1812,6 +2432,18 @@ class EICWindow(QWidget):
         if hasattr(self, "similarity_table"):
             self.similarity_table.setRowCount(0)
 
+        # Clear the m/z statistics tables
+        if hasattr(self, "mz_sample_table"):
+            self.mz_sample_table.setRowCount(0)
+        if hasattr(self, "mz_group_table"):
+            self.mz_group_table.setRowCount(0)
+
+        # Clear the RT statistics tables
+        if hasattr(self, "rt_sample_table"):
+            self.rt_sample_table.setRowCount(0)
+        if hasattr(self, "rt_group_table"):
+            self.rt_group_table.setRowCount(0)
+
         if hasattr(self, "boundary_info_label"):
             self.boundary_info_label.setText("")
 
@@ -1848,10 +2480,12 @@ class EICWindow(QWidget):
         # Collect data for boxplot, table, and apex detection
         boxplot_data = {}  # group_name -> list of integrated areas
         table_data = []  # list of tuples (group, sample_name, peak_area)
+        rt_data = []  # list of tuples (group, sample_name, apex_rt, fwhm_left, fwhm_right, fwhm_width)
         apex_rt = None
         apex_intensity = float("-inf")
 
-        separate_groups = self.separate_groups_cb.isChecked()
+        sep_mode = self._separation_mode()
+        separate_groups = sep_mode == "By group"
 
         for filepath, data in self.eic_data.items():
             rt = data["rt"]
@@ -1879,18 +2513,82 @@ class EICWindow(QWidget):
                 original_rt, intensity, start_rt, end_rt
             )
 
-            # Track apex: highest intensity within the integration window
+            # Per-sample apex and FWHM computation within the integration window
+            sample_apex_rt = None
+            sample_apex_intensity = float("-inf")
+            sample_fwhm_left = None
+            sample_fwhm_right = None
+            sample_fwhm_width = None
+
+            # Build arrays confined to the integration window
+            win_rt = []
+            win_int = []
             for rt_val, intensity_val in zip(original_rt, intensity):
                 try:
                     rt_float = float(rt_val)
                     intensity_float = float(intensity_val)
                 except (TypeError, ValueError):
                     continue
-
                 if start_rt <= rt_float <= end_rt and not np.isnan(intensity_float):
+                    win_rt.append(rt_float)
+                    win_int.append(intensity_float)
+                    # Also track global apex for the plot title
                     if intensity_float > apex_intensity:
                         apex_intensity = intensity_float
                         apex_rt = rt_float
+
+            if win_rt:
+                apex_idx = int(np.argmax(win_int))
+                sample_apex_rt = win_rt[apex_idx]
+                sample_apex_intensity = win_int[apex_idx]
+                half_max = sample_apex_intensity / 2.0
+
+                # Find left FWHM crossing by scanning leftward from apex
+                fwhm_left = None
+                for i in range(apex_idx - 1, -1, -1):
+                    if win_int[i] <= half_max:
+                        # Linear interpolation between point i and i+1
+                        dI = win_int[i + 1] - win_int[i]
+                        if dI != 0:
+                            fwhm_left = win_rt[i] + (half_max - win_int[i]) / dI * (
+                                win_rt[i + 1] - win_rt[i]
+                            )
+                        else:
+                            fwhm_left = win_rt[i]
+                        break
+                if fwhm_left is None:
+                    fwhm_left = win_rt[0]  # clamp to window start
+
+                # Find right FWHM crossing by scanning rightward from apex
+                fwhm_right = None
+                for i in range(apex_idx + 1, len(win_rt)):
+                    if win_int[i] <= half_max:
+                        # Linear interpolation between point i-1 and i
+                        dI = win_int[i] - win_int[i - 1]
+                        if dI != 0:
+                            fwhm_right = win_rt[i - 1] + (
+                                half_max - win_int[i - 1]
+                            ) / dI * (win_rt[i] - win_rt[i - 1])
+                        else:
+                            fwhm_right = win_rt[i]
+                        break
+                if fwhm_right is None:
+                    fwhm_right = win_rt[-1]  # clamp to window end
+
+                sample_fwhm_left = fwhm_left
+                sample_fwhm_right = fwhm_right
+                sample_fwhm_width = fwhm_right - fwhm_left
+
+            rt_data.append(
+                (
+                    group,
+                    sample_name,
+                    sample_apex_rt,
+                    sample_fwhm_left,
+                    sample_fwhm_right,
+                    sample_fwhm_width,
+                )
+            )
 
             if integrated_area > 0:  # Only add non-zero areas
                 if group not in boxplot_data:
@@ -1982,8 +2680,20 @@ class EICWindow(QWidget):
         # Update the peak shape similarity table
         self._update_similarity_table(start_rt, end_rt)
 
+        # Update the m/z statistics tables (per sample and per group)
+        self._update_mz_stats_tables(start_rt, end_rt)
+
+        # Update the RT statistics tables (per sample and per group)
+        self._update_rt_stats_tables(rt_data)
+
         # Update the PCA plot
         self._update_pca_plot(start_rt, end_rt)
+
+        # Store all peak data for quantification (calibration + unknowns)
+        self._all_peak_data = list(table_data)
+
+        # Update the quantification calibration table and plot
+        self._update_calibration_table(table_data)
 
         # Record peak integration data if callback is provided
         if self.integration_callback:
@@ -2050,26 +2760,45 @@ class EICWindow(QWidget):
         natsort_key = natsort_keygen()
         table_data.sort(key=lambda x: (natsort_key(x[0]), natsort_key(x[1])))
 
+        # Global maximum for bar scaling
+        global_max = max((pa for _, _, pa in table_data), default=0)
+
         # Set number of rows
+        self.peak_area_table.setSortingEnabled(False)
+        self.peak_area_table.verticalHeader().setDefaultSectionSize(20)
         self.peak_area_table.setRowCount(len(table_data))
 
         # Populate the table
         for row, (group, sample_name, peak_area) in enumerate(table_data):
             # Group column
             group_item = QTableWidgetItem(str(group))
+            group_color = self._get_group_color(group)
+            if group_color:
+                gc = QColor(group_color)
+                gc.setAlphaF(0.5)
+                group_item.setBackground(gc)
             self.peak_area_table.setItem(row, 0, group_item)
 
             # Sample name column
             sample_item = QTableWidgetItem(str(sample_name))
+            if group_color:
+                sample_item.setBackground(gc)
             self.peak_area_table.setItem(row, 1, sample_item)
 
-            # Peak area column (formatted to scientific notation)
-            area_item = QTableWidgetItem(f"{peak_area:.2e}")
-            area_item.setData(
-                Qt.ItemDataRole.UserRole, peak_area
-            )  # Store actual value for sorting
+            # Peak area column (formatted to scientific notation) with bar
+            area_item = NumericTableWidgetItem(f"{peak_area:.2e}")
+            area_item.setData(Qt.ItemDataRole.UserRole, peak_area)
+
+            # Bar fraction and colour
+            frac = (peak_area / global_max) if global_max > 0 else 0.0
+            area_item.setData(BarDelegate.BAR_FRAC_ROLE, frac)
+            group_color = self._get_group_color(group)
+            if group_color:
+                area_item.setData(BarDelegate.BAR_COLOR_ROLE, QColor(group_color))
+
             self.peak_area_table.setItem(row, 2, area_item)
 
+        self.peak_area_table.setSortingEnabled(True)
         # Auto-resize columns to fit content
         self.peak_area_table.resizeColumnsToContents()
 
@@ -2119,13 +2848,27 @@ class EICWindow(QWidget):
         natsort_key = natsort_keygen()
         stats_data.sort(key=lambda x: natsort_key(x["group"]))
 
+        # Per-column max for bar scaling (cols 1-8: min,p10,p25,median,mean,p75,p90,max)
+        stat_keys_for_bar = ["min", "p10", "p25", "median", "mean", "p75", "p90", "max"]
+        col_maxima = {
+            key: max((s[key] for s in stats_data), default=0)
+            for key in stat_keys_for_bar
+        }
+
         # Set number of rows
+        self.summary_stats_table.setSortingEnabled(False)
+        self.summary_stats_table.verticalHeader().setDefaultSectionSize(20)
         self.summary_stats_table.setRowCount(len(stats_data))
 
         # Populate the table
         for row, stats in enumerate(stats_data):
             # Group name
             group_item = QTableWidgetItem(stats["group"])
+            group_color = self._get_group_color(stats["group"])
+            if group_color:
+                gc = QColor(group_color)
+                gc.setAlphaF(0.5)
+                group_item.setBackground(gc)
             self.summary_stats_table.setItem(row, 0, group_item)
 
             # Statistical values (formatted to scientific notation)
@@ -2145,16 +2888,605 @@ class EICWindow(QWidget):
             for col, value in enumerate(stat_values, 1):
                 # Format RSD as percentage with 2 decimal places
                 if col == 10:  # RSD column
-                    item = QTableWidgetItem(f"{value:.2f}")
+                    item = NumericTableWidgetItem(f"{value:.2f}")
                 else:
-                    item = QTableWidgetItem(f"{value:.2e}")
-                item.setData(
-                    Qt.ItemDataRole.UserRole, value
-                )  # Store actual value for sorting
+                    item = NumericTableWidgetItem(f"{value:.2e}")
+                item.setData(Qt.ItemDataRole.UserRole, value)
+
+                # Add bar data for cols 1-8
+                if col <= 8:
+                    bar_key = stat_keys_for_bar[col - 1]
+                    col_max = col_maxima[bar_key]
+                    frac = (value / col_max) if col_max > 0 else 0.0
+                    item.setData(BarDelegate.BAR_FRAC_ROLE, frac)
+                    if group_color:
+                        item.setData(BarDelegate.BAR_COLOR_ROLE, QColor(group_color))
+
                 self.summary_stats_table.setItem(row, col, item)
 
+        self.summary_stats_table.setSortingEnabled(True)
         # Auto-resize columns to fit content
         self.summary_stats_table.resizeColumnsToContents()
+
+    def _update_mz_stats_tables(self, start_rt, end_rt):
+        """Compute and populate the m/z statistics tables for both per-sample and per-group views."""
+        self.mz_sample_table.setRowCount(0)
+        self.mz_group_table.setRowCount(0)
+
+        if not self.eic_data:
+            return
+
+        mz_tolerance = self.mz_tolerance_da_spin.value()
+        polarity = self.polarity
+
+        sample_rows = []  # list of (group, sample_name, mean_mz, p10, p90, eic_width)
+
+        for filepath, data in self.eic_data.items():
+            metadata = data["metadata"]
+            group_value = metadata.get(self.grouping_column, "Unknown")
+            group = str(group_value) if group_value is not None else "Unknown"
+            sample_name = metadata.get("filename", "Unknown")
+            if "." in sample_name:
+                sample_name = sample_name.rsplit(".", 1)[0]
+
+            stats = self.file_manager.get_mz_stats_in_rt_window(
+                filepath, self.target_mz, mz_tolerance, start_rt, end_rt, polarity
+            )
+            if stats is None:
+                continue
+
+            eic_width = mz_tolerance * 2
+            sample_rows.append(
+                (
+                    group,
+                    sample_name,
+                    stats["mean_mz"],
+                    stats["p10_mz"],
+                    stats["p90_mz"],
+                    eic_width,
+                )
+            )
+
+        if not sample_rows:
+            return
+
+        # Sort by group then sample name
+        natsort_key = natsort_keygen()
+        sample_rows.sort(key=lambda x: (natsort_key(x[0]), natsort_key(x[1])))
+
+        # --- Per-group aggregation ---
+        group_data: dict = {}
+        for group, _, mean_mz, p10, p90, _ in sample_rows:
+            group_data.setdefault(group, {"mean": [], "p10": [], "p90": []})
+            group_data[group]["mean"].append(mean_mz)
+            group_data[group]["p10"].append(p10)
+            group_data[group]["p90"].append(p90)
+
+        group_rows = []
+        for grp, vals in group_data.items():
+            m = np.array(vals["mean"])
+            group_rows.append(
+                {
+                    "group": grp,
+                    "mean_mean": float(np.mean(m)),
+                    "mean_p10": float(np.mean(vals["p10"])),
+                    "mean_p90": float(np.mean(vals["p90"])),
+                    "std_mean": float(np.std(m, ddof=1)) if len(m) > 1 else 0.0,
+                    "min_mz": float(np.min(m)),
+                    "max_mz": float(np.max(m)),
+                }
+            )
+        group_rows.sort(key=lambda x: natsort_key(x["group"]))
+
+        # Store raw data and delegate rendering to _refresh_mz_stats_display
+        self._mz_stats_sample_rows = sample_rows
+        self._mz_stats_group_rows = group_rows
+        self._refresh_mz_stats_display()
+
+    # ------------------------------------------------------------------
+    # Copy helpers for m/z statistics tables
+    # ------------------------------------------------------------------
+
+    def _copy_mz_sample_table_excel(self):
+        """Copy m/z per-sample table as Excel tab-delimited text."""
+        tbl = self.mz_sample_table
+        if tbl.rowCount() == 0:
+            return
+        headers = [tbl.horizontalHeaderItem(c).text() for c in range(tbl.columnCount())]
+        lines = ["\t".join(headers)]
+        for r in range(tbl.rowCount()):
+            row_vals = []
+            for c in range(tbl.columnCount()):
+                item = tbl.item(r, c)
+                row_vals.append(item.text() if item else "")
+            lines.append("\t".join(row_vals))
+        QApplication.clipboard().setText("\n".join(lines))
+
+    def _copy_mz_sample_table_r(self):
+        """Copy m/z per-sample table as R dataframe code."""
+        tbl = self.mz_sample_table
+        if tbl.rowCount() == 0:
+            return
+        headers = [
+            tbl.horizontalHeaderItem(c).text().replace(" ", "_").replace("/", "_")
+            for c in range(tbl.columnCount())
+        ]
+        lines = [
+            f"df <- data.frame(",
+            "  " + ",\n  ".join(f"{h} = c()" for h in headers),
+            ")",
+        ]
+        rows_data = []
+        for r in range(tbl.rowCount()):
+            row_vals = [
+                tbl.item(r, c).text() if tbl.item(r, c) else ""
+                for c in range(tbl.columnCount())
+            ]
+            rows_data.append(row_vals)
+        col_lines = []
+        for ci, h in enumerate(headers):
+            vals = [
+                f'"{rows_data[ri][ci]}"' if ci < 2 else rows_data[ri][ci]
+                for ri in range(len(rows_data))
+            ]
+            col_lines.append(f"  {h} = c({', '.join(vals)})")
+        r_code = "df <- data.frame(\n" + ",\n".join(col_lines) + "\n)"
+        QApplication.clipboard().setText(r_code)
+
+    def _copy_mz_group_table_excel(self):
+        """Copy m/z per-group table as Excel tab-delimited text."""
+        tbl = self.mz_group_table
+        if tbl.rowCount() == 0:
+            return
+        headers = [tbl.horizontalHeaderItem(c).text() for c in range(tbl.columnCount())]
+        lines = ["\t".join(headers)]
+        for r in range(tbl.rowCount()):
+            row_vals = []
+            for c in range(tbl.columnCount()):
+                item = tbl.item(r, c)
+                row_vals.append(item.text() if item else "")
+            lines.append("\t".join(row_vals))
+        QApplication.clipboard().setText("\n".join(lines))
+
+    def _copy_mz_group_table_r(self):
+        """Copy m/z per-group table as R dataframe code."""
+        tbl = self.mz_group_table
+        if tbl.rowCount() == 0:
+            return
+        headers = [
+            tbl.horizontalHeaderItem(c).text().replace(" ", "_").replace("/", "_")
+            for c in range(tbl.columnCount())
+        ]
+        rows_data = []
+        for r in range(tbl.rowCount()):
+            rows_data.append(
+                [
+                    tbl.item(r, c).text() if tbl.item(r, c) else ""
+                    for c in range(tbl.columnCount())
+                ]
+            )
+        col_lines = []
+        for ci, h in enumerate(headers):
+            vals = [
+                f'"{rows_data[ri][ci]}"' if ci == 0 else rows_data[ri][ci]
+                for ri in range(len(rows_data))
+            ]
+            col_lines.append(f"  {h} = c({', '.join(vals)})")
+        r_code = "df <- data.frame(\n" + ",\n".join(col_lines) + "\n)"
+        QApplication.clipboard().setText(r_code)
+
+    # ------------------------------------------------------------------
+    # RT apex / FWHM statistics tables
+    # ------------------------------------------------------------------
+
+    def _update_rt_stats_tables(self, rt_data):
+        """Compute and populate the RT apex/FWHM statistics tables for both per-sample and per-group views.
+
+        Parameters
+        ----------
+        rt_data : list of tuples
+            Each tuple: (group, sample_name, apex_rt, fwhm_left, fwhm_right, fwhm_width)
+            Any of the float fields can be None if not computable.
+        """
+        self.rt_sample_table.setRowCount(0)
+        self.rt_group_table.setRowCount(0)
+
+        if not rt_data:
+            return
+
+        # Sort by group then sample name
+        natsort_key = natsort_keygen()
+        sample_rows = sorted(
+            rt_data, key=lambda x: (natsort_key(x[0]), natsort_key(x[1]))
+        )
+
+        # Store for potential later refresh
+        self._rt_stats_sample_rows = sample_rows
+
+        # Reference RT and range for centred-bar visualisation (same principle as m/z ppm offset)
+        ref_rt = float(self.compound_data.get("RT_min", 0))
+        _int_start = getattr(self, "peak_start_rt", None) or ref_rt
+        _int_end = getattr(self, "peak_end_rt", None) or ref_rt
+        rt_range = max(abs(_int_start - ref_rt), abs(_int_end - ref_rt))
+        if rt_range < 1e-6:
+            rt_range = 0.5  # fallback ±0.5 min
+
+        # Max for FWHM Width BarDelegate (col 5 only)
+        fwhm_width_vals = [row[5] for row in sample_rows if row[5] is not None]
+        fwhm_width_max = max(fwhm_width_vals) if fwhm_width_vals else 1.0
+
+        # --- Per-sample table ---
+        self.rt_sample_table.setSortingEnabled(False)
+        self.rt_sample_table.verticalHeader().setDefaultSectionSize(20)
+        self.rt_sample_table.setRowCount(len(sample_rows))
+        for row_idx, (
+            group,
+            sample_name,
+            apex_rt,
+            fwhm_left,
+            fwhm_right,
+            fwhm_width,
+        ) in enumerate(sample_rows):
+            grp_color = self._get_group_color(group)
+
+            def _colored_item(text, color=grp_color):
+                it = QTableWidgetItem(text)
+                if color:
+                    c = QColor(color)
+                    c.setAlphaF(0.5)
+                    it.setBackground(c)
+                return it
+
+            self.rt_sample_table.setItem(row_idx, 0, _colored_item(group))
+            self.rt_sample_table.setItem(row_idx, 1, _colored_item(sample_name))
+
+            # Cols 2–4: RT positions — display actual value, centred bar shows offset from RT_min
+            for col_idx, val in enumerate([fwhm_left, apex_rt, fwhm_right], start=2):
+                if val is not None:
+                    item = NumericTableWidgetItem(f"{val:.4f}")
+                    item.setData(Qt.ItemDataRole.UserRole, val)
+                    item.setData(CenteredBarDelegate.PPM_DEVIATION_ROLE, val - ref_rt)
+                    item.setData(CenteredBarDelegate.PPM_RANGE_ROLE, rt_range)
+                else:
+                    item = QTableWidgetItem("N/A")
+                    item.setData(Qt.ItemDataRole.UserRole, -1)
+                self.rt_sample_table.setItem(row_idx, col_idx, item)
+
+            # Col 5: FWHM Width — proportional bar
+            if fwhm_width is not None:
+                item = NumericTableWidgetItem(f"{fwhm_width:.4f}")
+                item.setData(Qt.ItemDataRole.UserRole, fwhm_width)
+                frac = (fwhm_width / fwhm_width_max) if fwhm_width_max > 0 else 0.0
+                item.setData(BarDelegate.BAR_FRAC_ROLE, frac)
+                if grp_color:
+                    item.setData(BarDelegate.BAR_COLOR_ROLE, QColor(grp_color))
+            else:
+                item = QTableWidgetItem("N/A")
+                item.setData(Qt.ItemDataRole.UserRole, -1)
+            self.rt_sample_table.setItem(row_idx, 5, item)
+
+        self.rt_sample_table.setSortingEnabled(True)
+        self.rt_sample_table.resizeColumnsToContents()
+
+        # --- Per-group aggregation ---
+        group_data: dict = {}
+        for group, _, apex_rt, _fl, _fr, fwhm_width in sample_rows:
+            entry = group_data.setdefault(group, {"apex": [], "fwhm": []})
+            if apex_rt is not None:
+                entry["apex"].append(apex_rt)
+            if fwhm_width is not None:
+                entry["fwhm"].append(fwhm_width)
+
+        group_rows = []
+        for grp, vals in group_data.items():
+            a = np.array(vals["apex"]) if vals["apex"] else np.array([])
+            f = np.array(vals["fwhm"]) if vals["fwhm"] else np.array([])
+            group_rows.append(
+                {
+                    "group": grp,
+                    "mean_apex": float(np.mean(a)) if len(a) > 0 else None,
+                    "std_apex": float(np.std(a, ddof=1))
+                    if len(a) > 1
+                    else (0.0 if len(a) == 1 else None),
+                    "mean_fwhm": float(np.mean(f)) if len(f) > 0 else None,
+                    "std_fwhm": float(np.std(f, ddof=1))
+                    if len(f) > 1
+                    else (0.0 if len(f) == 1 else None),
+                    "min_fwhm": float(np.min(f)) if len(f) > 0 else None,
+                    "max_fwhm": float(np.max(f)) if len(f) > 0 else None,
+                }
+            )
+        group_rows.sort(key=lambda x: natsort_key(x["group"]))
+        self._rt_stats_group_rows = group_rows
+
+        # Compute per-column maxima for the non-apex BarDelegate columns
+        grp_col_keys = [
+            "mean_apex",
+            "std_apex",
+            "mean_fwhm",
+            "std_fwhm",
+            "min_fwhm",
+            "max_fwhm",
+        ]
+        grp_col_maxima = {}
+        for key in ["std_apex", "mean_fwhm", "std_fwhm", "min_fwhm", "max_fwhm"]:
+            vals = [r[key] for r in group_rows if r[key] is not None]
+            grp_col_maxima[key] = max(vals) if vals else 1.0
+
+        # --- Per-group table ---
+        self.rt_group_table.setSortingEnabled(False)
+        self.rt_group_table.verticalHeader().setDefaultSectionSize(20)
+        self.rt_group_table.setRowCount(len(group_rows))
+        for row_idx, gr in enumerate(group_rows):
+            _grp_color = self._get_group_color(gr["group"])
+            grp_cell = QTableWidgetItem(gr["group"])
+            if _grp_color:
+                _gc = QColor(_grp_color)
+                _gc.setAlphaF(0.5)
+                grp_cell.setBackground(_gc)
+            self.rt_group_table.setItem(row_idx, 0, grp_cell)
+
+            for col_idx, key in enumerate(grp_col_keys, start=1):
+                val = gr[key]
+                if val is not None:
+                    item = NumericTableWidgetItem(f"{val:.4f}")
+                    item.setData(Qt.ItemDataRole.UserRole, val)
+                    if key == "mean_apex":
+                        # Centred bar: offset from reference RT
+                        item.setData(
+                            CenteredBarDelegate.PPM_DEVIATION_ROLE, val - ref_rt
+                        )
+                        item.setData(CenteredBarDelegate.PPM_RANGE_ROLE, rt_range)
+                    else:
+                        col_max = grp_col_maxima.get(key, 1.0)
+                        frac = (val / col_max) if col_max > 0 else 0.0
+                        item.setData(BarDelegate.BAR_FRAC_ROLE, frac)
+                        if _grp_color:
+                            item.setData(BarDelegate.BAR_COLOR_ROLE, QColor(_grp_color))
+                else:
+                    item = QTableWidgetItem("N/A")
+                    item.setData(Qt.ItemDataRole.UserRole, -1)
+                self.rt_group_table.setItem(row_idx, col_idx, item)
+
+        self.rt_group_table.setSortingEnabled(True)
+        self.rt_group_table.resizeColumnsToContents()
+
+    # ------------------------------------------------------------------
+    # Copy helpers for RT statistics tables
+    # ------------------------------------------------------------------
+
+    def _copy_rt_sample_table_excel(self):
+        """Copy RT per-sample table as Excel tab-delimited text."""
+        tbl = self.rt_sample_table
+        if tbl.rowCount() == 0:
+            return
+        headers = [tbl.horizontalHeaderItem(c).text() for c in range(tbl.columnCount())]
+        lines = ["\t".join(headers)]
+        for r in range(tbl.rowCount()):
+            row_vals = [
+                tbl.item(r, c).text() if tbl.item(r, c) else ""
+                for c in range(tbl.columnCount())
+            ]
+            lines.append("\t".join(row_vals))
+        QApplication.clipboard().setText("\n".join(lines))
+
+    def _copy_rt_sample_table_r(self):
+        """Copy RT per-sample table as R dataframe code."""
+        tbl = self.rt_sample_table
+        if tbl.rowCount() == 0:
+            return
+        headers = [
+            tbl.horizontalHeaderItem(c).text().replace(" ", "_").replace("/", "_")
+            for c in range(tbl.columnCount())
+        ]
+        rows_data = [
+            [
+                tbl.item(r, c).text() if tbl.item(r, c) else ""
+                for c in range(tbl.columnCount())
+            ]
+            for r in range(tbl.rowCount())
+        ]
+        text_cols = {0, 1}
+        col_lines = []
+        for ci, h in enumerate(headers):
+            vals = [
+                f'"{rows_data[ri][ci]}"' if ci in text_cols else rows_data[ri][ci]
+                for ri in range(len(rows_data))
+            ]
+            col_lines.append(f"  {h} = c({', '.join(vals)})")
+        r_code = "df <- data.frame(\n" + ",\n".join(col_lines) + "\n)"
+        QApplication.clipboard().setText(r_code)
+
+    def _copy_rt_group_table_excel(self):
+        """Copy RT per-group table as Excel tab-delimited text."""
+        tbl = self.rt_group_table
+        if tbl.rowCount() == 0:
+            return
+        headers = [tbl.horizontalHeaderItem(c).text() for c in range(tbl.columnCount())]
+        lines = ["\t".join(headers)]
+        for r in range(tbl.rowCount()):
+            row_vals = [
+                tbl.item(r, c).text() if tbl.item(r, c) else ""
+                for c in range(tbl.columnCount())
+            ]
+            lines.append("\t".join(row_vals))
+        QApplication.clipboard().setText("\n".join(lines))
+
+    def _copy_rt_group_table_r(self):
+        """Copy RT per-group table as R dataframe code."""
+        tbl = self.rt_group_table
+        if tbl.rowCount() == 0:
+            return
+        headers = [
+            tbl.horizontalHeaderItem(c).text().replace(" ", "_").replace("/", "_")
+            for c in range(tbl.columnCount())
+        ]
+        rows_data = [
+            [
+                tbl.item(r, c).text() if tbl.item(r, c) else ""
+                for c in range(tbl.columnCount())
+            ]
+            for r in range(tbl.rowCount())
+        ]
+        col_lines = []
+        for ci, h in enumerate(headers):
+            vals = [
+                f'"{rows_data[ri][ci]}"' if ci == 0 else rows_data[ri][ci]
+                for ri in range(len(rows_data))
+            ]
+            col_lines.append(f"  {h} = c({', '.join(vals)})")
+        r_code = "df <- data.frame(\n" + ",\n".join(col_lines) + "\n)"
+        QApplication.clipboard().setText(r_code)
+
+    # ------------------------------------------------------------------
+    # ppm / absolute m/z display toggle
+    # ------------------------------------------------------------------
+
+    def _toggle_mz_ppm_mode(self, checked: bool):
+        """Toggle between actual m/z values and ppm deviation from theoretical."""
+        self._mz_ppm_mode = checked
+        # Keep both checkboxes in sync
+        for cb in (self.mz_ppm_toggle, self.mz_ppm_toggle_group):
+            cb.blockSignals(True)
+            cb.setChecked(checked)
+            cb.blockSignals(False)
+        self._refresh_mz_stats_display()
+
+    def _refresh_mz_stats_display(self):
+        """Repopulate m/z statistics tables in absolute or ppm-deviation mode."""
+        if not getattr(self, "_mz_stats_sample_rows", None):
+            return
+
+        ppm_mode = getattr(self, "_mz_ppm_mode", False)
+        theo = self.target_mz
+
+        def to_disp(val):
+            return (val - theo) / theo * 1e6 if ppm_mode else val
+
+        def fmt(val):
+            return f"{val:.2f}" if ppm_mode else f"{val:.6f}"
+
+        # Update column headers
+        if ppm_mode:
+            self.mz_sample_table.setHorizontalHeaderLabels(
+                [
+                    "Group",
+                    "Sample Name",
+                    "Mean \u0394m/z (ppm)",
+                    "\u0394m/z P10 (ppm)",
+                    "\u0394m/z P90 (ppm)",
+                    "EIC Width (Da)",
+                ]
+            )
+            self.mz_group_table.setHorizontalHeaderLabels(
+                [
+                    "Group",
+                    "Mean \u0394m/z (ppm)",
+                    "P10 \u0394m/z (ppm)",
+                    "P90 \u0394m/z (ppm)",
+                    "Std \u0394m/z (ppm)",
+                    "Min \u0394m/z (ppm)",
+                    "Max \u0394m/z (ppm)",
+                ]
+            )
+        else:
+            self.mz_sample_table.setHorizontalHeaderLabels(
+                [
+                    "Group",
+                    "Sample Name",
+                    "Mean m/z",
+                    "m/z P10",
+                    "m/z P90",
+                    "EIC Width (Da)",
+                ]
+            )
+            self.mz_group_table.setHorizontalHeaderLabels(
+                [
+                    "Group",
+                    "Mean of Mean m/z",
+                    "Mean of P10 m/z",
+                    "Mean of P90 m/z",
+                    "Std Mean m/z",
+                    "Min m/z",
+                    "Max m/z",
+                ]
+            )
+
+        # --- Per-sample table ---
+        self.mz_sample_table.setSortingEnabled(False)
+        self.mz_sample_table.verticalHeader().setDefaultSectionSize(20)
+        self.mz_sample_table.setRowCount(len(self._mz_stats_sample_rows))
+        for row_idx, (group, sample_name, mean_mz, p10, p90, eic_w) in enumerate(
+            self._mz_stats_sample_rows
+        ):
+            grp_color = self._get_group_color(group)
+
+            def _colored_item(text, color=grp_color):
+                it = QTableWidgetItem(text)
+                if color:
+                    c = QColor(color)
+                    c.setAlphaF(0.5)
+                    it.setBackground(c)
+                return it
+
+            self.mz_sample_table.setItem(row_idx, 0, _colored_item(group))
+            self.mz_sample_table.setItem(row_idx, 1, _colored_item(sample_name))
+            _ppm_range = self.mz_tolerance_ppm_spin.value()
+            for col_idx, val in enumerate([mean_mz, p10, p90], start=2):
+                disp = to_disp(val)
+                item = QTableWidgetItem(fmt(disp))
+                item.setData(Qt.ItemDataRole.UserRole, disp)
+                # Always store ppm deviation for the bar regardless of display mode
+                _ppm_dev = (val - theo) / theo * 1e6
+                item.setData(CenteredBarDelegate.PPM_DEVIATION_ROLE, _ppm_dev)
+                item.setData(CenteredBarDelegate.PPM_RANGE_ROLE, _ppm_range)
+                if grp_color:
+                    item.setData(
+                        CenteredBarDelegate.PPM_BAR_COLOR_ROLE, QColor(grp_color)
+                    )
+                self.mz_sample_table.setItem(row_idx, col_idx, item)
+            eic_item = QTableWidgetItem(f"{eic_w:.6f}")
+            eic_item.setData(Qt.ItemDataRole.UserRole, eic_w)
+            self.mz_sample_table.setItem(row_idx, 5, eic_item)
+        self.mz_sample_table.setSortingEnabled(True)
+        self.mz_sample_table.resizeColumnsToContents()
+
+        # --- Per-group table ---
+        self.mz_group_table.setSortingEnabled(False)
+        self.mz_group_table.verticalHeader().setDefaultSectionSize(20)
+        self.mz_group_table.setRowCount(len(self._mz_stats_group_rows))
+        _PPM_BAR_KEYS = {"mean_mean", "mean_p10", "mean_p90", "min_mz", "max_mz"}
+        for row_idx, gr in enumerate(self._mz_stats_group_rows):
+            _grp_color_g = self._get_group_color(gr["group"])
+            grp_cell = QTableWidgetItem(gr["group"])
+            if _grp_color_g:
+                _gc = QColor(_grp_color_g)
+                _gc.setAlphaF(0.5)
+                grp_cell.setBackground(_gc)
+            self.mz_group_table.setItem(row_idx, 0, grp_cell)
+            _ppm_range_g = self.mz_tolerance_ppm_spin.value()
+            for col_idx, key in enumerate(
+                ["mean_mean", "mean_p10", "mean_p90", "std_mean", "min_mz", "max_mz"],
+                start=1,
+            ):
+                raw = gr[key]
+                if ppm_mode and key == "std_mean":
+                    disp = raw / theo * 1e6  # std is already a Da difference
+                else:
+                    disp = to_disp(raw)
+                item = QTableWidgetItem(fmt(disp))
+                item.setData(Qt.ItemDataRole.UserRole, disp)
+                if key in _PPM_BAR_KEYS:
+                    _ppm_dev_g = (raw - theo) / theo * 1e6
+                    item.setData(CenteredBarDelegate.PPM_DEVIATION_ROLE, _ppm_dev_g)
+                    item.setData(CenteredBarDelegate.PPM_RANGE_ROLE, _ppm_range_g)
+                    if _grp_color_g:
+                        item.setData(
+                            CenteredBarDelegate.PPM_BAR_COLOR_ROLE, QColor(_grp_color_g)
+                        )
+                self.mz_group_table.setItem(row_idx, col_idx, item)
+        self.mz_group_table.setSortingEnabled(True)
+        self.mz_group_table.resizeColumnsToContents()
 
     def _copy_peak_area_table_excel(self):
         """Copy peak area table data in Excel tab-delimited format"""
@@ -2527,6 +3859,7 @@ class EICWindow(QWidget):
 
         # Extract peak regions for all samples
         sample_data = {}
+        sample_group = {}  # sample_name -> group
         for filepath, data in self.eic_data.items():
             rt = np.array(data["rt"])
             intensity = np.array(data["intensity"])
@@ -2539,6 +3872,12 @@ class EICWindow(QWidget):
             sample_name = metadata.get("filename", "Unknown")
             if "." in sample_name:
                 sample_name = sample_name.rsplit(".", 1)[0]
+
+            # Track group for header colouring
+            group_value = metadata.get(self.grouping_column, "Unknown")
+            sample_group[sample_name] = (
+                str(group_value) if group_value is not None else "Unknown"
+            )
 
             # Extract peak region
             mask = (rt >= start_rt) & (rt <= end_rt)
@@ -2578,42 +3917,53 @@ class EICWindow(QWidget):
                 corr_matrix[i, j] = corr
                 corr_matrix[j, i] = corr
 
-        # Perform hierarchical clustering to reorder samples
-        if n_samples >= 2:
-            try:
-                # Convert correlation to distance (1 - correlation)
-                # Replace NaN values with 0 correlation (distance = 1) for clustering
-                corr_matrix_clean = np.nan_to_num(corr_matrix, nan=0.0)
-                distance_matrix = 1 - corr_matrix_clean
-
-                # Ensure diagonal is zero (self-distance = 0)
-                np.fill_diagonal(distance_matrix, 0)
-
-                # Convert to condensed distance matrix (upper triangle)
-                condensed_dist = squareform(distance_matrix, checks=False)
-
-                # Perform hierarchical clustering using average linkage
-                linkage_matrix = hierarchy.linkage(condensed_dist, method="average")
-
-                # Get optimal leaf ordering from dendrogram
-                dendro = hierarchy.dendrogram(linkage_matrix, no_plot=True)
-                cluster_order = dendro["leaves"]
-
-                # Reorder sample names and correlation matrix
-                sample_names = [sample_names[i] for i in cluster_order]
-                corr_matrix = corr_matrix[cluster_order, :][:, cluster_order]
-
-            except Exception as e:
-                # If clustering fails, keep original order
-                print(f"Warning: Hierarchical clustering failed: {e}")
-                pass
+        # Sort samples by group then sample name (within-group order)
+        natsort_key = natsort_keygen()
+        sorted_names = sorted(
+            sample_names,
+            key=lambda n: (
+                natsort_key(sample_group.get(n, "Unknown")),
+                natsort_key(n),
+            ),
+        )
+        if sorted_names != sample_names:
+            sort_order = [sample_names.index(n) for n in sorted_names]
+            sample_names = sorted_names
+            corr_matrix = corr_matrix[sort_order, :][:, sort_order]
 
         # Update similarity table as n×n matrix
         # Rows = samples, Columns = samples
+        self.similarity_table.verticalHeader().setDefaultSectionSize(20)
         self.similarity_table.setRowCount(n_samples)
         self.similarity_table.setColumnCount(n_samples)
-        self.similarity_table.setHorizontalHeaderLabels(sample_names)
-        self.similarity_table.setVerticalHeaderLabels(sample_names)
+
+        # Set header labels with group colour tinting
+        for idx, name in enumerate(sample_names):
+            grp = sample_group.get(name, "Unknown")
+            grp_color = self._get_group_color(grp)
+
+            h_item = QTableWidgetItem(name)
+            v_item = QTableWidgetItem(name)
+            if grp_color:
+                c = QColor(grp_color)
+                c.setAlphaF(0.5)
+                h_item.setBackground(c)
+                v_item.setBackground(c)
+            f = h_item.font()
+            # f.setPointSize(6)
+            h_item.setFont(f)
+            v_fnt = v_item.font()
+            # v_fnt.setPointSize(6)
+            v_item.setFont(v_fnt)
+            self.similarity_table.setHorizontalHeaderItem(idx, h_item)
+            self.similarity_table.setVerticalHeaderItem(idx, v_item)
+
+        # Compact column/row sizes — vertical header (sample names) auto-fits;
+        # data columns use the same fixed width as the MSMS inter-file table (70 px)
+        self.similarity_table.horizontalHeader().setDefaultSectionSize(70)
+        self.similarity_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Interactive
+        )
 
         # Disable sorting for matrix view
         self.similarity_table.setSortingEnabled(False)
@@ -2633,12 +3983,24 @@ class EICWindow(QWidget):
                     color = self._get_color_for_correlation(corr_val)
                     item.setBackground(QBrush(color))
 
-                # Center align the text
+                # Center align the text; small font for density
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                fnt = item.font()
+                # fnt.setPointSize(6)
+                item.setFont(fnt)
                 self.similarity_table.setItem(i, j, item)
 
-        # Auto-resize columns
-        self.similarity_table.resizeColumnsToContents()
+        # Fix all column widths to 70 px (same as MSMS inter-file table);
+        # leave the vertical header (sample name column) to auto-size
+        self.similarity_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Fixed
+        )
+        for col in range(n_samples):
+            self.similarity_table.setColumnWidth(col, 70)
+        # Restore Interactive so user can still resize manually afterwards
+        self.similarity_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Interactive
+        )
 
     def _update_pca_plot(self, start_rt, end_rt):
         """
@@ -2891,6 +4253,645 @@ class EICWindow(QWidget):
         self._pca_hover_cid = self.pca_canvas.mpl_connect(
             "motion_notify_event", on_hover
         )
+
+    def _update_calibration_table(self, table_data):
+        """Update the calibration table with samples that have quantification data.
+        Only calibration standards (samples with a Quantification entry for this compound)
+        appear in the table. Unknown samples are tracked separately for plotting."""
+        self.calibration_table.blockSignals(True)
+        self.calibration_table.setRowCount(0)
+
+        compound_name = self.compound_data.get("Name", "Unknown")
+        files_data = self.file_manager.get_files_data()
+
+        calibration_rows = []
+
+        for group, sample_name, peak_area in table_data:
+            # Match file by filename (with or without .mzML)
+            sample_filename = f"{sample_name}.mzML"
+            matching_files = files_data[files_data["filename"] == sample_filename]
+            if matching_files.empty:
+                matching_files = files_data[files_data["filename"] == sample_name]
+
+            if not matching_files.empty:
+                filepath = matching_files.iloc[0]["Filepath"]
+                quant_data = self.file_manager.get_quantification_data(
+                    filepath, compound_name
+                )
+
+                if quant_data is not None:
+                    true_abundance, unit = quant_data
+                    dilution = self.file_manager.get_dilution_factor(filepath)
+                    inj_vol = self.file_manager.get_injection_volume(filepath)
+                    correction_factor = inj_vol * dilution
+                    # The stored abundance IS the in-vial concentration.
+                    # The actual sample concentration = vial_abundance * dilution.
+                    vial_abundance = true_abundance
+                    # Optionally normalize peak area by injection volume and dilution
+                    corrected_area = (
+                        peak_area * correction_factor
+                        if self.normalize_peak_area_checkbox.isChecked()
+                        else peak_area
+                    )
+                    calibration_rows.append(
+                        {
+                            "sample_name": sample_name,
+                            "peak_area": corrected_area,
+                            "vial_abundance": vial_abundance,
+                            "unit": unit,
+                            "dilution": dilution,
+                            "inj_vol": inj_vol,
+                            "correction_factor": correction_factor,
+                        }
+                    )
+
+        self.calibration_table.setRowCount(len(calibration_rows))
+
+        for i, row in enumerate(calibration_rows):
+            # "Use" checkbox
+            checkbox_item = QTableWidgetItem()
+            checkbox_item.setFlags(
+                Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled
+            )
+            checkbox_item.setCheckState(Qt.CheckState.Checked)
+            self.calibration_table.setItem(i, 0, checkbox_item)
+
+            self.calibration_table.setItem(i, 1, QTableWidgetItem(row["sample_name"]))
+
+            area_item = QTableWidgetItem(f"{row['peak_area']:.2e}")
+            area_item.setFlags(Qt.ItemFlag.ItemIsEnabled)
+            self.calibration_table.setItem(i, 2, area_item)
+
+            # Show vial concentration (true concentration / dilution)
+            abundance_item = QTableWidgetItem(f"{row['vial_abundance']:.4g}")
+            abundance_item.setFlags(Qt.ItemFlag.ItemIsEnabled)
+            self.calibration_table.setItem(i, 3, abundance_item)
+
+            unit_item = QTableWidgetItem(row["unit"])
+            unit_item.setFlags(Qt.ItemFlag.ItemIsEnabled)
+            self.calibration_table.setItem(i, 4, unit_item)
+
+            dil_item = QTableWidgetItem(f"{row['dilution']:.4g}")
+            dil_item.setFlags(Qt.ItemFlag.ItemIsEnabled)
+            self.calibration_table.setItem(i, 5, dil_item)
+
+            iv_item = QTableWidgetItem(f"{row['inj_vol']:.4g}")
+            iv_item.setFlags(Qt.ItemFlag.ItemIsEnabled)
+            self.calibration_table.setItem(i, 6, iv_item)
+
+            cf_item = QTableWidgetItem(f"{row['correction_factor']:.4g}")
+            cf_item.setFlags(Qt.ItemFlag.ItemIsEnabled)
+            self.calibration_table.setItem(i, 7, cf_item)
+
+        self.calibration_table.blockSignals(False)
+        self._update_calibration_plot()
+
+    def _on_calibration_table_changed(self, item):
+        """Handle changes in calibration table (checkbox changes)"""
+        if item.column() == 0:  # "Use" column
+            self._update_calibration_plot()
+
+    def _update_calibration_plot(self):
+        """Update the calibration plot.
+        Calibration standards (with quantification data) are shown at their actual
+        (peak area, vial concentration) coordinates. Unknown samples are shown as
+        triangles at their predicted position on the regression curve.
+        Calibration standards excluded via checkbox are shown as gray open circles.
+        """
+        if not hasattr(self, "_all_peak_data"):
+            return
+
+        transform = self.axis_transform_combo.currentText()
+        model_type = self.regression_model_combo.currentText()
+
+        def apply_transform(v):
+            if "Log2" in transform:
+                return np.log2(max(float(v), 1e-10))
+            elif "Log10" in transform:
+                return np.log10(max(float(v), 1e-10))
+            return float(v)
+
+        def reverse_transform(v):
+            if "Log2" in transform:
+                return 2.0**v
+            elif "Log10" in transform:
+                return 10.0**v
+            return v
+
+        # Collect calibration points from table (checked vs unchecked)
+        calib_checked_x, calib_checked_y, calib_checked_names = [], [], []
+        calib_excl_x, calib_excl_y = [], []
+        calib_sample_set = set()
+
+        for i in range(self.calibration_table.rowCount()):
+            name_item = self.calibration_table.item(i, 1)
+            area_item = self.calibration_table.item(i, 2)
+            abund_item = self.calibration_table.item(i, 3)
+            checkbox_item = self.calibration_table.item(i, 0)
+            if not (name_item and area_item and abund_item):
+                continue
+            calib_sample_set.add(name_item.text())
+            try:
+                x_raw = float(area_item.text())
+                y_raw = float(abund_item.text())
+            except ValueError:
+                continue
+            if checkbox_item and checkbox_item.checkState() == Qt.CheckState.Checked:
+                calib_checked_x.append(x_raw)
+                calib_checked_y.append(y_raw)
+                calib_checked_names.append(name_item.text())
+            else:
+                calib_excl_x.append(x_raw)
+                calib_excl_y.append(y_raw)
+
+        if len(calib_checked_x) < 2:
+            self.calibration_figure.clear()
+            ax = self.calibration_figure.add_subplot(111)
+            ax.text(
+                0.5,
+                0.5,
+                "Not enough calibration points\n(minimum: 2 selected)",
+                ha="center",
+                va="center",
+                fontsize=12,
+                color="red",
+            )
+            ax.axis("off")
+            self.calibration_canvas.draw_idle()
+            return
+
+        # Collect unknown samples from all peak data
+        unknown_x_raw, unknown_names = [], []
+        files_data_plot = self.file_manager.get_files_data()
+        normalize = self.normalize_peak_area_checkbox.isChecked()
+        for _group, sample_name, peak_area in self._all_peak_data:
+            if sample_name not in calib_sample_set:
+                if normalize:
+                    _sfn = f"{sample_name}.mzML"
+                    _mf = files_data_plot[files_data_plot["filename"] == _sfn]
+                    if _mf.empty:
+                        _mf = files_data_plot[
+                            files_data_plot["filename"] == sample_name
+                        ]
+                    if not _mf.empty:
+                        _fp = _mf.iloc[0]["Filepath"]
+                        _iv = self.file_manager.get_injection_volume(_fp)
+                        _dil = self.file_manager.get_dilution_factor(_fp)
+                        peak_area = peak_area * _iv * _dil
+                unknown_x_raw.append(peak_area)
+                unknown_names.append(sample_name)
+
+        # Transform calibration data for regression
+        x_fit_pts = np.array([apply_transform(v) for v in calib_checked_x])
+        y_fit_pts = np.array([apply_transform(v) for v in calib_checked_y])
+
+        poly_degree = 1 if model_type == "Linear" else 2
+        coeffs = np.polyfit(x_fit_pts, y_fit_pts, poly_degree)
+        poly = np.poly1d(coeffs)
+
+        # R²
+        y_pred_pts = poly(x_fit_pts)
+        ss_res = np.sum((y_fit_pts - y_pred_pts) ** 2)
+        ss_tot = np.sum((y_fit_pts - np.mean(y_fit_pts)) ** 2)
+        r_squared = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0.0
+
+        if poly_degree == 1:
+            equation = f"y = {coeffs[0]:.4g}x + {coeffs[1]:.4g}"
+        else:
+            equation = (
+                f"y = {coeffs[0]:.4g}x\u00b2 + {coeffs[1]:.4g}x + {coeffs[2]:.4g}"
+            )
+
+        # Store calibration info
+        self.calibration_info = {
+            "coeffs": coeffs,
+            "model_type": model_type,
+            "transform": transform,
+            "unit": self.calibration_table.item(0, 4).text()
+            if self.calibration_table.rowCount() > 0
+            else "",
+        }
+
+        # Regression line spanning ALL samples (calibration + unknown)
+        all_x_raw = calib_checked_x + calib_excl_x + unknown_x_raw
+        all_x_t = (
+            [apply_transform(v) for v in all_x_raw] if all_x_raw else list(x_fit_pts)
+        )
+        x_line = np.linspace(min(all_x_t), max(all_x_t), 300)
+        y_line = poly(x_line)
+
+        # Axis labels
+        if "Log2" in transform:
+            x_label, y_label = "Log2(Peak Area)", "Log2(Vial Concentration)"
+        elif "Log10" in transform:
+            x_label, y_label = "Log10(Peak Area)", "Log10(Vial Concentration)"
+        else:
+            x_label, y_label = "Peak Area", "Vial Concentration"
+
+        # --- Build plot ---
+        self.calibration_figure.clear()
+        ax = self.calibration_figure.add_subplot(111)
+
+        # i) Unknown samples first (lowest z-order, alpha=0.5)
+        if unknown_x_raw:
+            unk_x_t = [apply_transform(v) for v in unknown_x_raw]
+            unk_y_pred = [poly(xt) for xt in unk_x_t]
+            ax.scatter(
+                unk_x_t,
+                unk_y_pred,
+                s=100,
+                color="darkorange",
+                alpha=0.5,
+                edgecolors="saddlebrown",
+                linewidth=1.5,
+                marker="^",
+                label="Unknown samples (predicted)",
+                zorder=1,
+            )
+
+        # ii) Regression line on top of unknown samples
+        ax.plot(
+            x_line,
+            y_line,
+            "r-",
+            linewidth=2,
+            label="Regression fit",
+            zorder=2,
+        )
+
+        # iii) Calibration standards on top of everything
+        # — excluded standards (gray open circles)
+        if calib_excl_x:
+            ax.scatter(
+                [apply_transform(v) for v in calib_excl_x],
+                [apply_transform(v) for v in calib_excl_y],
+                s=80,
+                color="gray",
+                alpha=0.6,
+                edgecolors="gray",
+                linewidth=1.5,
+                marker="o",
+                label="Standards (excluded)",
+                zorder=3,
+            )
+
+        # — used calibration standards (steel-blue filled circles)
+        ax.scatter(
+            x_fit_pts,
+            y_fit_pts,
+            s=100,
+            color="steelblue",
+            alpha=0.85,
+            edgecolors="navy",
+            linewidth=1.5,
+            marker="o",
+            label="Standards (used for calibration)",
+            zorder=4,
+        )
+
+        ax.set_xlabel(x_label, fontsize=11)
+        ax.set_ylabel(y_label, fontsize=11)
+        ax.set_title(
+            f"{equation}    R\u00b2 = {r_squared:.4f}",
+            fontsize=11,
+            fontweight="bold",
+        )
+        ax.legend(fontsize=9)
+        ax.grid(True, alpha=0.3)
+
+        self.calibration_figure.tight_layout()
+        self.calibration_canvas.draw_idle()
+
+        # Refresh the calculated abundances table
+        self._update_calculated_abundances_table()
+
+    def _update_calculated_abundances_table(self):
+        """Calculate and display abundances for ALL samples using the calibration curve.
+        Calibration standards show both the actual (stored) concentration and the
+        predicted concentration for comparison.  Unknown samples show only the predicted.
+        The predicted concentration accounts for the sample's dilution factor.
+        """
+        if not hasattr(self, "calibration_info") or self.calibration_info is None:
+            self.calculated_abundances_table.setRowCount(0)
+            return
+        if not hasattr(self, "_all_peak_data") or not self._all_peak_data:
+            self.calculated_abundances_table.setRowCount(0)
+            return
+
+        compound_name = self.compound_data.get("Name", "Unknown")
+        files_data = self.file_manager.get_files_data()
+        transform = self.calibration_info["transform"]
+        coeffs = self.calibration_info["coeffs"]
+        poly = np.poly1d(coeffs)
+
+        # Set of calibration standard names (for type classification)
+        calib_sample_set = set()
+        for i in range(self.calibration_table.rowCount()):
+            name_item = self.calibration_table.item(i, 1)
+            if name_item:
+                calib_sample_set.add(name_item.text())
+
+        def apply_transform(v):
+            if "Log2" in transform:
+                return np.log2(max(float(v), 1e-10))
+            elif "Log10" in transform:
+                return np.log10(max(float(v), 1e-10))
+            return float(v)
+
+        def reverse_transform(v):
+            if "Log2" in transform:
+                return 2.0**v
+            elif "Log10" in transform:
+                return 10.0**v
+            return v
+
+        # Colours for the Type column
+        CALIB_BG = QColor(70, 130, 180, 80)  # steelblue, semi-transparent
+        UNKNOWN_BG = QColor(255, 165, 0, 80)  # orange, semi-transparent
+
+        rows = []
+        for grp, sample_name, peak_area in self._all_peak_data:
+            # Find file for dilution and quantification lookup
+            sample_filename = f"{sample_name}.mzML"
+            matching_files = files_data[files_data["filename"] == sample_filename]
+            if matching_files.empty:
+                matching_files = files_data[files_data["filename"] == sample_name]
+
+            dilution = 1.0
+            inj_vol = 1.0
+            quant_data = None
+            if not matching_files.empty:
+                filepath = matching_files.iloc[0]["Filepath"]
+                dilution = self.file_manager.get_dilution_factor(filepath)
+                inj_vol = self.file_manager.get_injection_volume(filepath)
+                quant_data = self.file_manager.get_quantification_data(
+                    filepath, compound_name
+                )
+
+            correction_factor = inj_vol * dilution
+            # Optionally correct peak area by injection volume and dilution before prediction
+            corrected_pa = (
+                peak_area * correction_factor
+                if self.normalize_peak_area_checkbox.isChecked()
+                else peak_area
+            )
+            # Regression Y-axis = vial concentration (= stored abundance).
+            # Actual sample concentration = predicted_vial_conc * dilution.
+            pa_t = apply_transform(corrected_pa)
+            predicted_vial_conc = reverse_transform(poly(pa_t))
+            predicted_actual_conc = predicted_vial_conc * dilution
+
+            if quant_data is not None:
+                true_abundance, unit = quant_data
+                sample_type = "Calibration standard"
+                actual_str = f"{true_abundance:.4g}"
+            else:
+                unit = self.calibration_info.get("unit", "")
+                sample_type = "Unknown"
+                actual_str = "N/A"
+
+            rows.append(
+                {
+                    "type": sample_type,
+                    "group": str(grp),
+                    "sample_name": sample_name,
+                    "peak_area": peak_area,
+                    "actual_abundance": actual_str,
+                    "predicted_abundance": predicted_actual_conc,
+                    "unit": unit,
+                    "dilution": dilution,
+                    "inj_vol": inj_vol,
+                    "correction_factor": correction_factor,
+                }
+            )
+
+        self.calculated_abundances_table.setRowCount(len(rows))
+        for i, data in enumerate(rows):
+            # Type column — colour by sample class
+            type_item = QTableWidgetItem(data["type"])
+            type_item.setBackground(
+                CALIB_BG if data["type"] == "Calibration standard" else UNKNOWN_BG
+            )
+            self.calculated_abundances_table.setItem(i, 0, type_item)
+
+            # Group column — colour by group
+            group_color = self._get_group_color(data["group"])
+            gc = None
+            if group_color:
+                gc = QColor(group_color)
+                gc.setAlphaF(0.5)
+            group_item = QTableWidgetItem(data["group"])
+            if gc:
+                group_item.setBackground(gc)
+            self.calculated_abundances_table.setItem(i, 1, group_item)
+
+            # Sample name column — colour by group
+            name_item = QTableWidgetItem(data["sample_name"])
+            if gc:
+                name_item.setBackground(gc)
+            self.calculated_abundances_table.setItem(i, 2, name_item)
+
+            self.calculated_abundances_table.setItem(
+                i, 3, QTableWidgetItem(f"{data['peak_area']:.2e}")
+            )
+            self.calculated_abundances_table.setItem(
+                i, 4, QTableWidgetItem(data["actual_abundance"])
+            )
+            self.calculated_abundances_table.setItem(
+                i, 5, QTableWidgetItem(f"{data['predicted_abundance']:.4g}")
+            )
+            self.calculated_abundances_table.setItem(
+                i, 6, QTableWidgetItem(data["unit"])
+            )
+            self.calculated_abundances_table.setItem(
+                i, 7, QTableWidgetItem(f"{data['dilution']:.4g}")
+            )
+            self.calculated_abundances_table.setItem(
+                i, 8, QTableWidgetItem(f"{data['inj_vol']:.4g}")
+            )
+            self.calculated_abundances_table.setItem(
+                i, 9, QTableWidgetItem(f"{data['correction_factor']:.4g}")
+            )
+
+        # Refresh the group summary table
+        self._update_quant_summary_table(rows)
+
+    def _copy_abundances_table_excel(self):
+        """Copy calculated abundances table to clipboard in Excel format"""
+        if self.calculated_abundances_table.rowCount() == 0:
+            return
+
+        # Build tab-delimited text
+        lines = []
+
+        # Header
+        header = []
+        for col in range(self.calculated_abundances_table.columnCount()):
+            header.append(
+                self.calculated_abundances_table.horizontalHeaderItem(col).text()
+            )
+        lines.append("\t".join(header))
+
+        # Data rows
+        for row in range(self.calculated_abundances_table.rowCount()):
+            row_data = []
+            for col in range(self.calculated_abundances_table.columnCount()):
+                item = self.calculated_abundances_table.item(row, col)
+                row_data.append(item.text() if item else "")
+            lines.append("\t".join(row_data))
+
+        # Copy to clipboard
+        clipboard_text = "\n".join(lines)
+        QApplication.clipboard().setText(clipboard_text)
+
+    def _copy_abundances_table_r(self):
+        """Copy calculated abundances table to clipboard in R dataframe format"""
+        if self.calculated_abundances_table.rowCount() == 0:
+            return
+
+        # Build R dataframe format
+        lines = []
+
+        # Build data by columns
+        # Columns: 0=Type(str), 1=Group(str), 2=SampleName(str), 3=PeakArea(num),
+        #          4=ActualAbundance(str/num), 5=PredictedAbundance(num),
+        #          6=Unit(str), 7=Dilution(num), 8=InjectionVolume(num), 9=CorrectionFactor(num)
+        text_cols = {0, 1, 2, 4, 6}
+        for col in range(self.calculated_abundances_table.columnCount()):
+            col_name = self.calculated_abundances_table.horizontalHeaderItem(col).text()
+            col_name = col_name.replace(" ", "_")
+
+            values = []
+            for row in range(self.calculated_abundances_table.rowCount()):
+                item = self.calculated_abundances_table.item(row, col)
+                if item:
+                    text = item.text()
+                    if col in text_cols:
+                        values.append(f'"{text}"')
+                    else:
+                        values.append(text)
+
+            lines.append(f"{col_name} = c({', '.join(values)})")
+
+        # Wrap in data.frame
+        clipboard_text = f"data.frame(\n  {',\n  '.join(lines)}\n)"
+        QApplication.clipboard().setText(clipboard_text)
+
+    def _update_quant_summary_table(self, rows=None):
+        """Per-group statistics of predicted concentrations.
+        Accepts the rows list from _update_calculated_abundances_table directly
+        to avoid fragile column-index reads from the display widget.
+        """
+        self.quant_summary_table.setRowCount(0)
+
+        if not hasattr(self, "calibration_info") or self.calibration_info is None:
+            return
+        if not rows:
+            return
+
+        # Build group -> [predicted_abundance, ...] from the rows data directly
+        group_values: dict = {}
+        for data in rows:
+            grp = data["group"]
+            pred = data["predicted_abundance"]
+            try:
+                group_values.setdefault(grp, []).append(float(pred))
+            except (ValueError, TypeError):
+                continue
+
+        if not group_values:
+            return
+
+        stats_data = []
+        for grp, vals in group_values.items():
+            arr = np.array(vals)
+            stats_data.append(
+                {
+                    "group": grp,
+                    "min": float(np.min(arr)),
+                    "p10": float(np.percentile(arr, 10)),
+                    "median": float(np.percentile(arr, 50)),
+                    "mean": float(np.mean(arr)),
+                    "p90": float(np.percentile(arr, 90)),
+                    "max": float(np.max(arr)),
+                }
+            )
+
+        natsort_key = natsort_keygen()
+        stats_data.sort(key=lambda x: natsort_key(x["group"]))
+
+        stat_keys = ["min", "p10", "median", "mean", "p90", "max"]
+        col_maxima = {
+            k: max((abs(s[k]) for s in stats_data), default=0) for k in stat_keys
+        }
+
+        self.quant_summary_table.setSortingEnabled(False)
+        self.quant_summary_table.setRowCount(len(stats_data))
+
+        for row, stats in enumerate(stats_data):
+            group_color = self._get_group_color(stats["group"])
+            gc = None
+            if group_color:
+                gc = QColor(group_color)
+                gc.setAlphaF(0.5)
+
+            # Group column
+            group_item = QTableWidgetItem(stats["group"])
+            if gc:
+                group_item.setBackground(gc)
+            self.quant_summary_table.setItem(row, 0, group_item)
+
+            # Stat columns
+            for col_idx, key in enumerate(stat_keys, 1):
+                value = stats[key]
+                item = NumericTableWidgetItem(f"{value:.4g}")
+                item.setData(Qt.ItemDataRole.UserRole, value)
+                col_max = col_maxima[key]
+                frac = (abs(value) / col_max) if col_max > 0 else 0.0
+                item.setData(BarDelegate.BAR_FRAC_ROLE, frac)
+                if group_color:
+                    item.setData(BarDelegate.BAR_COLOR_ROLE, QColor(group_color))
+                self.quant_summary_table.setItem(row, col_idx, item)
+
+        self.quant_summary_table.setSortingEnabled(True)
+        self.quant_summary_table.resizeColumnsToContents()
+
+    def _copy_quant_summary_table_excel(self):
+        """Copy quantification group summaries table to clipboard as tab-delimited text."""
+        if self.quant_summary_table.rowCount() == 0:
+            return
+        lines = []
+        header = [
+            self.quant_summary_table.horizontalHeaderItem(c).text()
+            for c in range(self.quant_summary_table.columnCount())
+        ]
+        lines.append("\t".join(header))
+        for row in range(self.quant_summary_table.rowCount()):
+            row_data = []
+            for col in range(self.quant_summary_table.columnCount()):
+                item = self.quant_summary_table.item(row, col)
+                row_data.append(item.text() if item else "")
+            lines.append("\t".join(row_data))
+        QApplication.clipboard().setText("\n".join(lines))
+
+    def _copy_quant_summary_table_r(self):
+        """Copy quantification group summaries table to clipboard as an R data.frame."""
+        if self.quant_summary_table.rowCount() == 0:
+            return
+        lines = []
+        for col in range(self.quant_summary_table.columnCount()):
+            col_name = (
+                self.quant_summary_table.horizontalHeaderItem(col)
+                .text()
+                .replace(" ", "_")
+            )
+            values = []
+            for row in range(self.quant_summary_table.rowCount()):
+                item = self.quant_summary_table.item(row, col)
+                text = item.text() if item else ""
+                values.append(f'"{text}"' if col == 0 else text)
+            lines.append(f"{col_name} = c({', '.join(values)})")
+        QApplication.clipboard().setText(f"data.frame(\n  {',\n  '.join(lines)}\n)")
 
     def _calculate_peak_area_with_boundaries(
         self, rt_array, intensity_array, start_rt, end_rt
@@ -3198,6 +5199,7 @@ class EICWindow(QWidget):
 
         # Calculate group shifts
         self.calculate_group_shifts()
+        self.calculate_file_shifts()
 
         # Populate group settings table with extracted groups
         self.populate_group_settings_table()
@@ -3253,6 +5255,77 @@ class EICWindow(QWidget):
         self.group_shifts = {}
         for i, group in enumerate(sorted_groups):
             self.group_shifts[group] = i * shift_amount
+
+    def _separation_mode(self) -> str:
+        """Return the currently selected separation mode string."""
+        return self.separation_mode_combo.currentText()
+
+    def calculate_file_shifts(self):
+        """Calculate RT shifts for injection order separation.
+
+        Mode is read from ``self.separation_mode_combo``:
+
+        * ``"By injection order"`` — rank files globally by the numeric value
+          in the ``injection_order`` column (or row order as fallback).
+        * ``"By group, then injection order"`` — rank files by group first
+          (natural sort of the current grouping column), then by
+          ``injection_order`` within each group.
+
+        The file with rank 0 receives no shift; each subsequent rank adds one
+        ``rt_shift_min`` unit.
+        """
+        self.file_shifts = {}
+
+        if (
+            not hasattr(self.file_manager, "files_data")
+            or self.file_manager.files_data is None
+            or self.file_manager.files_data.empty
+            or "Filepath" not in self.file_manager.files_data.columns
+        ):
+            return
+
+        df = self.file_manager.files_data
+        shift_amount = self.rt_shift_spin.value()
+        mode = self._separation_mode()
+
+        # Build numeric injection order series (NaN for missing/non-numeric)
+        if "injection_order" in df.columns:
+            try:
+                inj_order = pd.to_numeric(df["injection_order"], errors="coerce")
+            except Exception:
+                inj_order = pd.Series([float("nan")] * len(df), index=df.index)
+        else:
+            inj_order = pd.Series(range(len(df)), index=df.index, dtype=float)
+
+        if mode == "By group, then injection order":
+            # Sort by group (natural sort key), then by injection_order within group
+            group_col = (
+                self.grouping_column if self.grouping_column in df.columns else "group"
+            )
+            if group_col not in df.columns:
+                group_col = None
+
+            work_df = df.assign(_inj_order=inj_order)
+            if group_col is not None:
+                group_vals = work_df[group_col].astype(str)
+                all_groups = natsorted(group_vals.unique())
+                group_rank = group_vals.map({g: i for i, g in enumerate(all_groups)})
+                work_df = work_df.assign(_group_rank=group_rank)
+                sorted_df = work_df.sort_values(
+                    ["_group_rank", "_inj_order"], na_position="last"
+                )
+            else:
+                sorted_df = work_df.sort_values("_inj_order", na_position="last")
+
+            for rank, (_, row) in enumerate(sorted_df.iterrows()):
+                self.file_shifts[row["Filepath"]] = rank * shift_amount
+        else:
+            # "By injection order": sort globally by injection_order
+            sorted_df = df.assign(_inj_order=inj_order).sort_values(
+                "_inj_order", na_position="last"
+            )
+            for rank, (_, row) in enumerate(sorted_df.iterrows()):
+                self.file_shifts[row["Filepath"]] = rank * shift_amount
 
     def _get_group_color(self, group_name):
         """Get the color for a group based on the selected grouping column
@@ -3313,6 +5386,7 @@ class EICWindow(QWidget):
 
         # Recalculate group shifts with current RT shift value
         self.calculate_group_shifts()
+        self.calculate_file_shifts()
 
         # Clear existing series
         self.chart.removeAllSeries()
@@ -3320,7 +5394,12 @@ class EICWindow(QWidget):
         # Enable reset view button now that we have data
         self.reset_view_btn.setEnabled(True)
 
-        separate_groups = self.separate_groups_cb.isChecked()
+        sep_mode = self._separation_mode()
+        separate_groups = sep_mode == "By group"
+        separate_injection = sep_mode in (
+            "By injection order",
+            "By group, then injection order",
+        )
         crop_rt = self.crop_rt_cb.isChecked()
         normalize = self.normalize_cb.isChecked()
 
@@ -3363,7 +5442,9 @@ class EICWindow(QWidget):
             rt_plot = rt.copy()
             if separate_groups:
                 shift = self.group_shifts.get(group, 0.0)
-                rt_plot = rt + shift
+                rt_plot = rt_plot + shift
+            if separate_injection:
+                rt_plot = rt_plot + self.file_shifts.get(filepath, 0.0)
 
             groups_data[group].append(
                 {
@@ -3447,7 +5528,14 @@ class EICWindow(QWidget):
                 series.setProperty("sample_filename", filename)
 
                 # Only the first file in each group gets the group name for legend
-                if first_file_in_group:
+                if separate_injection:
+                    # Per-file legend entry showing its individual shift
+                    file_shift = self.file_shifts.get(filepath, 0.0)
+                    name_without_ext = (
+                        filename.rsplit(".", 1)[0] if "." in filename else filename
+                    )
+                    series.setName(f"{name_without_ext} (+ {file_shift:.1f} min)")
+                elif first_file_in_group:
                     # Add shift information to legend if groups are separated
                     if separate_groups:
                         shift = self.group_shifts.get(group_name, 0.0)
@@ -3479,13 +5567,26 @@ class EICWindow(QWidget):
                 series.attachAxis(self.y_axis)
 
         # Add reference lines
-        self._add_reference_lines(groups_data, separate_groups)
+        self._add_reference_lines(
+            groups_data, separate_groups, separate_injection, sep_mode
+        )
 
         # Show legend with better formatting
         legend = self.chart.legend()
-        legend.setVisible(True)
-        legend.setAlignment(Qt.AlignmentFlag.AlignRight)
-        legend.setMarkerShape(legend.MarkerShape.MarkerShapeRectangle)
+        legend_pos = (
+            self.legend_position_combo.currentText()
+            if hasattr(self, "legend_position_combo")
+            else "Right"
+        )
+        if legend_pos == "Off":
+            legend.setVisible(False)
+        else:
+            legend.setVisible(True)
+            if legend_pos == "Top":
+                legend.setAlignment(Qt.AlignmentFlag.AlignTop)
+            else:
+                legend.setAlignment(Qt.AlignmentFlag.AlignRight)
+            legend.setMarkerShape(legend.MarkerShape.MarkerShapeRectangle)
 
         # Hide legend markers for series with empty names
         for marker in legend.markers():
@@ -3546,7 +5647,9 @@ class EICWindow(QWidget):
 
             QTimer.singleShot(100, self.auto_add_scatter_plot)
 
-    def _add_reference_lines(self, groups_data, separate_groups):
+    def _add_reference_lines(
+        self, groups_data, separate_groups, separate_injection=False, sep_mode="None"
+    ):
         """Add reference lines to the chart"""
         # Get the current axis ranges to draw lines across the full chart
         x_axis = self.chart.axes(Qt.Orientation.Horizontal)[0]
@@ -3589,61 +5692,44 @@ class EICWindow(QWidget):
         # Use the expected RT from compound data instead of calculating from actual data
         compound_rt = self.compound_data.get("RT_min", 0.0)
 
+        def _add_vline(reference_rt):
+            vertical_line = QLineSeries()
+            vertical_line.setName("")  # No legend entry
+            y_min = y_axis.min()
+            y_max = y_axis.max()
+            y_range = y_max - y_min
+            vertical_line.append(reference_rt, y_min - y_range * 0.1)
+            vertical_line.append(reference_rt, y_max + y_range * 0.1)
+            vertical_pen = QPen(QColor(128, 128, 128))  # Grey
+            vertical_pen.setWidth(1)
+            vertical_pen.setStyle(Qt.PenStyle.DashLine)
+            vertical_line.setPen(vertical_pen)
+            self.chart.addSeries(vertical_line)
+            vertical_line.attachAxis(x_axis)
+            vertical_line.attachAxis(y_axis)
+
         if compound_rt > 0:
-            if separate_groups:
-                # Add dashed vertical line for each group at the compound RT (with group shifts)
+            if separate_injection:
+                # One dashed line per unique total shift across all files
+                seen_shifts = set()
+                for group_name, group_files in groups_data.items():
+                    group_shift = (
+                        self.group_shifts.get(group_name, 0.0)
+                        if separate_groups
+                        else 0.0
+                    )
+                    for file_data in group_files:
+                        total_shift = group_shift + self.file_shifts.get(
+                            file_data["filepath"], 0.0
+                        )
+                        if total_shift not in seen_shifts:
+                            seen_shifts.add(total_shift)
+                            _add_vline(compound_rt + total_shift)
+            elif separate_groups:
                 for group_name in groups_data.keys():
-                    # Apply the same group shift as applied to the data
-                    shift = self.group_shifts.get(group_name, 0.0)
-                    reference_rt = compound_rt + shift
-
-                    # Create vertical line series
-                    vertical_line = QLineSeries()
-                    vertical_line.setName("")  # No legend entry
-
-                    # Get Y range for the line (extend beyond visible data)
-                    y_min = y_axis.min()
-                    y_max = y_axis.max()
-                    y_range = y_max - y_min
-                    line_y_start = y_min - y_range * 0.1
-                    line_y_end = y_max + y_range * 0.1
-
-                    vertical_line.append(reference_rt, line_y_start)
-                    vertical_line.append(reference_rt, line_y_end)
-
-                    # Style: dashed grey line
-                    vertical_pen = QPen(QColor(128, 128, 128))  # Grey
-                    vertical_pen.setWidth(1)
-                    vertical_pen.setStyle(Qt.PenStyle.DashLine)
-                    vertical_line.setPen(vertical_pen)
-
-                    self.chart.addSeries(vertical_line)
-                    vertical_line.attachAxis(x_axis)
-                    vertical_line.attachAxis(y_axis)
+                    _add_vline(compound_rt + self.group_shifts.get(group_name, 0.0))
             else:
-                # Add single vertical line at compound RT (no shift when not separating groups)
-                vertical_line = QLineSeries()
-                vertical_line.setName("")  # No legend entry
-
-                # Get Y range for the line (extend beyond visible data)
-                y_min = y_axis.min()
-                y_max = y_axis.max()
-                y_range = y_max - y_min
-                line_y_start = y_min - y_range * 0.1
-                line_y_end = y_max + y_range * 0.1
-
-                vertical_line.append(compound_rt, line_y_start)
-                vertical_line.append(compound_rt, line_y_end)
-
-                # Style: dashed grey line
-                vertical_pen = QPen(QColor(128, 128, 128))  # Grey
-                vertical_pen.setWidth(1)
-                vertical_pen.setStyle(Qt.PenStyle.DashLine)
-                vertical_line.setPen(vertical_pen)
-
-                self.chart.addSeries(vertical_line)
-                vertical_line.attachAxis(x_axis)
-                vertical_line.attachAxis(y_axis)
+                _add_vline(compound_rt)
 
     def _set_y_axis_from_data(self):
         """Set Y-axis range based on actual data in the chart"""
@@ -3821,6 +5907,7 @@ class EICWindow(QWidget):
                 self.compound_data["Name"],
                 self.adduct,
                 self,
+                file_manager=self.file_manager,
             )
             msms_viewer.show()
 
@@ -4679,7 +6766,6 @@ class MS1ViewerWindow(QWidget):
                     margin: 1px;
                     border: 1px solid #ccc;
                     border-radius: 2px;
-                    font-size: 10px;
                 }
             """)
             file_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
@@ -5396,7 +7482,6 @@ class InteractiveMS1ChartView(QChartView):
                     border: 1px solid #666;
                     border-radius: 4px;
                     padding: 4px;
-                    font-size: 10px;
                 }
             """)
             self.tooltip_label.setAttribute(
@@ -5485,7 +7570,6 @@ class InteractiveMS1ChartView(QChartView):
                         color: white;
                         border-radius: 3px;
                         padding: 2px 4px;
-                        font-size: 9px;
                         font-weight: bold;
                     }}
                 """)
@@ -5528,15 +7612,16 @@ class MSMSViewerWindow(QWidget):
         compound_name,
         adduct,
         parent=None,
+        file_manager=None,
     ):
         super().__init__(parent)
 
         # Configure as independent window
         self.setWindowFlags(
             Qt.WindowType.Window
-            | Qt.WindowType.WindowCloseButtonHint
             | Qt.WindowType.WindowMinimizeButtonHint
             | Qt.WindowType.WindowMaximizeButtonHint
+            | Qt.WindowType.WindowCloseButtonHint
         )
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
 
@@ -5546,40 +7631,33 @@ class MSMSViewerWindow(QWidget):
         self.rt_window = rt_window
         self.compound_name = compound_name
         self.adduct = adduct
+        self.file_manager = file_manager
 
         self.init_ui()
 
+    def _group_color_for(self, group: str) -> QColor | None:
+        """Return a QColor for the given group, or None."""
+        if self.file_manager is None:
+            return None
+        color = self.file_manager.get_group_color(group)
+        if color:
+            return QColor(color) if not isinstance(color, QColor) else color
+        return None
+
     def init_ui(self):
         """Initialize the MSMS viewer UI"""
+        total_spectra = sum(len(data["spectra"]) for data in self.msms_spectra.values())
         self.setWindowTitle(
-            f"MSMS Spectra: {self.compound_name} - {self.adduct} "
-            f"(RT: {self.rt_center:.2f} ± {self.rt_window:.1f} min)"
+            f"MSMS: {self.compound_name} ({self.adduct}) | "
+            f"m/z {self.target_mz:.4f} | "
+            f"RT {self.rt_center:.2f}±{self.rt_window:.1f} min | "
+            f"{len(self.msms_spectra)} files | {total_spectra} spectra"
         )
-        self.setGeometry(
-            100, 100, 1800, 1000
-        )  # Increased width and height for similarity panels
+        self.setGeometry(100, 100, 1800, 1000)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(5, 5, 5, 5)
-        layout.setSpacing(5)
-
-        # Header with information - compact layout
-        total_spectra = sum(len(data["spectra"]) for data in self.msms_spectra.values())
-        header_label = QLabel(
-            f"<b>{self.compound_name} ({self.adduct})</b> | "
-            f"m/z: {self.target_mz:.4f} | "
-            f"RT: {self.rt_center:.2f} ± {self.rt_window:.1f} min | "
-            f"Files: {len(self.msms_spectra)} | "
-            f"Spectra: {total_spectra}"
-        )
-        header_label.setStyleSheet(
-            "QLabel { margin: 2px; padding: 5px; font-size: 12px; }"
-        )
-        header_label.setFixedHeight(30)
-        header_label.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
-        )
-        layout.addWidget(header_label)
+        layout.setContentsMargins(2, 2, 2, 2)
+        layout.setSpacing(2)
 
         # Pre-process data: sort by intensity and find global m/z range
         self._preprocess_spectra_data()
@@ -5592,15 +7670,15 @@ class MSMSViewerWindow(QWidget):
         main_splitter.addWidget(inter_file_widget)
 
         # Bottom: Spectra grid
-        # Create scroll area for the spectra grid
         scroll_area = QScrollArea()
         scroll_widget = QWidget()
         scroll_area.setWidget(scroll_widget)
         scroll_area.setWidgetResizable(True)
 
         grid_layout = QGridLayout(scroll_widget)
-        grid_layout.setSpacing(1)  # Reduce spacing between widgets
+        grid_layout.setSpacing(1)
         grid_layout.setContentsMargins(1, 1, 1, 1)
+        grid_layout.setVerticalSpacing(0)
 
         # Organize files and create charts
         row = 0
@@ -5614,29 +7692,35 @@ class MSMSViewerWindow(QWidget):
             if filename in self.intra_file_similarities:
                 stats = self.intra_file_similarities[filename]
                 similarity_info = (
-                    f" | Cosine Similarities: "
-                    f"Min:{stats['min']:.3f} "
-                    f"10%:{stats['percentile_10']:.3f} "
+                    f" | Sim: "
                     f"Med:{stats['median']:.3f} "
-                    f"90%:{stats['percentile_90']:.3f} "
-                    f"Max:{stats['max']:.3f}"
+                    f"90%:{stats['percentile_90']:.3f}"
                 )
 
             display_name = filename.split(".")[0] if "." in filename else filename
-            file_header_text = f"<b>{display_name}</b> | Group: {group} | {len(spectra)} spectra{similarity_info}"
+            file_header_text = f"<b>{display_name}</b> | {group} | {len(spectra)} spectra{similarity_info}"
             file_label = QLabel(file_header_text)
-            file_label.setStyleSheet("""
-                QLabel { 
-                    background-color: #f0f0f0; 
-                    padding: 4px; 
-                    margin: 1px;
-                    border: 1px solid #ccc;
-                    border-radius: 2px;
-                    font-size: 10px;
-                }
+
+            # Colour header by group
+            grp_color = self._group_color_for(group)
+            if grp_color:
+                c = QColor(grp_color)
+                c.setAlphaF(0.5)
+                r, g, b, a = c.red(), c.green(), c.blue(), c.alpha()
+                bg_css = f"rgba({r},{g},{b},{a})"
+            else:
+                bg_css = "#f0f0f0"
+
+            file_label.setStyleSheet(f"""
+                QLabel {{
+                    background-color: {bg_css};
+                    padding: 2px 4px;
+                    margin: 0px;
+                    border-bottom: 1px solid #ccc;
+                }}
             """)
             file_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
-            file_label.setMaximumHeight(25)
+            file_label.setMaximumHeight(18)
             grid_layout.addWidget(file_label, row, 0, 1, max(1, len(spectra)))
             row += 1
 
@@ -5650,24 +7734,10 @@ class MSMSViewerWindow(QWidget):
         # Add scroll area to splitter
         main_splitter.addWidget(scroll_area)
 
-        # Set initial sizes for splitter (heatmap gets less space initially)
         # Total height ~1000, give 200 to heatmap, 800 to spectra grid
         main_splitter.setSizes([200, 800])
 
-        # Add splitter to main layout
         layout.addWidget(main_splitter)
-
-        # Close button - compact
-        close_btn = QPushButton("Close")
-        close_btn.setMaximumWidth(100)
-        close_btn.clicked.connect(self.close)
-
-        # Add close button in a horizontal layout to center it
-        close_layout = QHBoxLayout()
-        close_layout.addStretch()
-        close_layout.addWidget(close_btn)
-        close_layout.addStretch()
-        layout.addLayout(close_layout)
 
     def _preprocess_spectra_data(self):
         """Preprocess spectra data: sort by intensity and find global m/z range"""
@@ -5696,10 +7766,14 @@ class MSMSViewerWindow(QWidget):
             processed_file_data["spectra"] = sorted_spectra
             processed_files.append((filepath, processed_file_data))
 
-        # Sort files by filename for consistent ordering (using natural sort)
+        # Sort files by group then filename for consistent ordering
         natsort_key = natsort_keygen()
         self.processed_data = sorted(
-            processed_files, key=lambda x: natsort_key(x[1]["filename"])
+            processed_files,
+            key=lambda x: (
+                natsort_key(x[1].get("group", "Unknown")),
+                natsort_key(x[1]["filename"]),
+            ),
         )
 
         # Add padding to global m/z range
@@ -5775,23 +7849,44 @@ class MSMSViewerWindow(QWidget):
 
         # Create table for inter-file similarities
         files = [data[1]["filename"] for data in self.processed_data]
+        file_group = {
+            data[1]["filename"]: data[1].get("group", "Unknown")
+            for data in self.processed_data
+        }
         if len(files) > 1:
             inter_table = QTableWidget(len(files), len(files))
-            inter_table.setHorizontalHeaderLabels(
-                [f.split(".")[0] for f in files]
-            )  # Show filename without extension
-            inter_table.setVerticalHeaderLabels([f.split(".")[0] for f in files])
-            inter_table.setMinimumHeight(min(150, 30 + len(files) * 35))
+
+            # Set coloured header items per group
+            for idx, fname in enumerate(files):
+                grp = file_group.get(fname, "Unknown")
+                short = fname.split(".")[0] if "." in fname else fname
+                grp_color = self._group_color_for(grp)
+
+                for make_h in (True, False):
+                    hi = QTableWidgetItem(short)
+                    if grp_color:
+                        c = QColor(grp_color)
+                        c.setAlphaF(0.5)
+                        hi.setBackground(c)
+                    fnt = hi.font()
+                    # fnt.setPointSize(7)
+                    hi.setFont(fnt)
+                    if make_h:
+                        inter_table.setHorizontalHeaderItem(idx, hi)
+                    else:
+                        inter_table.setVerticalHeaderItem(idx, hi)
+
+            inter_table.setMinimumHeight(min(120, 24 + len(files) * 20))
             inter_table.setSizePolicy(
                 QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
             )
 
-            # Set table properties for better display - allow interactive resizing
+            # Set table properties for better display
             inter_table.horizontalHeader().setSectionResizeMode(
                 QHeaderView.ResizeMode.Interactive
             )
-            inter_table.horizontalHeader().setDefaultSectionSize(100)
-            inter_table.verticalHeader().setDefaultSectionSize(20)
+            inter_table.horizontalHeader().setDefaultSectionSize(70)
+            inter_table.verticalHeader().setDefaultSectionSize(18)
 
             # Enable context menu
             inter_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -5871,9 +7966,9 @@ class MSMSViewerWindow(QWidget):
 
                     item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                     item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-                    # Set smaller font for compact display
+                    # Compact font
                     font = item.font()
-                    font.setPointSize(7)
+                    # font.setPointSize(6)
                     item.setFont(font)
 
                     # Store metadata for context menu (file indices and similarity data)

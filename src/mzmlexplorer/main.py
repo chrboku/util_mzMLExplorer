@@ -109,6 +109,8 @@ class MzMLExplorerMainWindow(QMainWindow):
         self.files_table.customContextMenuRequested.connect(
             self.show_files_context_menu
         )
+        self.files_table.verticalHeader().setDefaultSectionSize(20)
+        self.files_table.verticalHeader().setMinimumSectionSize(16)
         left_layout.addWidget(self.files_table)
 
         # Right panel: Compounds tree
@@ -129,9 +131,9 @@ class MzMLExplorerMainWindow(QMainWindow):
         right_layout.addLayout(filter_layout)
 
         self.compounds_table = QTreeWidget()
-        self.compounds_table.setColumnCount(3)
+        self.compounds_table.setColumnCount(4)
         self.compounds_table.setHeaderLabels(
-            ["Name", "Retention Time", "Type"]
+            ["Name", "Retention Time", "Type", "Quantification"]
         )
         self.compounds_table.setSelectionBehavior(
             QTreeWidget.SelectionBehavior.SelectRows
@@ -154,7 +156,8 @@ class MzMLExplorerMainWindow(QMainWindow):
         # Set initial column widths
         header.resizeSection(0, 300)
         header.resizeSection(1, 150)
-        header.resizeSection(2, 100)
+        header.resizeSection(2, 80)
+        header.resizeSection(3, 160)
 
         right_layout.addWidget(self.compounds_table)
 
@@ -166,7 +169,7 @@ class MzMLExplorerMainWindow(QMainWindow):
 
         # Create memory usage label for bottom left corner
         self.memory_label = QLabel("Memory: -- MB")
-        self.memory_label.setStyleSheet("QLabel { font-size: 9px; color: #666; }")
+        self.memory_label.setStyleSheet("QLabel { font-size: 8px; color: #666; }")
 
         # Add memory label to status bar
         self.statusBar().addPermanentWidget(self.memory_label)
@@ -223,6 +226,22 @@ class MzMLExplorerMainWindow(QMainWindow):
         Returns:
             bool: True if successful, False otherwise
         """
+        # Normalize column names (case-insensitive)
+        _FILES_COLUMNS = {
+            "filepath": "Filepath",
+            "group": "group",
+            "color": "color",
+            "dilution": "Dilution",
+            "quantification": "Quantification",
+            "sample_id": "sample_id",
+            "batch": "batch",
+            "injection_order": "injection_order",
+            "injection_volume": "injection_volume",
+        }
+        df = df.rename(
+            columns={col: _FILES_COLUMNS.get(col.lower(), col) for col in df.columns}
+        )
+
         # Validate required columns
         if "Filepath" not in df.columns:
             QMessageBox.warning(
@@ -236,9 +255,11 @@ class MzMLExplorerMainWindow(QMainWindow):
             return False
 
         first_row = df.iloc[0]
+        optional_cols = {"sample_id", "Quantification", "Dilution"}
         missing_in_first = first_row.isna()
-        if missing_in_first.any():
-            missing_cols = ", ".join(first_row[missing_in_first].index.tolist())
+        required_missing = missing_in_first[~missing_in_first.index.isin(optional_cols)]
+        if required_missing.any():
+            missing_cols = ", ".join(required_missing[required_missing].index.tolist())
             QMessageBox.warning(
                 self,
                 "Error",
@@ -259,10 +280,12 @@ class MzMLExplorerMainWindow(QMainWindow):
             )
             return False
 
-        # Forward-fill empty cells with the last valid value from each column
-        # This applies to all columns except Filepath (which we already validated)
+        # Forward-fill only group and color columns.
+        # All other columns (e.g. dilution, injection_volume, quantification, batch)
+        # are sample-specific and must not be auto-filled.
+        ffill_cols = {"group", "color"}
         for col in df.columns:
-            if col != "Filepath":
+            if col in ffill_cols:
                 df[col] = df[col].ffill()
 
         # Load files using file manager
@@ -375,6 +398,7 @@ class MzMLExplorerMainWindow(QMainWindow):
                 "group": ["Control", "", "", "Treatment", "", ""],
                 "color": ["#1f77b4", "", "", "#ff7f0e", "", ""],
                 "batch": ["Batch1", "", "", "Batch1", "", "Batch2"],
+                "injection_order": [1, 2, 3, 4, 5, 6],
                 "injection_volume": [5.0, "", "", 5.0, "", ""],
                 "sample_id": [
                     "CTL_001",
@@ -383,6 +407,15 @@ class MzMLExplorerMainWindow(QMainWindow):
                     "TRT_001",
                     "TRT_002",
                     "TRT_003",
+                ],
+                "quantification": [
+                    "{'Caffeine': [500.0, 'ng/mL']}",
+                    "{'Glucose': [250.0, 'µM']}",
+                    "{'Caffeine': [250.0, 'ng/mL']}",
+                    "{'Glucose': [125.0, 'µM']}",
+                    "",
+                    "",
+                    "",
                 ],
             }
 
@@ -544,6 +577,7 @@ class MzMLExplorerMainWindow(QMainWindow):
             return
 
         # Set up table
+        self.files_table.verticalHeader().setDefaultSectionSize(20)
         self.files_table.setRowCount(len(files_display_data))
         self.files_table.setColumnCount(len(files_display_data.columns))
         self.files_table.setHorizontalHeaderLabels(files_display_data.columns.tolist())
@@ -580,10 +614,50 @@ class MzMLExplorerMainWindow(QMainWindow):
         )
         self.files_table.horizontalHeader().setStretchLastSection(True)
 
+    def _get_quant_range_for_compound(self, compound_name: str) -> str:
+        """Return a formatted quantification range string for a compound, e.g. '50–200 ng/mL', or '' if none."""
+        import json
+
+        files_data = self.file_manager.get_files_data()
+        if files_data.empty or "Quantification" not in files_data.columns:
+            return ""
+        values_by_unit: dict = {}
+        for quant_str in files_data["Quantification"].dropna():
+            quant_str = str(quant_str).strip()
+            if not quant_str:
+                continue
+            try:
+                quant_dict = json.loads(quant_str)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            if compound_name in quant_dict:
+                entry = quant_dict[compound_name]
+                if isinstance(entry, (list, tuple)) and len(entry) >= 2:
+                    try:
+                        val = float(entry[0])
+                        unit = str(entry[1])
+                        values_by_unit.setdefault(unit, []).append(val)
+                    except (TypeError, ValueError):
+                        pass
+                elif isinstance(entry, (int, float)):
+                    values_by_unit.setdefault("", []).append(float(entry))
+        if not values_by_unit:
+            return ""
+        parts = []
+        for unit, vals in values_by_unit.items():
+            lo, hi = min(vals), max(vals)
+            if lo == hi:
+                parts.append(f"{lo:g} {unit}".strip())
+            else:
+                parts.append(f"{lo:g}–{hi:g} {unit}".strip())
+        return "; ".join(parts)
+
     def update_compounds_table(self):
         """Update the compounds table with loaded data"""
         self.compounds_table.clear()
-        self.compounds_table.setHeaderLabels(["Name", "Retention Time", "Type"])
+        self.compounds_table.setHeaderLabels(
+            ["Name", "Retention Time", "Type", "Quantification"]
+        )
         compounds_data = self.compound_manager.get_compounds_data()
 
         if compounds_data.empty:
@@ -629,6 +703,7 @@ class MzMLExplorerMainWindow(QMainWindow):
             group_item.setBackground(0, QColor(230, 230, 230))
             group_item.setBackground(1, QColor(230, 230, 230))
             group_item.setBackground(2, QColor(230, 230, 230))
+            group_item.setBackground(3, QColor(230, 230, 230))
             group_item.setExpanded(True)  # Expand by default
 
             # Add compounds under this group
@@ -645,6 +720,7 @@ class MzMLExplorerMainWindow(QMainWindow):
             group_item.setBackground(0, QColor(245, 245, 245))
             group_item.setBackground(1, QColor(245, 245, 245))
             group_item.setBackground(2, QColor(245, 245, 245))
+            group_item.setBackground(3, QColor(245, 245, 245))
             group_item.setExpanded(True)  # Expand by default
 
             # Add ungrouped compounds
@@ -728,6 +804,10 @@ class MzMLExplorerMainWindow(QMainWindow):
         }.get(compound_type, compound_type)
 
         item.setText(2, type_display)
+
+        # Quantification range
+        quant_text = self._get_quant_range_for_compound(compound["Name"])
+        item.setText(3, quant_text)
 
     def show_files_context_menu(self, position):
         """Show context menu for file operations"""
@@ -1852,6 +1932,12 @@ class MzMLExplorerMainWindow(QMainWindow):
         filepath = row["Filepath"]
 
         try:
+            # Try disk cache first
+            cached = self.file_manager._load_from_cache(filepath)
+            if cached is not None:
+                print(f"Loaded {os.path.basename(filepath)} from cache.")
+                return idx, filepath, cached["ms1"], cached["ms2"]
+
             # Create a new reader for this thread
             reader = pymzml.run.Reader(filepath)
             ms1_spectra_data = []
@@ -1922,6 +2008,10 @@ class MzMLExplorerMainWindow(QMainWindow):
                     except Exception as e:
                         print(f"Error processing MS2 spectrum in {filepath}: {e}")
                         continue
+
+            # Persist to disk cache for future runs
+            data = {"ms1": ms1_spectra_data, "ms2": ms2_spectra_data}
+            self.file_manager._save_to_cache(filepath, data)
 
             return idx, filepath, ms1_spectra_data, ms2_spectra_data
 

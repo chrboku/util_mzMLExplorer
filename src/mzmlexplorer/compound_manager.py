@@ -28,6 +28,25 @@ class CompoundManager:
         Args:
             compounds_input: Either a DataFrame or dict of DataFrames from Excel sheets
         """
+        # Canonical column name mappings (lowercase key -> canonical name)
+        _COMPOUNDS_COLUMNS = {
+            "name": "Name",
+            "common_adducts": "Common_adducts",
+            "chemicalformula": "ChemicalFormula",
+            "mass": "Mass",
+            "rt_min": "RT_min",
+            "rt_start_min": "RT_start_min",
+            "rt_end_min": "RT_end_min",
+            "group": "Group",
+            "smiles": "SMILES",
+        }
+        _ADDUCTS_COLUMNS = {
+            "adduct": "Adduct",
+            "mass_change": "Mass_change",
+            "charge": "Charge",
+            "multiplier": "Multiplier",
+        }
+
         # Handle different input types
         if isinstance(compounds_input, dict):
             # Multi-sheet Excel file
@@ -39,6 +58,13 @@ class CompoundManager:
 
             if "Adducts" in compounds_input:
                 new_adducts_data = compounds_input["Adducts"]
+                # Normalize adducts column names (case-insensitive)
+                new_adducts_data = new_adducts_data.rename(
+                    columns={
+                        col: _ADDUCTS_COLUMNS.get(col.lower(), col)
+                        for col in new_adducts_data.columns
+                    }
+                )
                 # Merge with existing adducts
                 if self.adducts_data.empty:
                     self.adducts_data = new_adducts_data
@@ -59,6 +85,14 @@ class CompoundManager:
             compounds_data = compounds_input
             if self.adducts_data.empty:
                 self.adducts_data = self._get_default_adducts()
+
+        # Normalize compounds column names (case-insensitive)
+        compounds_data = compounds_data.rename(
+            columns={
+                col: _COMPOUNDS_COLUMNS.get(col.lower(), col)
+                for col in compounds_data.columns
+            }
+        )
 
         # Validate required columns for compounds
         # RT columns are now optional and will default to 0-100 min if not provided

@@ -1193,6 +1193,7 @@ class EICWindow(QWidget):
         defaults=None,
         parent=None,
         integration_callback=None,
+        settings_callback=None,
     ):
         super().__init__(parent)
 
@@ -1212,6 +1213,7 @@ class EICWindow(QWidget):
         self.group_shifts = {}
         self.file_shifts = {}
         self.integration_callback = integration_callback
+        self.settings_callback = settings_callback
         self.grouping_column = "group"  # Default grouping column
 
         # Store defaults (use application defaults if none provided)
@@ -1481,7 +1483,13 @@ class EICWindow(QWidget):
         # EIC calculation method
         self.eic_method_combo = QComboBox()
         self.eic_method_combo.addItems(["Sum of all signals", "Most intensive signal"])
-        self.eic_method_combo.setCurrentIndex(0)  # Default to sum
+        default_eic_method = self.defaults.get("eic_method", "Sum of all signals")
+        idx = self.eic_method_combo.findText(default_eic_method)
+        self.eic_method_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        self.eic_method_combo.currentTextChanged.connect(self.update_plot)
+        self.eic_method_combo.currentTextChanged.connect(
+            lambda v: self._notify_setting("eic_method", v)
+        )
         layout.addRow("EIC Method:", self.eic_method_combo)
 
         # m/z tolerance in ppm (primary)
@@ -1494,6 +1502,9 @@ class EICWindow(QWidget):
         self.mz_tolerance_ppm_spin.setDecimals(1)
         self.mz_tolerance_ppm_spin.setSingleStep(1.0)
         self.mz_tolerance_ppm_spin.valueChanged.connect(self.update_mz_tolerance_da)
+        self.mz_tolerance_ppm_spin.valueChanged.connect(
+            lambda v: self._notify_setting("mz_tolerance_ppm", v)
+        )
         layout.addRow("m/z Tolerance (ppm):", self.mz_tolerance_ppm_spin)
 
         # m/z tolerance in Da (linked to ppm)
@@ -1547,6 +1558,9 @@ class EICWindow(QWidget):
         self.rt_shift_spin.setDecimals(1)
         self.rt_shift_spin.setEnabled(True)  # Always enabled
         self.rt_shift_spin.valueChanged.connect(self.update_plot)
+        self.rt_shift_spin.valueChanged.connect(
+            lambda v: self._notify_setting("rt_shift_min", v)
+        )
         layout.addRow("Group RT Shift:", self.rt_shift_spin)
 
         # RT cropping option
@@ -1564,8 +1578,13 @@ class EICWindow(QWidget):
         # Legend position
         self.legend_position_combo = QComboBox()
         self.legend_position_combo.addItems(["Right", "Top", "Off"])
-        self.legend_position_combo.setCurrentIndex(0)
+        default_legend = self.defaults.get("legend_position", "Right")
+        idx = self.legend_position_combo.findText(default_legend)
+        self.legend_position_combo.setCurrentIndex(idx if idx >= 0 else 0)
         self.legend_position_combo.currentTextChanged.connect(self.update_plot)
+        self.legend_position_combo.currentTextChanged.connect(
+            lambda v: self._notify_setting("legend_position", v)
+        )
         layout.addRow("Legend:", self.legend_position_combo)
 
         return group
@@ -5084,8 +5103,8 @@ class EICWindow(QWidget):
         ppm = self.mz_tolerance_ppm_spin.value()
         da_value = (self.target_mz * ppm) / 1e6
 
-        # Temporarily disconnect signal to avoid recursion
-        self.mz_tolerance_da_spin.valueChanged.disconnect()
+        # Temporarily disconnect only the reciprocal signal to avoid recursion
+        self.mz_tolerance_da_spin.valueChanged.disconnect(self.update_mz_tolerance_ppm)
         self.mz_tolerance_da_spin.setValue(da_value)
         self.mz_tolerance_da_spin.valueChanged.connect(self.update_mz_tolerance_ppm)
 
@@ -5094,10 +5113,16 @@ class EICWindow(QWidget):
         da_value = self.mz_tolerance_da_spin.value()
         ppm = (da_value * 1e6) / self.target_mz if self.target_mz > 0 else 0
 
-        # Temporarily disconnect signal to avoid recursion
-        self.mz_tolerance_ppm_spin.valueChanged.disconnect()
+        # Temporarily disconnect only the reciprocal signal to avoid recursion
+        self.mz_tolerance_ppm_spin.valueChanged.disconnect(self.update_mz_tolerance_da)
         self.mz_tolerance_ppm_spin.setValue(ppm)
         self.mz_tolerance_ppm_spin.valueChanged.connect(self.update_mz_tolerance_da)
+        self._notify_setting("mz_tolerance_ppm", ppm)
+
+    def _notify_setting(self, key: str, value) -> None:
+        """Persist a single EIC setting via the callback provided by the main window."""
+        if self.settings_callback is not None:
+            self.settings_callback(key, value)
 
     def create_chart(self) -> InteractiveChartView:
         """Create the chart widget"""

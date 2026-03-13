@@ -493,7 +493,12 @@ class CompoundImportDialog(QDialog):
         # Populate data
         for row_idx, (_, row) in enumerate(preview_df.iterrows()):
             for col_idx, value in enumerate(row):
-                item = QTableWidgetItem(str(value))
+                display_text = (
+                    ""
+                    if (value is None or (isinstance(value, float) and pd.isna(value)))
+                    else str(value)
+                )
+                item = QTableWidgetItem(display_text)
                 self.preview_table.setItem(row_idx, col_idx, item)
 
         # Resize columns to content

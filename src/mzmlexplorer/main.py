@@ -31,8 +31,17 @@ from PyQt6.QtWidgets import (
     QFrame,
     QScrollArea,
 )
-from PyQt6.QtCore import Qt, QTimer, QMimeData, QUrl, QSettings
-from PyQt6.QtGui import QFont, QAction, QDragEnterEvent, QDropEvent
+from PyQt6.QtCore import Qt, QTimer, QMimeData, QUrl, QSettings, QEvent
+from PyQt6.QtGui import (
+    QFont,
+    QAction,
+    QDragEnterEvent,
+    QDropEvent,
+    QCursor,
+    QPixmap,
+    QPainter,
+    QPen,
+)
 from PyQt6.QtCore import Qt, pyqtSignal, QObject
 from PyQt6.QtGui import QColor, QFont
 import pandas as pd
@@ -45,8 +54,116 @@ from .compound_import_dialog import CompoundImportDialog
 from .multi_adduct_window import MultiAdductWindow
 from natsort import natsorted, index_natsorted
 
+import json
 import toml
 import concurrent.futures
+
+
+class CompoundStructurePopup(QWidget):
+    """Borderless, non-blocking popup that displays a compound's 2-D structure.
+
+    Shown when the mouse enters a compound row in the substance table and
+    hidden when the mouse leaves the table viewport.
+    """
+
+    _IMG_SIZE = 240  # structure image side length in pixels
+
+    def __init__(self, parent=None):
+        super().__init__(
+            parent,
+            Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.Tool
+            | Qt.WindowType.WindowDoesNotAcceptFocus,
+        )
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+
+        # Pure white background
+        self.setAutoFillBackground(True)
+        pal = self.palette()
+        pal.setColor(self.backgroundRole(), Qt.GlobalColor.white)
+        self.setPalette(pal)
+
+        self.setFixedSize(self._IMG_SIZE + 8, self._IMG_SIZE + 30)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(2)
+
+        self._formula_label = QLabel()
+        self._formula_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._formula_label.setStyleSheet("font-weight: bold; font-size: 11px;")
+        layout.addWidget(self._formula_label)
+
+        self._image_label = QLabel()
+        self._image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._image_label.setFixedSize(self._IMG_SIZE, self._IMG_SIZE)
+        layout.addWidget(self._image_label)
+
+    def paintEvent(self, event):
+        """Draw a visible grey border around the popup."""
+        super().paintEvent(event)
+        painter = QPainter(self)
+        pen = QPen(QColor("#888888"))
+        pen.setWidth(2)
+        painter.setPen(pen)
+        painter.drawRect(1, 1, self.width() - 2, self.height() - 2)
+
+    def show_for_compound(self, compound_data: dict, global_pos) -> None:
+        """Render *compound_data*'s structure and show the popup near *global_pos*.
+
+        Hides silently when rdkit is unavailable or SMILES is missing/invalid.
+        """
+        smiles = compound_data.get("SMILES") or compound_data.get("smiles")
+        if not smiles:
+            self.hide()
+            return
+        smiles = str(smiles).strip()
+        if not smiles or smiles.lower() in ("nan", "none"):
+            self.hide()
+            return
+
+        # Title text: prefer chemical formula, fall back to compound name
+        formula = str(
+            compound_data.get("ChemicalFormula")
+            or compound_data.get("molecular_formula")
+            or ""
+        ).strip()
+        if not formula or formula.lower() in ("nan", "none"):
+            formula = str(compound_data.get("Name", "")).strip()
+        self._formula_label.setText(formula)
+
+        try:
+            from rdkit import Chem
+            from rdkit.Chem.Draw import rdMolDraw2D
+
+            mol = Chem.MolFromSmiles(smiles)
+            if mol is None:
+                self.hide()
+                return
+            drawer = rdMolDraw2D.MolDraw2DCairo(self._IMG_SIZE, self._IMG_SIZE)
+            drawer.drawOptions().clearBackground = True
+            drawer.DrawMolecule(mol)
+            drawer.FinishDrawing()
+            png_bytes = drawer.GetDrawingText()
+            pixmap = QPixmap()
+            pixmap.loadFromData(png_bytes, "PNG")
+            self._image_label.setPixmap(pixmap)
+        except Exception:
+            self.hide()
+            return
+
+        # Position to the right of the cursor; clamp to available screen area
+        screen = QApplication.screenAt(global_pos)
+        if screen is None:
+            screen = QApplication.primaryScreen()
+        rect = screen.availableGeometry()
+        x = global_pos.x() + 20
+        y = global_pos.y() - self.height() // 2
+        if x + self.width() > rect.right():
+            x = global_pos.x() - self.width() - 10
+        y = max(rect.top(), min(y, rect.bottom() - self.height()))
+        self.move(x, y)
+        self.show()
 
 
 class MzMLExplorerMainWindow(QMainWindow):
@@ -123,7 +240,7 @@ class MzMLExplorerMainWindow(QMainWindow):
         filter_label = QLabel("Filter:")
         self.compound_filter = QLineEdit()
         self.compound_filter.setPlaceholderText(
-            "mz 100-200, rt 5-10, or compound name pattern"
+            "mz 100-200 | rt 5-10 | SMARTS:[c,C]1([c,C][c,C][c,C][c,C]2)[c,C]2[c,C][c,C][c,C][o,O]1 | name regex"
         )
         self.compound_filter.textChanged.connect(self.filter_compounds)
         filter_layout.addWidget(filter_label)
@@ -160,6 +277,13 @@ class MzMLExplorerMainWindow(QMainWindow):
         header.resizeSection(3, 160)
 
         right_layout.addWidget(self.compounds_table)
+
+        # Structure hover popup — one instance, reused for every hovered row
+        self.structure_popup = CompoundStructurePopup(self)
+        self.compounds_table.setMouseTracking(True)
+        self.compounds_table.viewport().setMouseTracking(True)
+        self.compounds_table.itemEntered.connect(self._on_compound_hover)
+        self.compounds_table.viewport().installEventFilter(self)
 
         splitter.addWidget(left_panel)
         splitter.addWidget(right_panel)
@@ -588,7 +712,12 @@ class MzMLExplorerMainWindow(QMainWindow):
         # Populate table
         for i, (index, row) in enumerate(files_display_data.iterrows()):
             for j, (col_name, value) in enumerate(row.items()):
-                item = QTableWidgetItem(str(value))
+                display_text = (
+                    ""
+                    if (value is None or (isinstance(value, float) and pd.isna(value)))
+                    else str(value)
+                )
+                item = QTableWidgetItem(display_text)
 
                 # Special handling for color column - only show background color
                 if col_name == "color":
@@ -651,6 +780,25 @@ class MzMLExplorerMainWindow(QMainWindow):
             else:
                 parts.append(f"{lo:g}–{hi:g} {unit}".strip())
         return "; ".join(parts)
+
+    # ------------------------------------------------------------------
+    # Compound table hover  — structure popup
+    # ------------------------------------------------------------------
+
+    def eventFilter(self, obj, event):
+        """Hide the structure popup when the mouse leaves the compounds table."""
+        if obj is self.compounds_table.viewport() and event.type() == QEvent.Type.Leave:
+            self.structure_popup.hide()
+        return super().eventFilter(obj, event)
+
+    def _on_compound_hover(self, item: QTreeWidgetItem, column: int) -> None:
+        """Show the structure popup for the compound row the mouse entered."""
+        compound_data = item.data(0, Qt.ItemDataRole.UserRole)
+        if not compound_data:
+            # Group header rows carry no compound data
+            self.structure_popup.hide()
+            return
+        self.structure_popup.show_for_compound(compound_data, QCursor.pos())
 
     def update_compounds_table(self):
         """Update the compounds table with loaded data"""
@@ -1371,6 +1519,31 @@ class MzMLExplorerMainWindow(QMainWindow):
                     ) / 2
                     show_compound = min_rt <= avg_rt <= max_rt
 
+            elif filter_type == "smarts":
+                # SMARTS substructure match via RDKit
+                smarts_mol, smarts_err = filter_params
+                if smarts_mol is None:
+                    # Invalid SMARTS — hide everything so the user notices
+                    show_compound = False
+                else:
+                    smiles = compound_data.get("SMILES") or compound_data.get("smiles")
+                    if (
+                        smiles
+                        and str(smiles).strip()
+                        and str(smiles).strip().lower() not in ("nan", "none")
+                    ):
+                        try:
+                            from rdkit import Chem
+
+                            mol = Chem.MolFromSmiles(str(smiles).strip())
+                            show_compound = mol is not None and mol.HasSubstructMatch(
+                                smarts_mol
+                            )
+                        except Exception:
+                            show_compound = False
+                    else:
+                        show_compound = False
+
             elif filter_type == "name":
                 # Regex search on compound name
                 import re
@@ -1427,6 +1600,18 @@ class MzMLExplorerMainWindow(QMainWindow):
             max_rt = float(rt_match.group(2))
             return "rt", (min_rt, max_rt)
 
+        # Check for SMARTS filter: "SMARTS:<pattern>"
+        smarts_match = re.match(r"smarts?:(.+)", filter_text, re.IGNORECASE)
+        if smarts_match:
+            smarts_str = smarts_match.group(1).strip()
+            try:
+                from rdkit import Chem
+
+                smarts_mol = Chem.MolFromSmarts(smarts_str)
+            except Exception:
+                smarts_mol = None
+            return "smarts", (smarts_mol, smarts_str)
+
         # Otherwise, treat as name regex pattern
         return "name", filter_text
 
@@ -1447,6 +1632,7 @@ class MzMLExplorerMainWindow(QMainWindow):
                 defaults=self.eic_defaults,  # Pass the defaults
                 parent=None,  # Make it independent
                 integration_callback=self.record_peak_integration,  # Pass integration callback
+                settings_callback=self._on_eic_settings_changed,  # Persist control changes
             )
 
             # Show the window
@@ -1536,6 +1722,13 @@ class MzMLExplorerMainWindow(QMainWindow):
         options_action.setShortcut("Ctrl+P")
         options_action.triggered.connect(self.show_options_dialog)
         options_menu.addAction(options_action)
+
+        # Tools menu
+        tools_menu = menubar.addMenu("Tools")
+
+        fetch_info_action = QAction("Fetch compound information", self)
+        fetch_info_action.triggered.connect(self.fetch_compound_information)
+        tools_menu.addAction(fetch_info_action)
 
         # Help menu
         help_menu = menubar.addMenu("Help")
@@ -1741,6 +1934,8 @@ class MzMLExplorerMainWindow(QMainWindow):
             "normalize_samples": self.settings.value(
                 "eic/normalize_samples", False, type=bool
             ),
+            "legend_position": self.settings.value("eic/legend_position", "Right"),
+            "eic_method": self.settings.value("eic/eic_method", "Sum of all signals"),
         }
 
         # Load memory settings
@@ -1771,6 +1966,17 @@ class MzMLExplorerMainWindow(QMainWindow):
         self.settings.setValue(
             "eic/normalize_samples", self.eic_defaults["normalize_samples"]
         )
+        self.settings.setValue(
+            "eic/legend_position", self.eic_defaults.get("legend_position", "Right")
+        )
+        self.settings.setValue(
+            "eic/eic_method", self.eic_defaults.get("eic_method", "Sum of all signals")
+        )
+
+    def _on_eic_settings_changed(self, key: str, value) -> None:
+        """Called by an EIC window when the user changes a persistent setting."""
+        self.eic_defaults[key] = value
+        self.save_eic_defaults()
 
     def save_memory_settings(self):
         """Save memory settings"""
@@ -2306,6 +2512,285 @@ ggplot(peak_data, aes(x = group_name, y = peak_area)) +
         layout.addLayout(button_layout)
 
         dialog.exec()
+
+    # ------------------------------------------------------------------
+    # Fetch compound information from online databases
+    # ------------------------------------------------------------------
+
+    def fetch_compound_information(self):
+        """Fetch compound information from PubChem and enrich an Excel compounds file."""
+        from .compound_info_fetcher import fetch_pubchem_info_batch, load_cas_api_key
+
+        # Step 1: Select input Excel file
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Compounds Excel File to Enrich",
+            "",
+            "Excel files (*.xlsx);;All files (*)",
+        )
+        if not file_path:
+            return
+
+        # Step 2: Read the Excel file
+        try:
+            df = pd.read_excel(file_path)
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to read Excel file:\n{str(e)}")
+            return
+
+        if df.empty:
+            QMessageBox.information(
+                self, "Empty File", "The selected Excel file is empty."
+            )
+            return
+
+        # Step 3: Detect relevant columns (case-insensitive)
+        col_lower = {col.lower(): col for col in df.columns}
+
+        name_col = col_lower.get("name")
+        if not name_col:
+            QMessageBox.warning(
+                self,
+                "Missing Column",
+                "No 'Name' column found in the selected Excel file.",
+            )
+            return
+
+        # Detect optional CAS column
+        cas_col = next(
+            (
+                col_lower[k]
+                for k in ("cas", "cas_number", "cas_no", "cas number", "casno")
+                if k in col_lower
+            ),
+            None,
+        )
+
+        # Detect existing SMILES / formula / mass columns
+        smiles_col = col_lower.get("smiles") or col_lower.get("canonical_smiles")
+        formula_col = (
+            col_lower.get("chemicalformula")
+            or col_lower.get("chemical_formula")
+            or col_lower.get("formula")
+        )
+        # Step 4: Collect (name, cas) pairs, then batch-fetch from PubChem
+        n = len(df)
+        compounds_to_fetch = []
+        for _, row in df.iterrows():
+            name = str(row[name_col]).strip() if pd.notna(row[name_col]) else ""
+            cas = None
+            if cas_col and pd.notna(row.get(cas_col)):
+                cas_raw = str(row[cas_col]).strip()
+                cas = cas_raw if cas_raw not in ("", "nan", "None", "NaN") else None
+            compounds_to_fetch.append((name or None, cas))
+
+        progress = QProgressDialog(
+            f"Resolving compound identifiers (0/{n})...",
+            "Cancel",
+            0,
+            n,
+            self,
+        )
+        progress.setWindowTitle("Fetching Compound Information")
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.setValue(0)
+
+        def _on_cid_resolved(i: int, total: int, name: str) -> bool:
+            if progress.wasCanceled():
+                return False
+            progress.setLabelText(
+                f"Resolving CID: {name or '(unnamed)'} ({i + 1}/{total})..."
+            )
+            progress.setValue(i)
+            QApplication.processEvents()
+            return True
+
+        # CID resolution is sequential (one lookup per compound), but property
+        # and synonym data are fetched in a single batch request each, greatly
+        # reducing the total number of HTTP calls for large compound lists.
+        # CAS enrichment is performed afterwards when an API key is available.
+        cas_api_key = load_cas_api_key()
+        fetched_results = fetch_pubchem_info_batch(
+            compounds_to_fetch,
+            progress_callback=_on_cid_resolved,
+            cas_api_key=cas_api_key,
+        )
+        cancelled = progress.wasCanceled()
+
+        progress.setValue(n)
+        progress.close()
+
+        if cancelled:
+            reply = QMessageBox.question(
+                self,
+                "Cancelled",
+                "Fetching was cancelled. Apply partial results to the file?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+
+        # --- Helper: canonicalize a SMILES string via rdkit (if available) ---
+        def _canonical_smiles(smi: str):
+            try:
+                from rdkit import Chem
+
+                mol = Chem.MolFromSmiles(smi)
+                if mol:
+                    return Chem.MolToSmiles(mol)
+            except Exception:
+                pass
+            return None
+
+        # Step 5: Map fetched fields to target columns
+        # Each entry: (fetched_key, target_column_in_df)
+        column_mapping = [
+            ("cid", "PubChem_CID"),
+            ("smiles", smiles_col or "SMILES"),
+            ("molecular_formula", formula_col or "ChemicalFormula"),
+            ("iupac_name", "IUPAC_Name"),
+            ("inchi", "InChI"),
+            ("inchikey", "InChIKey"),
+            ("xlogp", "XLogP"),
+            ("charge", "Charge"),
+            ("literature_count", "LiteratureCount"),
+            ("fingerprint2d", "Fingerprint2D"),
+            ("title", "Title"),
+            ("synonyms", "Synonyms"),
+            ("cas_number", cas_col or "CAS"),
+            ("cas_preferred_name", "CAS_Preferred_Name"),
+            ("cas_rn_confirmed", "CAS_RN_Confirmed"),
+            ("cas_experimental_properties", "CAS_Experimental_Properties"),
+        ]
+
+        # Ensure all target columns exist in the DataFrame
+        for _, target_col in column_mapping:
+            if target_col not in df.columns:
+                df[target_col] = None
+
+        cell_colors: dict = {}  # (df_row_position, col_name) -> "yellow" | "orange"
+
+        for row_pos, (df_idx, row) in enumerate(df.iterrows()):
+            info = fetched_results[row_pos] if row_pos < len(fetched_results) else None
+            if info is None:
+                continue
+
+            for fetched_key, target_col in column_mapping:
+                fetched_val = info.get(fetched_key)
+                if fetched_val is None:
+                    continue
+
+                # Serialize lists (synonyms) as a JSON array
+                if isinstance(fetched_val, list):
+                    fetched_str = json.dumps(fetched_val, ensure_ascii=False)
+                elif isinstance(fetched_val, (int, float)):
+                    fetched_str = fetched_val
+                else:
+                    fetched_str = str(fetched_val).strip()
+
+                existing_val = row[target_col]
+                is_empty = (
+                    existing_val is None
+                    or (isinstance(existing_val, float) and pd.isna(existing_val))
+                    or str(existing_val).strip() in ("", "nan", "None", "NaN")
+                )
+
+                if is_empty:
+                    df.at[df_idx, target_col] = fetched_str
+                    cell_colors[(row_pos, target_col)] = "yellow"
+                else:
+                    existing_str = str(existing_val).strip()
+                    fetched_compare = str(fetched_str).strip()
+
+                    # For SMILES columns, compare canonical forms via rdkit
+                    if fetched_key == "smiles":
+                        existing_canon = _canonical_smiles(existing_str)
+                        fetched_canon = _canonical_smiles(fetched_compare)
+                        if (
+                            existing_canon
+                            and fetched_canon
+                            and existing_canon == fetched_canon
+                        ):
+                            # Same molecule – update to PubChem canonical form if text differs
+                            if existing_str != fetched_compare:
+                                df.at[df_idx, target_col] = fetched_str
+                                cell_colors[(row_pos, target_col)] = "yellow"
+                            continue  # not a conflict
+
+                    if existing_str != fetched_compare:
+                        df.at[df_idx, target_col] = (
+                            f"available: {existing_str} $$$ fetched: {fetched_compare}"
+                        )
+                        cell_colors[(row_pos, target_col)] = "orange"
+                    # exact match: no change, no colour
+
+        # Step 6: Ask user where to save the enriched file
+        default_save = file_path.rsplit(".", 1)[0] + "_enriched.xlsx"
+        save_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Enriched Compounds File",
+            default_save,
+            "Excel files (*.xlsx);;All files (*)",
+        )
+        if not save_path:
+            return
+
+        # Step 7: Write Excel with colour-coded cells
+        try:
+            self._save_enriched_excel(df, save_path, cell_colors)
+            n_yellow = sum(1 for v in cell_colors.values() if v == "yellow")
+            n_orange = sum(1 for v in cell_colors.values() if v == "orange")
+            QMessageBox.information(
+                self,
+                "Done",
+                (
+                    f"Enriched compound file saved to:\n{save_path}\n\n"
+                    f"  \u2022 {n_yellow} cell(s) with new information (yellow)\n"
+                    f"  \u2022 {n_orange} cell(s) with conflicting information (orange)"
+                ),
+            )
+        except Exception as e:
+            QMessageBox.critical(self, "Save Error", f"Failed to save file:\n{str(e)}")
+
+    def _save_enriched_excel(self, df: pd.DataFrame, path: str, cell_colors: dict):
+        """Write *df* to an Excel file at *path*, applying yellow/orange cell fills."""
+        import openpyxl
+        from openpyxl.styles import PatternFill
+
+        YELLOW = PatternFill(
+            start_color="FFFF00", end_color="FFFF00", fill_type="solid"
+        )
+        ORANGE = PatternFill(
+            start_color="FFA500", end_color="FFA500", fill_type="solid"
+        )
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Compounds"
+
+        # Header row
+        for col_idx, col_name in enumerate(df.columns, start=1):
+            ws.cell(row=1, column=col_idx, value=col_name)
+
+        col_index = {col: idx + 1 for idx, col in enumerate(df.columns)}
+
+        # Data rows  (Excel row 2 == DataFrame position 0)
+        for row_pos, (_, row) in enumerate(df.iterrows()):
+            excel_row = row_pos + 2
+            for col_name in df.columns:
+                val = row[col_name]
+                # Convert NaN / NaT to None for a clean spreadsheet
+                if isinstance(val, float) and pd.isna(val):
+                    val = None
+                cell = ws.cell(row=excel_row, column=col_index[col_name], value=val)
+                color = cell_colors.get((row_pos, col_name))
+                if color == "yellow":
+                    cell.fill = YELLOW
+                elif color == "orange":
+                    cell.fill = ORANGE
+
+        wb.save(path)
 
     def _save_r_code(self, r_code):
         """Save R code to a file"""

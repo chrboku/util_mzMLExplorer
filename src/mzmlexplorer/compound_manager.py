@@ -39,6 +39,7 @@ class CompoundManager:
             "rt_end_min": "RT_end_min",
             "group": "Group",
             "smiles": "SMILES",
+            "isotopologs": "Isotopologs",
         }
         _ADDUCTS_COLUMNS = {
             "adduct": "Adduct",
@@ -514,6 +515,85 @@ class CompoundManager:
             shift /= abs(charge)
 
         return base_mz + shift
+
+    def calculate_custom_isotopolog_mz(
+        self, compound_name: str, adduct: str, isotopolog_formula: str
+    ) -> Optional[float]:
+        """Calculate m/z shift for a custom isotopolog formula.
+
+        Expected format is one or multiple terms like ``[13C]15`` or
+        ``[13C]9[15N]2``. The shift is the sum of the isotope mass deltas
+        multiplied by their counts and adjusted by adduct charge magnitude.
+        """
+        parsed = self._parse_custom_isotopolog_formula(isotopolog_formula)
+        if not parsed:
+            return None
+
+        base_mz = self.calculate_compound_mz(compound_name, adduct)
+        if base_mz is None:
+            return None
+
+        shift = 0.0
+        for isotope_label, count in parsed:
+            mass_delta = self._get_mass_delta_for_isotope_label(isotope_label)
+            if mass_delta is None:
+                return None
+            shift += mass_delta * count
+
+        charge = self._get_adduct_charge(adduct)
+        if charge and charge != 0:
+            shift /= abs(charge)
+
+        return base_mz + shift
+
+    def _get_mass_delta_for_isotope_label(self, isotope_label: str) -> Optional[float]:
+        """Return the mass delta for an isotope label (for example ``13C``)."""
+        for isotope_info in ISOTOPE_DATA.values():
+            if isotope_info.get("label") == isotope_label:
+                return isotope_info.get("mass_delta")
+        return None
+
+    def _parse_custom_isotopolog_formula(
+        self, isotopolog_formula: str
+    ) -> Optional[List[Tuple[str, int]]]:
+        """Parse a custom isotopolog formula into ``(isotope_label, count)`` terms."""
+        if not isinstance(isotopolog_formula, str):
+            return None
+
+        formula = isotopolog_formula.strip()
+        if not formula:
+            return None
+
+        pattern = re.compile(r"\[([^\]]+)\](\d+)")
+        terms: List[Tuple[str, int]] = []
+        pos = 0
+
+        for match in pattern.finditer(formula):
+            # Only allow optional whitespace between terms.
+            between = formula[pos : match.start()]
+            if between.strip():
+                return None
+
+            isotope_label = match.group(1).strip()
+            try:
+                count = int(match.group(2))
+            except ValueError:
+                return None
+
+            if not isotope_label or count <= 0:
+                return None
+
+            terms.append((isotope_label, count))
+            pos = match.end()
+
+        if not terms:
+            return None
+
+        # Disallow trailing non-whitespace characters.
+        if formula[pos:].strip():
+            return None
+
+        return terms
 
     def _calculate_mz_from_mass(self, molecular_mass: float, adduct: str) -> float:
         """

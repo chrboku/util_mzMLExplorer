@@ -1196,19 +1196,72 @@ class MzMLExplorerMainWindow(QMainWindow):
         isotopolog_menu = None
         any_added = False
 
+        
+        custom_definitions = self._parse_custom_isotopolog_definitions(compound_data)
+        if custom_definitions:
+            if isotopolog_menu is None:
+                isotopolog_menu = menu.addMenu("Isotopologs")
+
+            custom_menu = isotopolog_menu.addMenu("Custom")
+            for custom_name, isotopolog_formula in custom_definitions.items():
+                custom_entry_menu = custom_menu.addMenu(custom_name)
+                custom_has_action = False
+
+                for adduct in ordered_adducts:
+                    custom_mz = self.compound_manager.calculate_custom_isotopolog_mz(
+                        compound_name, adduct, isotopolog_formula
+                    )
+                    adduct_display = self.compound_manager.get_adduct_display_name(
+                        compound_name, adduct
+                    )
+
+                    if custom_mz is None:
+                        action = QAction(f"{adduct_display} (m/z unavailable)", self)
+                        action.setEnabled(False)
+                        custom_entry_menu.addAction(action)
+                        continue
+
+                    action = QAction(f"{adduct_display} (m/z: {custom_mz:.4f})", self)
+
+                    precalc = self.compound_manager.get_precalculated_data(
+                        compound_name, adduct
+                    )
+                    polarity = precalc.get("polarity") if precalc else None
+                    if polarity is None:
+                        polarity = self.compound_manager._determine_polarity(adduct)
+
+                    adduct_label = f"{adduct_display} {custom_name}"
+                    action.triggered.connect(
+                        lambda checked,
+                        c=compound_data,
+                        label=adduct_label,
+                        mz=custom_mz,
+                        pol=polarity: self.show_eic_window(c, label, mz, pol)
+                    )
+                    custom_entry_menu.addAction(action)
+                    custom_has_action = True
+
+                if not custom_has_action:
+                    custom_entry_menu.menuAction().setEnabled(False)
+                else:
+                    any_added = True
+
         for element, total_count in element_map.items():
             isotope_label = self.compound_manager.get_isotope_label(element)
             if not isotope_label:
                 continue
 
-            counts = self.compound_manager.get_isotopolog_counts(element, total_count)
-            if not counts:
+            isotopolog_variants = self._build_isotopolog_variants(
+                element, isotope_label, total_count
+            )
+            if not isotopolog_variants:
                 continue
 
             element_menu = None
 
-            for count in counts:
-                display_label = f"[{isotope_label}]{count}"
+            
+
+            for display_label, count in isotopolog_variants:
                 count_actions = []
 
                 for adduct in ordered_adducts:
@@ -1264,10 +1317,80 @@ class MzMLExplorerMainWindow(QMainWindow):
 
                 any_added = True
 
+
         if not any_added and isotopolog_menu is not None:
             isotopolog_menu.menuAction().setEnabled(False)
 
         return any_added
+
+    def _build_isotopolog_variants(self, element, isotope_label, total_count):
+        """Build display labels and counts for isotopolog menu entries."""
+        variants = []
+
+        counts = self.compound_manager.get_isotopolog_counts(element, total_count)
+        for count in counts:
+            variants.append((f"[{isotope_label}]{count}", count))
+
+        # Additional C-specific shortcuts requested by users.
+        if element == "C" and total_count is not None:
+            try:
+                total_c = int(total_count)
+            except (TypeError, ValueError):
+                total_c = None
+
+            if total_c and total_c > 0:
+                if total_c - 1 > 0:
+                    variants.append((f"-1 C ([{isotope_label}]{total_c - 1})", total_c - 1))
+                if total_c - 2 > 0:
+                    variants.append((f"-2 C ([{isotope_label}]{total_c - 2})", total_c - 2))
+
+                variants.append((f"total C+1 ([{isotope_label}]{total_c + 1})", total_c + 1))
+                variants.append((f"total C+2 ([{isotope_label}]{total_c + 2})", total_c + 2))
+
+        # Deduplicate by (label, count) while preserving order.
+        seen = set()
+        deduped = []
+        for label, count in variants:
+            key = (label, count)
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append((label, count))
+
+        return deduped
+
+    def _parse_custom_isotopolog_definitions(self, compound_data):
+        """Parse optional Isotopologs JSON string from a compound row."""
+        raw_value = compound_data.get("Isotopologs", "")
+        if raw_value is None or (isinstance(raw_value, float) and pd.isna(raw_value)):
+            return {}
+
+        if not isinstance(raw_value, str):
+            return {}
+
+        raw_value = raw_value.strip()
+        if not raw_value:
+            return {}
+
+        try:
+            parsed = json.loads(raw_value)
+        except Exception:
+            return {}
+
+        if not isinstance(parsed, dict):
+            return {}
+
+        result = {}
+        for key, value in parsed.items():
+            if not isinstance(key, str) or not isinstance(value, str):
+                continue
+            name = key.strip()
+            formula = value.strip()
+            if not name or not formula:
+                continue
+            result[name] = formula
+
+        return result
 
     def _add_multi_adduct_actions(
         self, menu, compound_data, adducts_info, can_calculate

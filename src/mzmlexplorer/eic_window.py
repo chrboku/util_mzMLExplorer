@@ -1265,6 +1265,7 @@ class EICWindow(QWidget):
         self.scatter_plot_view = None
         self.scatter_separator_label = None
         self.scatter_plot_menu_text = "View 2D scatter plot (RT vs m/z)"
+        self._syncing_scatter_x_axis = False
 
         # Initialize peak boundary line attributes
         self.peak_boundary_lines = []  # List of QLineSeries for boundary lines
@@ -1339,6 +1340,11 @@ class EICWindow(QWidget):
         self.reset_view_btn.clicked.connect(self.reset_view)
         self.reset_view_btn.setEnabled(False)  # Disabled until data is loaded
         layout.addWidget(self.reset_view_btn)
+
+        # Optional scatter plot button (lazy-loads scatter data when first shown)
+        self.scatter_toggle_btn = QPushButton("Show 2D Scatter Plot")
+        self.scatter_toggle_btn.clicked.connect(self.toggle_scatter_plot)
+        layout.addWidget(self.scatter_toggle_btn)
 
         # Progress bar (underneath the buttons)
         self.progress_bar = QProgressBar()
@@ -5661,17 +5667,6 @@ class EICWindow(QWidget):
         # Re-add peak boundary lines if they exist
         self._restore_peak_boundary_lines()
 
-        # Automatically add scatter plot when EIC data is loaded
-        if (
-            not hasattr(self, "_scatter_plot_auto_added")
-            or not self._scatter_plot_auto_added
-        ):
-            self._scatter_plot_auto_added = True
-            # Use a timer to add scatter plot after the EIC chart is fully rendered
-            from PyQt6.QtCore import QTimer
-
-            QTimer.singleShot(100, self.auto_add_scatter_plot)
-
     def _add_reference_lines(
         self, groups_data, separate_groups, separate_injection=False, sep_mode="None"
     ):
@@ -6203,8 +6198,13 @@ class EICWindow(QWidget):
         # Store reference to new splitter for cleanup
         self.chart_scatter_splitter = three_way_splitter
 
+        # Keep both charts in lockstep horizontally
+        self._connect_scatter_x_axis_sync()
+
         # Update context menu text
         self.update_context_menu_text("Hide 2D scatter plot")
+        if hasattr(self, "scatter_toggle_btn"):
+            self.scatter_toggle_btn.setText("Hide 2D Scatter Plot")
 
     def remove_scatter_plot(self):
         """Remove the 2D scatter plot from the EIC window and restore two-way splitter layout"""
@@ -6250,6 +6250,79 @@ class EICWindow(QWidget):
 
         # Update context menu text
         self.update_context_menu_text("View 2D scatter plot (RT vs m/z)")
+        if hasattr(self, "scatter_toggle_btn"):
+            self.scatter_toggle_btn.setText("Show 2D Scatter Plot")
+
+    def toggle_scatter_plot(self):
+        """Show/hide the optional RT vs m/z scatter plot."""
+        if self.scatter_plot_view is not None:
+            self.remove_scatter_plot()
+            return
+
+        rt_min, rt_max = self.get_rt_range()
+        self.add_scatter_plot((rt_min + rt_max) / 2.0)
+
+    def _get_scatter_x_axis(self):
+        """Return the scatter chart x-axis if available."""
+        if self.scatter_plot_view is None or not hasattr(self.scatter_plot_view, "chart"):
+            return None
+
+        axes = self.scatter_plot_view.chart.axes(Qt.Orientation.Horizontal)
+        return axes[0] if axes else None
+
+    def _connect_scatter_x_axis_sync(self):
+        """Synchronize EIC and scatter x-axis ranges in both directions."""
+        scatter_x_axis = self._get_scatter_x_axis()
+        if scatter_x_axis is None:
+            return
+
+        # Qt auto-disconnects deleted QObject signal connections; reconnect each time scatter is created.
+        try:
+            self.x_axis.rangeChanged.disconnect(self._on_eic_x_range_changed)
+        except Exception:
+            pass
+        self.x_axis.rangeChanged.connect(self._on_eic_x_range_changed)
+
+        try:
+            scatter_x_axis.rangeChanged.disconnect(self._on_scatter_x_range_changed)
+        except Exception:
+            pass
+        scatter_x_axis.rangeChanged.connect(self._on_scatter_x_range_changed)
+
+        # Start with the current EIC x range.
+        self._on_eic_x_range_changed(self.x_axis.min(), self.x_axis.max())
+
+    def _on_eic_x_range_changed(self, minimum: float, maximum: float):
+        """Push EIC x-axis changes to the scatter plot."""
+        if self._syncing_scatter_x_axis:
+            return
+
+        scatter_x_axis = self._get_scatter_x_axis()
+        if scatter_x_axis is None:
+            return
+
+        if abs(scatter_x_axis.min() - minimum) < 1e-12 and abs(scatter_x_axis.max() - maximum) < 1e-12:
+            return
+
+        self._syncing_scatter_x_axis = True
+        try:
+            scatter_x_axis.setRange(minimum, maximum)
+        finally:
+            self._syncing_scatter_x_axis = False
+
+    def _on_scatter_x_range_changed(self, minimum: float, maximum: float):
+        """Push scatter x-axis changes to the EIC plot."""
+        if self._syncing_scatter_x_axis:
+            return
+
+        if abs(self.x_axis.min() - minimum) < 1e-12 and abs(self.x_axis.max() - maximum) < 1e-12:
+            return
+
+        self._syncing_scatter_x_axis = True
+        try:
+            self.x_axis.setRange(minimum, maximum)
+        finally:
+            self._syncing_scatter_x_axis = False
 
     def update_context_menu_text(self, new_text):
         """Update the context menu text for the scatter plot option"""

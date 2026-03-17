@@ -2,8 +2,9 @@
 Utility functions for mzML Explorer
 """
 
-import re
 from typing import Dict, Optional
+
+from .FormulaTools import formulaTools
 
 
 # Atomic masses (monoisotopic)
@@ -28,6 +29,10 @@ ISOTOPE_DATA = {
 }
 
 
+# Reuse a single parser/mass calculator so formula handling is consistent app-wide.
+_FORMULA_TOOLS = formulaTools()
+
+
 def parse_molecular_formula(formula: str) -> Dict[str, int]:
     """
     Parse a molecular formula string into a dictionary of element counts.
@@ -38,15 +43,10 @@ def parse_molecular_formula(formula: str) -> Dict[str, int]:
     Returns:
         Dictionary mapping element symbols to their counts
     """
-    pattern = r"([A-Z][a-z]?)(\d*)"
-    matches = re.findall(pattern, formula)
+    if not isinstance(formula, str) or not formula.strip():
+        raise ValueError("Formula must be a non-empty string")
 
-    composition = {}
-    for element, count in matches:
-        count = int(count) if count else 1
-        composition[element] = composition.get(element, 0) + count
-
-    return composition
+    return _FORMULA_TOOLS.parseFormula(formula)
 
 
 def calculate_molecular_mass(formula: str) -> float:
@@ -60,15 +60,7 @@ def calculate_molecular_mass(formula: str) -> float:
         Monoisotopic molecular mass in Da
     """
     composition = parse_molecular_formula(formula)
-    mass = 0.0
-
-    for element, count in composition.items():
-        if element in ATOMIC_MASSES:
-            mass += ATOMIC_MASSES[element] * count
-        else:
-            raise ValueError(f"Unknown element: {element}")
-
-    return mass
+    return _FORMULA_TOOLS.calcMolWeight(composition)
 
 
 def calculate_mz_from_formula(formula: str, adduct: str, adducts_data) -> float:

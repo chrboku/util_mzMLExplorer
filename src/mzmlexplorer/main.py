@@ -539,7 +539,6 @@ class MzMLExplorerMainWindow(QMainWindow):
                     "{'Glucose': [125.0, 'µM']}",
                     "",
                     "",
-                    "",
                 ],
             }
 

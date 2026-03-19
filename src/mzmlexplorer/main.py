@@ -334,12 +334,12 @@ class MzMLExplorerMainWindow(QMainWindow):
                 df = pd.read_csv(file_path)
 
             # Process the dataframe (validation + forward-fill + loading)
-            self._process_files_dataframe(df, source=source)
+            self._process_files_dataframe(df, source=source, excel_path=file_path)
 
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to load files: {str(e)}")
 
-    def _process_files_dataframe(self, df, source="menu"):
+    def _process_files_dataframe(self, df, source="menu", excel_path=None):
         """
         Shared method to validate and process files dataframe.
 
@@ -413,7 +413,7 @@ class MzMLExplorerMainWindow(QMainWindow):
                 df[col] = df[col].ffill()
 
         # Load files using file manager
-        self.file_manager.load_files(df)
+        self.file_manager.load_files(df, excel_path=excel_path)
         self.update_files_table()
 
         # If memory mode is enabled, load the new files into memory with progress

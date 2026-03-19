@@ -17,12 +17,14 @@ A comprehensive GUI application for visualization and analysis of LC-HRMS data f
 ## Installation
 ### Setup
 1. Install the uv package manager, for details refer to [https://github.com/astral-sh/uv](https://github.com/astral-sh/uv)
-2. Clone (`git clone https://github.com/chrboku/util_mzmlexplorer`) or download the repository from [https://github.com/chrboku/util_mzmlexplorer](https://github.com/chrboku/util_mzmlexplorer).
-
-
+2. Download the repository from [https://github.com/chrboku/util_mzMLExplorer/archive/refs/heads/master.zip](https://github.com/chrboku/util_mzMLExplorer/archive/refs/heads/master.zip) if you do not have git installed. Unpack the zip archive to a folder of your choice. Alternatively, the repository can be cloned with the command `git clone https://github.com/chrboku/util_mzmlexplorer`
 
 ## Usage
-### Starting the Application
+
+### Start mzmlexplorer
+To start mzmlexplorer, open the folder where it has been cloned or downloaded to and double-click the file `run.bat` (Windows) or `run.sh` (Linux, Mac). Note: On Linux and Mac one might have to allow the `run.sh` file to be an executable. 
+
+### Starting the Application from the console
 ```bash
 uv run mzmlexplorer
 ```

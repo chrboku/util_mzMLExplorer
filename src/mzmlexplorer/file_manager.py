@@ -263,13 +263,43 @@ class FileManager:
                 "error": str(e),
             }
 
-    def load_files(self, files_df: pd.DataFrame):
+    def _resolve_filepath(self, raw_path: str, excel_dir: Optional[str] = None) -> Optional[str]:
+        """
+        Resolve a filepath using three fallback strategies:
+        1. Use raw_path directly (absolute or relative path as-is).
+        2. Combine current working directory with raw_path.
+        3. Combine the excel file's folder with raw_path (supports subfolders).
+
+        Returns the first existing path found, or None if none exist.
+        """
+        # Step 1: direct path (absolute or already resolvable)
+        if os.path.exists(raw_path):
+            return raw_path
+
+        # Step 2: relative to working directory
+        cwd_path = os.path.join(os.getcwd(), raw_path)
+        if os.path.exists(cwd_path):
+            return cwd_path
+
+        # Step 3: relative to the excel file's folder
+        if excel_dir is not None:
+            excel_rel_path = os.path.join(excel_dir, raw_path)
+            if os.path.exists(excel_rel_path):
+                return excel_rel_path
+
+        return None
+
+    def load_files(self, files_df: pd.DataFrame, excel_path: Optional[str] = None):
         """
         Load file list with metadata. New files are added to existing ones.
 
         Args:
             files_df: DataFrame with columns Filepath and optional group, color, etc.
+            excel_path: Path to the source excel/csv file, used to resolve relative
+                        filepaths in the Filepath column.
         """
+        excel_dir = os.path.dirname(os.path.abspath(excel_path)) if excel_path else None
+
         # Validate file paths
         valid_files = []
         existing_paths = (
@@ -279,19 +309,27 @@ class FileManager:
         )
 
         for idx, row in files_df.iterrows():
-            filepath = row["Filepath"]
+            raw_filepath = str(row["Filepath"])
 
-            # Skip if file already exists in the list
-            if filepath in existing_paths:
+            # Resolve the filepath using the three-step fallback
+            resolved_path = self._resolve_filepath(raw_filepath, excel_dir)
+
+            # Skip if the resolved file already exists in the list
+            if resolved_path and resolved_path in existing_paths:
                 print(
-                    f"Info: File already loaded, skipping: {os.path.basename(filepath)}"
+                    f"Info: File already loaded, skipping: {os.path.basename(resolved_path)}"
                 )
                 continue
 
-            if os.path.exists(filepath) and filepath.lower().endswith(".mzml"):
-                valid_files.append(row.to_dict())
+            if resolved_path and resolved_path.lower().endswith(".mzml"):
+                row_dict = row.to_dict()
+                row_dict["Filepath"] = resolved_path  # store the resolved path
+                valid_files.append(row_dict)
             else:
-                print(f"Warning: File not found or not mzML: {filepath}")
+                if resolved_path is None:
+                    print(f"Warning: File not found: {raw_filepath}")
+                else:
+                    print(f"Warning: File is not an mzML file: {resolved_path}")
 
         if not valid_files:
             if not self.files_data.empty:

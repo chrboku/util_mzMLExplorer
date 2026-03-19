@@ -2047,11 +2047,11 @@ class MzMLExplorerMainWindow(QMainWindow):
         self.eic_defaults = {
             "mz_tolerance_ppm": float(self.settings.value("eic/mz_tolerance_ppm", 5.0)),
             "separate_groups": self.settings.value(
-                "eic/separate_groups", True, type=bool
+                "eic/separate_groups", False, type=bool
             ),
             "rt_shift_min": float(self.settings.value("eic/rt_shift_min", 1.0)),
             "crop_rt_window": self.settings.value(
-                "eic/crop_rt_window", False, type=bool
+                "eic/crop_rt_window", True, type=bool
             ),
             "normalize_samples": self.settings.value(
                 "eic/normalize_samples", False, type=bool
@@ -2063,7 +2063,7 @@ class MzMLExplorerMainWindow(QMainWindow):
         # Load memory settings
         self.memory_settings = {
             "keep_in_memory": self.settings.value(
-                "memory/keep_in_memory", False, type=bool
+                "memory/keep_in_memory", True, type=bool
             ),
             "parallel_tasks": int(self.settings.value("memory/parallel_tasks", 4)),
         }

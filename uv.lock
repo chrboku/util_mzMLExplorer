@@ -720,7 +720,7 @@ wheels = [
 
 [[package]]
 name = "util-mzmlexplorer"
-version = "6.5.0"
+version = "6.5.1"
 source = { editable = "." }
 dependencies = [
     { name = "matplotlib" },

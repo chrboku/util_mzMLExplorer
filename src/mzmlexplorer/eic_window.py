@@ -287,6 +287,7 @@ class MSMSPopupWindow(QWidget):
         # Create large MSMS chart with interactive capabilities (right side)
         chart = self.create_large_msms_chart()
         self.chart_view = InteractiveMSMSChartView(chart)
+        self.chart_view.spectrum_data = self.spectrum_data  # Enable hover tooltip
         self.chart_view.setMinimumSize(600, 400)
         splitter.addWidget(self.chart_view)
 
@@ -347,15 +348,13 @@ class MSMSPopupWindow(QWidget):
             intensity_val = float(intensity)
             rel_abund_val = float(rel_abund)
 
-            # Create m/z item
-            mz_item = QTableWidgetItem()
+            # Create m/z item (NumericTableWidgetItem sorts by UserRole float)
+            mz_item = NumericTableWidgetItem()
             mz_item.setData(Qt.ItemDataRole.DisplayRole, f"{mz_val:.4f}")
             mz_item.setData(Qt.ItemDataRole.UserRole, mz_val)  # Store for selection
-            # Set the data type for proper sorting
-            mz_item.setData(Qt.ItemDataRole.EditRole, mz_val)
 
             # Create intensity item
-            intensity_item = QTableWidgetItem()
+            intensity_item = NumericTableWidgetItem()
             if intensity_val >= 1000:
                 intensity_item.setData(
                     Qt.ItemDataRole.DisplayRole, f"{intensity_val:.2e}"
@@ -367,15 +366,14 @@ class MSMSPopupWindow(QWidget):
             intensity_item.setData(
                 Qt.ItemDataRole.UserRole, intensity_val
             )  # Store for selection
-            # Set the data type for proper sorting
-            intensity_item.setData(Qt.ItemDataRole.EditRole, intensity_val)
 
             # Create relative abundance item
-            rel_abund_item = QTableWidgetItem()
+            rel_abund_item = NumericTableWidgetItem()
             rel_abund_item.setData(Qt.ItemDataRole.DisplayRole, f"{rel_abund_val:.1f}")
             rel_abund_item.setData(Qt.ItemDataRole.UserRole, rel_abund_val)
-            # Set the data type for proper sorting
-            rel_abund_item.setData(Qt.ItemDataRole.EditRole, rel_abund_val)
+            # Bar-delegate data: fraction 0.0-1.0 and colour
+            rel_abund_item.setData(BarDelegate.BAR_FRAC_ROLE, rel_abund_val / 100.0)
+            rel_abund_item.setData(BarDelegate.BAR_COLOR_ROLE, QColor("steelblue"))
 
             self.table_widget.setItem(i, 0, mz_item)
             self.table_widget.setItem(i, 1, intensity_item)
@@ -383,6 +381,9 @@ class MSMSPopupWindow(QWidget):
 
         # Enable sorting after all data is populated
         self.table_widget.setSortingEnabled(True)
+
+        # Apply bar delegate to the relative abundance column
+        self.table_widget.setItemDelegateForColumn(2, BarDelegate(self.table_widget))
 
         # Connect selection change
         self.table_widget.itemSelectionChanged.connect(self.on_table_selection_changed)
@@ -424,8 +425,10 @@ class MSMSPopupWindow(QWidget):
         """Update the chart to highlight the selected m/z peak"""
         chart = self.chart_view.chart()
 
-        # Clear existing series
+        # Clear existing series (also invalidates any hover series in the chart view)
         chart.removeAllSeries()
+        self.chart_view._hover_series = None  # Reference is stale after removeAllSeries
+        self.chart_view._hover_mz = None
 
         # Recreate series with highlighting
         mz_array = self.spectrum_data["mz"]
@@ -6543,6 +6546,22 @@ class InteractiveMSMSChartView(QChartView):
         self.setRubberBand(QChartView.RubberBand.NoRubberBand)
         self.setMouseTracking(True)
 
+        # Hover tooltip label for m/z values
+        self.hover_label = QLabel(self)
+        self.hover_label.setStyleSheet("""
+            QLabel {
+                background-color: rgba(255, 255, 255, 220);
+                border: 1px solid #555;
+                border-radius: 3px;
+                padding: 2px 6px;
+                font-size: 11px;
+            }
+        """)
+        self.hover_label.hide()
+        self.hover_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self._hover_mz = None
+        self._hover_series = None  # Firebrick stick drawn over the hovered peak
+
     def mousePressEvent(self, event):
         """Handle mouse press events"""
         if event.button() == Qt.MouseButton.LeftButton:
@@ -6595,7 +6614,104 @@ class InteractiveMSMSChartView(QChartView):
             self._handle_zooming(event)
 
         self.last_mouse_pos = event.position()
+
+        # Update hover tooltip when not interacting
+        if not self.is_panning and not self.is_zooming:
+            self._update_hover_tooltip(event)
+
         super().mouseMoveEvent(event)
+
+    def _update_hover_tooltip(self, event):
+        """Show m/z tooltip for the peak closest to the cursor in Euclidean pixel space"""
+        if self.spectrum_data is None:
+            self.hover_label.hide()
+            return
+
+        plot_area = self.chart().plotArea()
+        if not plot_area.contains(event.position()):
+            self.hover_label.hide()
+            if self._hover_series is not None:
+                self.chart().removeSeries(self._hover_series)
+                self._hover_series = None
+            self._hover_mz = None
+            return
+
+        mz_array = self.spectrum_data.get("mz", [])
+        intensity_array = self.spectrum_data.get("intensity", [])
+        if len(mz_array) == 0:
+            self.hover_label.hide()
+            return
+
+        max_intensity = max((float(v) for v in intensity_array), default=1.0)
+        if max_intensity <= 0:
+            max_intensity = 1.0
+
+        # Find peak whose stick is closest to the cursor in pixel-space Euclidean distance
+        PIXEL_THRESHOLD = 20
+        mx = event.position().x()
+        my = event.position().y()
+
+        best_mz = None
+        best_norm_int = 0.0
+        best_dist = float("inf")
+
+        for mz_val, int_val in zip(mz_array, intensity_array):
+            mz_f = float(mz_val)
+            norm_int = (float(int_val) / max_intensity) * 100.0
+            tip = self.chart().mapToPosition(QPointF(mz_f, norm_int))
+            base = self.chart().mapToPosition(QPointF(mz_f, 0.0))
+            tx, ty, bx, by = tip.x(), tip.y(), base.x(), base.y()
+            dx, dy = bx - tx, by - ty
+            seg_len_sq = dx * dx + dy * dy
+            t = max(0.0, min(1.0, ((mx - tx) * dx + (my - ty) * dy) / seg_len_sq)) if seg_len_sq > 0 else 0.0
+            dist = ((mx - tx - t * dx) ** 2 + (my - ty - t * dy) ** 2) ** 0.5
+            if dist < best_dist:
+                best_dist = dist
+                best_mz = mz_f
+                best_norm_int = norm_int
+
+        if best_mz is not None and best_dist <= PIXEL_THRESHOLD:
+            if best_mz != self._hover_mz:
+                self._hover_mz = best_mz
+
+                if self._hover_series is not None:
+                    self.chart().removeSeries(self._hover_series)
+                    self._hover_series = None
+
+                hover_series = QLineSeries()
+                hover_pen = QPen(QColor(178, 34, 34))  # Firebrick
+                hover_pen.setWidth(3)
+                hover_series.setPen(hover_pen)
+                hover_series.append(best_mz, 0.0)
+                hover_series.append(best_mz, best_norm_int)
+                hover_series.append(best_mz, 0.0)
+                self.chart().addSeries(hover_series)
+                x_axes = self.chart().axes(Qt.Orientation.Horizontal)
+                y_axes = self.chart().axes(Qt.Orientation.Vertical)
+                if x_axes and y_axes:
+                    hover_series.attachAxis(x_axes[0])
+                    hover_series.attachAxis(y_axes[0])
+                self._hover_series = hover_series
+                self.chart().legend().setVisible(False)
+
+                self.hover_label.setText(f"m/z: {best_mz:.4f}")
+                self.hover_label.adjustSize()
+
+            # Position label centered above the peak tip
+            tip_pos = self.chart().mapToPosition(QPointF(best_mz, best_norm_int))
+            lx = int(tip_pos.x()) - self.hover_label.width() // 2
+            ly = int(tip_pos.y()) - self.hover_label.height() - 6
+            lx = max(0, min(lx, self.width() - self.hover_label.width()))
+            if ly < 0:
+                ly = int(tip_pos.y()) + 6
+            self.hover_label.move(lx, ly)
+            self.hover_label.show()
+        else:
+            if self._hover_series is not None:
+                self.chart().removeSeries(self._hover_series)
+                self._hover_series = None
+            self._hover_mz = None
+            self.hover_label.hide()
 
     def mouseReleaseEvent(self, event):
         """Handle mouse release events"""
@@ -6606,6 +6722,15 @@ class InteractiveMSMSChartView(QChartView):
 
         self.setCursor(Qt.CursorShape.ArrowCursor)
         super().mouseReleaseEvent(event)
+
+    def leaveEvent(self, event):
+        """Hide hover tooltip when the mouse leaves the chart"""
+        if self._hover_series is not None:
+            self.chart().removeSeries(self._hover_series)
+            self._hover_series = None
+        self.hover_label.hide()
+        self._hover_mz = None
+        super().leaveEvent(event)
 
     def wheelEvent(self, event):
         """Handle mouse wheel events for zooming"""
@@ -6827,6 +6952,15 @@ class MS1ViewerWindow(QWidget):
             )
             controls_layout.addWidget(self.isotope_tolerance_ppm_spin)
 
+        # Number of annotated signals spinner
+        controls_layout.addWidget(QLabel("Annotated signals:"))
+        self.top_n_spin = QSpinBox()
+        self.top_n_spin.setRange(0, 20)
+        self.top_n_spin.setValue(3)
+        self.top_n_spin.setFixedWidth(55)
+        self.top_n_spin.valueChanged.connect(self.update_all_top_signal_labels)
+        controls_layout.addWidget(self.top_n_spin)
+
         controls_layout.addStretch()
         layout.addLayout(controls_layout)
 
@@ -7000,6 +7134,13 @@ class MS1ViewerWindow(QWidget):
         chart_view.update_top_signal_labels()
 
         return chart_view
+
+    def update_all_top_signal_labels(self):
+        """Propagate the top-N spinner value to every chart view and refresh labels"""
+        n = self.top_n_spin.value()
+        for chart_view in self.chart_views.values():
+            chart_view.top_n = n
+            chart_view.update_top_signal_labels()
 
     def toggle_isotope_pattern(self, checked):
         """Toggle display of theoretical isotope pattern"""
@@ -7258,11 +7399,14 @@ class InteractiveMS1ChartView(QChartView):
         # Enable mouse tracking for hover effects
         self.setMouseTracking(True)
 
-        # Hover tooltip setup
+        # Hover overlay state
         self.tooltip_label = None
+        self._hover_mz = None
+        self._hover_series = None  # Firebrick stick drawn over the hovered peak
 
         # Top signal labels
         self.signal_labels = []  # List to store QLabel widgets for top signals
+        self.top_n = 3  # Number of top signals to annotate
 
     def auto_scale_y_axis(self):
         """Auto-scale Y-axis based on visible X-axis range"""
@@ -7503,46 +7647,92 @@ class InteractiveMS1ChartView(QChartView):
         self.auto_scale_y_axis()
 
     def _handle_hover_tooltip(self, event):
-        """Handle hover tooltip display for showing m/z values"""
+        """Handle hover: highlight the peak closest to the cursor in Euclidean pixel space"""
         plot_area = self.chart().plotArea()
         if not plot_area.contains(event.position()):
             self._hide_tooltip()
             return
 
-        # Convert mouse position to chart coordinates
-        mouse_x = event.position().x()
-        mouse_y = event.position().y()
+        if len(self.mz_array) == 0:
+            self._hide_tooltip()
+            return
 
-        # Get chart axes
-        x_axis = self.chart().axes(Qt.Orientation.Horizontal)[0]
-        y_axis = self.chart().axes(Qt.Orientation.Vertical)[0]
+        # Find peak whose stick is closest to the cursor in pixel-space Euclidean distance
+        PIXEL_THRESHOLD = 20
+        mx = event.position().x()
+        my = event.position().y()
 
-        # Convert mouse position to data coordinates
-        rel_x = (mouse_x - plot_area.left()) / plot_area.width()
-        rel_y = (mouse_y - plot_area.top()) / plot_area.height()
+        best_mz = None
+        best_intensity = 0.0
+        best_dist = float("inf")
 
-        data_x = x_axis.min() + rel_x * (x_axis.max() - x_axis.min())
-        data_y = y_axis.max() - rel_y * (y_axis.max() - y_axis.min())  # Y is inverted
+        for mz_f, int_f in zip(self.mz_array, self.intensity_array):
+            mz_f = float(mz_f)
+            int_f = float(int_f)
+            tip = self.chart().mapToPosition(QPointF(mz_f, int_f))
+            base = self.chart().mapToPosition(QPointF(mz_f, 0.0))
+            tx, ty, bx, by = tip.x(), tip.y(), base.x(), base.y()
+            dx, dy = bx - tx, by - ty
+            seg_len_sq = dx * dx + dy * dy
+            t = max(0.0, min(1.0, ((mx - tx) * dx + (my - ty) * dy) / seg_len_sq)) if seg_len_sq > 0 else 0.0
+            dist = ((mx - tx - t * dx) ** 2 + (my - ty - t * dy) ** 2) ** 0.5
+            if dist < best_dist:
+                best_dist = dist
+                best_mz = mz_f
+                best_intensity = int_f
 
-        # Find closest signal within hover tolerance (use ppm tolerance from parent window)
-        parent_window = self.parent()
-        while parent_window and not hasattr(
-            parent_window, "isotope_tolerance_ppm_spin"
-        ):
-            parent_window = parent_window.parent()
+        if best_mz is not None and best_dist <= PIXEL_THRESHOLD:
+            if best_mz != self._hover_mz:
+                self._hover_mz = best_mz
 
-        tolerance_ppm = 5.0  # Default tolerance
-        if parent_window and hasattr(parent_window, "isotope_tolerance_ppm_spin"):
-            tolerance_ppm = parent_window.isotope_tolerance_ppm_spin.value()
+                # Remove old firebrick series
+                if self._hover_series is not None:
+                    self.chart().removeSeries(self._hover_series)
+                    self._hover_series = None
 
-        closest_mz, closest_intensity = self._find_closest_signal_ppm(
-            data_x, tolerance_ppm
-        )
+                # Add new firebrick series for this peak
+                hover_s = QLineSeries()
+                hover_pen = QPen(QColor(178, 34, 34))  # Firebrick
+                hover_pen.setWidth(3)
+                hover_s.setPen(hover_pen)
+                hover_s.append(best_mz, 0.0)
+                hover_s.append(best_mz, best_intensity)
+                hover_s.append(best_mz, 0.0)
+                self.chart().addSeries(hover_s)
+                x_axes = self.chart().axes(Qt.Orientation.Horizontal)
+                y_axes = self.chart().axes(Qt.Orientation.Vertical)
+                if x_axes and y_axes:
+                    hover_s.attachAxis(x_axes[0])
+                    hover_s.attachAxis(y_axes[0])
+                self._hover_series = hover_s
+                self.chart().legend().hide()
 
-        if closest_mz is not None:
-            # Show tooltip
-            tooltip_text = f"m/z: {closest_mz:.4f}\nIntensity: {closest_intensity:.2e}"
-            self._show_tooltip(event.globalPosition().toPoint(), tooltip_text)
+                if self.tooltip_label is None:
+                    self.tooltip_label = QLabel(self)
+                    self.tooltip_label.setStyleSheet("""
+                        QLabel {
+                            background-color: rgba(255, 255, 255, 220);
+                            border: 1px solid #555;
+                            border-radius: 3px;
+                            padding: 2px 6px;
+                            font-size: 11px;
+                        }
+                    """)
+                    self.tooltip_label.setAttribute(
+                        Qt.WidgetAttribute.WA_TransparentForMouseEvents
+                    )
+                self.tooltip_label.setText(f"m/z: {best_mz:.4f}")
+                self.tooltip_label.adjustSize()
+
+            # Re-position label centered above the peak tip every move
+            tip_pos = self.chart().mapToPosition(QPointF(best_mz, best_intensity))
+            lx = int(tip_pos.x()) - self.tooltip_label.width() // 2
+            ly = int(tip_pos.y()) - self.tooltip_label.height() - 6
+            lx = max(0, min(lx, self.width() - self.tooltip_label.width()))
+            if ly < 0:
+                ly = int(tip_pos.y()) + 6
+            self.tooltip_label.move(lx, ly)
+            self.tooltip_label.show()
         else:
             self._hide_tooltip()
 
@@ -7604,9 +7794,13 @@ class InteractiveMS1ChartView(QChartView):
         self.tooltip_label.show()
 
     def _hide_tooltip(self):
-        """Hide the tooltip"""
+        """Hide the tooltip label and remove any hover series"""
         if self.tooltip_label is not None:
             self.tooltip_label.hide()
+        if self._hover_series is not None:
+            self.chart().removeSeries(self._hover_series)
+            self._hover_series = None
+        self._hover_mz = None
 
     def leaveEvent(self, event):
         """Hide tooltip when mouse leaves the widget"""
@@ -7614,19 +7808,18 @@ class InteractiveMS1ChartView(QChartView):
         super().leaveEvent(event)
 
     def update_top_signal_labels(self):
-        """Update labels for the top-3 most abundant signals in the visible range"""
+        """Update labels for the top-N most abundant signals in the visible range"""
         # Clear existing labels
         for label in self.signal_labels:
             label.deleteLater()
         self.signal_labels.clear()
 
-        if len(self.mz_array) == 0:
+        if len(self.mz_array) == 0 or self.top_n <= 0:
             return
 
         # Get current visible range
         x_axis = self.chart().axes(Qt.Orientation.Horizontal)[0]
         y_axis = self.chart().axes(Qt.Orientation.Vertical)[0]
-        plot_area = self.chart().plotArea()
 
         x_min = x_axis.min()
         x_max = x_axis.max()
@@ -7639,53 +7832,44 @@ class InteractiveMS1ChartView(QChartView):
         visible_mz = self.mz_array[visible_mask]
         visible_intensities = self.intensity_array[visible_mask]
 
-        # Find top-3 most abundant signals
+        # Find top-N most abundant signals
         if len(visible_intensities) > 0:
-            # Get indices of top intensities (up to 3)
-            top_indices = np.argsort(visible_intensities)[-3:][
-                ::-1
-            ]  # Top 3, highest first
+            n = min(self.top_n, len(visible_intensities))
+            top_indices = np.argsort(visible_intensities)[-n:][::-1]  # Top N, highest first
 
-            for i, idx in enumerate(top_indices):
+            for idx in top_indices:
                 mz = visible_mz[idx]
                 intensity = visible_intensities[idx]
 
-                # Convert data coordinates to widget coordinates
-                rel_x = (mz - x_min) / (x_max - x_min)
-                rel_y = 1.0 - (intensity - y_axis.min()) / (y_axis.max() - y_axis.min())
+                # Use mapToPosition for accurate pixel position (consistent with hover)
+                tip_pos = self.chart().mapToPosition(QPointF(float(mz), float(intensity)))
+                widget_x = tip_pos.x()
+                widget_y = tip_pos.y()
 
-                widget_x = plot_area.left() + rel_x * plot_area.width()
-                widget_y = plot_area.top() + rel_y * plot_area.height()
-
-                # Create label
-                from PyQt6.QtWidgets import QLabel
-
+                # Create label — uniform style, alpha 0.5 (128 in Qt's 0-255 range)
                 label = QLabel(self)
                 label.setText(f"{mz:.4f}")
-                label.setStyleSheet(f"""
-                    QLabel {{
-                        background-color: rgba(46, 134, 171, {200 - i * 50});  /* Blue with decreasing transparency */
+                label.setStyleSheet("""
+                    QLabel {
+                        background-color: rgba(46, 134, 171, 128);
                         color: white;
                         border-radius: 3px;
                         padding: 2px 4px;
                         font-weight: bold;
-                    }}
+                    }
                 """)
                 label.adjustSize()
 
-                # Position label to the right of the signal
-                label_x = widget_x + 5
-                label_y = widget_y - label.height() // 2
+                # Center label horizontally above the peak tip
+                label_x = int(widget_x) - label.width() // 2
+                label_y = int(widget_y) - label.height() - 6
 
                 # Keep label within widget bounds
-                if label_x + label.width() > self.width():
-                    label_x = widget_x - label.width() - 5
+                label_x = max(0, min(label_x, self.width() - label.width()))
                 if label_y < 0:
-                    label_y = 0
-                elif label_y + label.height() > self.height():
-                    label_y = self.height() - label.height()
+                    label_y = int(widget_y) + 6
 
-                label.move(int(label_x), int(label_y))
+                label.move(label_x, label_y)
                 label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
                 label.show()
 

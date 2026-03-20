@@ -272,18 +272,22 @@ class FileManager:
 
         Returns the first existing path found, or None if none exist.
         """
+
+        # unify path separators for consistent handling across platforms
+        c_raw_path = raw_path.replace("\\", os.sep).replace("/", os.sep)
+
         # Step 1: direct path (absolute or already resolvable)
-        if os.path.exists(raw_path):
-            return raw_path
+        if os.path.exists(c_raw_path):
+            return c_raw_path
 
         # Step 2: relative to working directory
-        cwd_path = os.path.join(os.getcwd(), raw_path)
+        cwd_path = os.path.join(os.getcwd(), c_raw_path)
         if os.path.exists(cwd_path):
             return cwd_path
 
         # Step 3: relative to the excel file's folder
         if excel_dir is not None:
-            excel_rel_path = os.path.join(excel_dir, raw_path)
+            excel_rel_path = os.path.join(excel_dir, c_raw_path)
             if os.path.exists(excel_rel_path):
                 return excel_rel_path
 

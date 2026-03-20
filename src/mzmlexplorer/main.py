@@ -50,7 +50,7 @@ import numpy as np
 from .compound_manager import CompoundManager
 from .file_manager import FileManager
 from .eic_window import EICWindow
-from .compound_import_dialog import CompoundImportDialog
+from .compound_import_dialog import CompoundImportDialog, validate_formula_smiles_agreement
 from .multi_adduct_window import MultiAdductWindow
 from natsort import natsorted, index_natsorted
 
@@ -2012,6 +2012,43 @@ class MzMLExplorerMainWindow(QMainWindow):
                     "Using the first sheet for compounds.",
                 )
                 compounds_input = list(excel_data.values())[0]
+
+        # Validate formula/SMILES agreement before loading
+        compounds_df = (
+            compounds_input.get("Compounds", list(compounds_input.values())[0])
+            if isinstance(compounds_input, dict)
+            else compounds_input
+        )
+        col_lower = {col.lower(): col for col in compounds_df.columns}
+        formula_col = next(
+            (col_lower[c] for c in ("chemicalformula", "formula", "sum_formula", "molformula") if c in col_lower),
+            None,
+        )
+        smiles_col = next(
+            (col_lower[c] for c in ("smiles", "smi") if c in col_lower),
+            None,
+        )
+        if formula_col and smiles_col:
+            name_col = next(
+                (col_lower[c] for c in ("name", "compound", "compound_name") if c in col_lower),
+                "",
+            )
+            problematic = validate_formula_smiles_agreement(
+                compounds_df, formula_col, smiles_col, name_col
+            )
+            if problematic:
+                names_text = "\n".join(f"  \u2022 {n}" for n in problematic)
+                result = QMessageBox.question(
+                    self,
+                    "Formula/SMILES Mismatch",
+                    f"{len(problematic)} compound(s) have a mismatch between "
+                    f"sum formula and SMILES:\n\n{names_text}\n\n"
+                    f"Do you want to continue the import anyway?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No,
+                )
+                if result != QMessageBox.StandardButton.Yes:
+                    return
 
         # Load compounds
         self.compound_manager.load_compounds(compounds_input)

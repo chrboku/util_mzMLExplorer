@@ -24,6 +24,78 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, QTimer
 from typing import Optional, Dict, Any
+from .FormulaTools import formulaTools
+
+
+def validate_formula_smiles_agreement(
+    df: pd.DataFrame,
+    formula_col: str,
+    smiles_col: str,
+    name_col: str = "",
+) -> list:
+    """
+    Check whether the sum formula and the SMILES agree on element composition for
+    every row in *df* that has both values populated.
+
+    Uses formulaTools to parse the written chemical formula and RDKit to derive
+    the molecular formula from the SMILES.  Both are normalised to base elements
+    (isotope-specific keys are stripped) before comparison.
+
+    Returns a list of human-readable labels for every row with a discrepancy or
+    a parse error.
+    """
+    from rdkit import Chem
+    from rdkit.Chem import rdMolDescriptors
+
+    ft = formulaTools()
+    problematic = []
+
+    for idx, row in df.iterrows():
+        formula_val = row[formula_col] if formula_col in df.columns else None
+        smiles_val = row[smiles_col] if smiles_col in df.columns else None
+
+        if formula_val is None or pd.isna(formula_val):
+            continue
+        if smiles_val is None or pd.isna(smiles_val):
+            continue
+
+        formula_str = str(formula_val).strip()
+        smiles_str = str(smiles_val).strip()
+        if not formula_str or not smiles_str:
+            continue
+
+        # Human-readable row label
+        compound_name = f"Row {idx + 1}"
+        if name_col and name_col in df.columns:
+            raw_name = row[name_col]
+            if raw_name is not None and not pd.isna(raw_name):
+                compound_name = str(raw_name)
+
+        # Parse the written formula
+        try:
+            formula_elems = ft.parseFormula(formula_str)
+            formula_base = {k: v for k, v in formula_elems.items() if k[0].isalpha()}
+        except Exception:
+            problematic.append(f"{compound_name} (invalid formula: {formula_str})")
+            continue
+
+        # Derive formula from SMILES via RDKit
+        try:
+            mol = Chem.MolFromSmiles(smiles_str)
+            if mol is None:
+                problematic.append(f"{compound_name} (invalid SMILES)")
+                continue
+            rdkit_formula_str = rdMolDescriptors.CalcMolFormula(mol)
+            rdkit_elems = ft.parseFormula(rdkit_formula_str)
+            rdkit_base = {k: v for k, v in rdkit_elems.items() if k[0].isalpha()}
+        except Exception:
+            problematic.append(f"{compound_name} (SMILES parsing error)")
+            continue
+
+        if formula_base != rdkit_base:
+            problematic.append(compound_name)
+
+    return problematic
 
 
 class CompoundImportDialog(QDialog):
@@ -91,7 +163,7 @@ class CompoundImportDialog(QDialog):
         self.cancel_btn.clicked.connect(self.reject)
 
         self.import_btn = QPushButton("Import")
-        self.import_btn.clicked.connect(self.accept)
+        self.import_btn.clicked.connect(self.on_import_clicked)
         self.import_btn.setDefault(True)
 
         button_layout.addStretch()
@@ -129,6 +201,16 @@ class CompoundImportDialog(QDialog):
         self.rt_column_combo = QComboBox()
         self.rt_column_combo.currentTextChanged.connect(self.schedule_update)
         layout.addRow("RT Column (optional):", self.rt_column_combo)
+
+        # Formula column (optional)
+        self.formula_column_combo = QComboBox()
+        self.formula_column_combo.currentTextChanged.connect(self.schedule_update)
+        layout.addRow("Formula Column (optional):", self.formula_column_combo)
+
+        # SMILES column (optional)
+        self.smiles_column_combo = QComboBox()
+        self.smiles_column_combo.currentTextChanged.connect(self.schedule_update)
+        layout.addRow("SMILES Column (optional):", self.smiles_column_combo)
 
         # Polarity selection
         self.polarity_combo = QComboBox()
@@ -207,6 +289,8 @@ class CompoundImportDialog(QDialog):
             self.name_column_combo,
             self.mz_column_combo,
             self.rt_column_combo,
+            self.formula_column_combo,
+            self.smiles_column_combo,
             self.polarity_combo,
             self.polarity_column_combo,
             self.global_polarity_combo,
@@ -274,6 +358,8 @@ class CompoundImportDialog(QDialog):
             self.name_column_combo,
             self.mz_column_combo,
             self.rt_column_combo,
+            self.formula_column_combo,
+            self.smiles_column_combo,
             self.polarity_column_combo,
         ]
         for combo in combos:
@@ -297,6 +383,8 @@ class CompoundImportDialog(QDialog):
             self.name_column_combo,
             self.mz_column_combo,
             self.rt_column_combo,
+            self.formula_column_combo,
+            self.smiles_column_combo,
             self.polarity_column_combo,
             self.polarity_combo,
         ]
@@ -335,6 +423,24 @@ class CompoundImportDialog(QDialog):
                     idx = self.rt_column_combo.findText(col)
                     if idx >= 0:
                         self.rt_column_combo.setCurrentIndex(idx)
+                    break
+
+            # Auto-detect formula column
+            formula_candidates = ["formula", "chemicalformula", "sum_formula", "molformula"]
+            for col in columns:
+                if any(candidate in col.lower() for candidate in formula_candidates):
+                    idx = self.formula_column_combo.findText(col)
+                    if idx >= 0:
+                        self.formula_column_combo.setCurrentIndex(idx)
+                    break
+
+            # Auto-detect SMILES column
+            smiles_candidates = ["smiles", "smi"]
+            for col in columns:
+                if any(candidate in col.lower() for candidate in smiles_candidates):
+                    idx = self.smiles_column_combo.findText(col)
+                    if idx >= 0:
+                        self.smiles_column_combo.setCurrentIndex(idx)
                     break
 
             # Auto-detect polarity column
@@ -505,6 +611,41 @@ class CompoundImportDialog(QDialog):
         header = self.preview_table.horizontalHeader()
         for i in range(len(preview_df.columns)):
             header.setSectionResizeMode(i, QHeaderView.ResizeMode.ResizeToContents)
+
+    def on_import_clicked(self):
+        """Handle Import button click: validate formula/SMILES agreement before accepting."""
+        formula_col = self.formula_column_combo.currentText()
+        smiles_col = self.smiles_column_combo.currentText()
+
+        if formula_col and smiles_col and self.df is not None:
+            problematic = self._validate_formula_smiles(formula_col, smiles_col)
+            if problematic:
+                names_text = "\n".join(f"  \u2022 {name}" for name in problematic)
+                msg_text = (
+                    f"{len(problematic)} compound(s) have a mismatch between "
+                    f"sum formula and SMILES:\n\n{names_text}\n\n"
+                    f"Do you want to continue the import anyway?"
+                )
+                result = QMessageBox.question(
+                    self,
+                    "Formula/SMILES Mismatch",
+                    msg_text,
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No,
+                )
+                if result != QMessageBox.StandardButton.Yes:
+                    return  # Keep dialog open so the user can review/cancel
+
+        self.accept()
+
+    def _validate_formula_smiles(self, formula_col: str, smiles_col: str) -> list:
+        """Delegate to the module-level validation function."""
+        return validate_formula_smiles_agreement(
+            self.df,
+            formula_col,
+            smiles_col,
+            name_col=self.name_column_combo.currentText(),
+        )
 
     def get_import_data(self) -> Optional[pd.DataFrame]:
         """Get the data to be imported"""

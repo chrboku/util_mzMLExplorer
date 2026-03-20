@@ -1,5 +1,3 @@
-
-
 # a class used to parse chemical formulas
 # e.g. the formula C6H12O6 will be parsed to a dictionary {'H':12, 'C':6, 'O':6}
 # NOTE: different isotopes may be specified as [13C]C5H12O6
@@ -413,4 +411,3 @@ class formulaTools:
 
     def calcDifferenceBetweenSumFormulas(self, sfFragment, sfParent):
         return self.calcDifferenceBetweenElemDicts(self.parseFormula(sfFragment), self.parseFormula(sfParent))
-

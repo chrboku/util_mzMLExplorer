@@ -263,7 +263,9 @@ class FileManager:
                 "error": str(e),
             }
 
-    def _resolve_filepath(self, raw_path: str, excel_dir: Optional[str] = None) -> Optional[str]:
+    def _resolve_filepath(
+        self, raw_path: str, excel_dir: Optional[str] = None
+    ) -> Optional[str]:
         """
         Resolve a filepath using three fallback strategies:
         1. Use raw_path directly (absolute or relative path as-is).

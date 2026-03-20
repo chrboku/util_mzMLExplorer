@@ -6267,7 +6267,9 @@ class EICWindow(QWidget):
 
     def _get_scatter_x_axis(self):
         """Return the scatter chart x-axis if available."""
-        if self.scatter_plot_view is None or not hasattr(self.scatter_plot_view, "chart"):
+        if self.scatter_plot_view is None or not hasattr(
+            self.scatter_plot_view, "chart"
+        ):
             return None
 
         axes = self.scatter_plot_view.chart.axes(Qt.Orientation.Horizontal)
@@ -6304,7 +6306,10 @@ class EICWindow(QWidget):
         if scatter_x_axis is None:
             return
 
-        if abs(scatter_x_axis.min() - minimum) < 1e-12 and abs(scatter_x_axis.max() - maximum) < 1e-12:
+        if (
+            abs(scatter_x_axis.min() - minimum) < 1e-12
+            and abs(scatter_x_axis.max() - maximum) < 1e-12
+        ):
             return
 
         self._syncing_scatter_x_axis = True
@@ -6318,7 +6323,10 @@ class EICWindow(QWidget):
         if self._syncing_scatter_x_axis:
             return
 
-        if abs(self.x_axis.min() - minimum) < 1e-12 and abs(self.x_axis.max() - maximum) < 1e-12:
+        if (
+            abs(self.x_axis.min() - minimum) < 1e-12
+            and abs(self.x_axis.max() - maximum) < 1e-12
+        ):
             return
 
         self._syncing_scatter_x_axis = True
@@ -6663,7 +6671,11 @@ class InteractiveMSMSChartView(QChartView):
             tx, ty, bx, by = tip.x(), tip.y(), base.x(), base.y()
             dx, dy = bx - tx, by - ty
             seg_len_sq = dx * dx + dy * dy
-            t = max(0.0, min(1.0, ((mx - tx) * dx + (my - ty) * dy) / seg_len_sq)) if seg_len_sq > 0 else 0.0
+            t = (
+                max(0.0, min(1.0, ((mx - tx) * dx + (my - ty) * dy) / seg_len_sq))
+                if seg_len_sq > 0
+                else 0.0
+            )
             dist = ((mx - tx - t * dx) ** 2 + (my - ty - t * dy) ** 2) ** 0.5
             if dist < best_dist:
                 best_dist = dist
@@ -7674,7 +7686,11 @@ class InteractiveMS1ChartView(QChartView):
             tx, ty, bx, by = tip.x(), tip.y(), base.x(), base.y()
             dx, dy = bx - tx, by - ty
             seg_len_sq = dx * dx + dy * dy
-            t = max(0.0, min(1.0, ((mx - tx) * dx + (my - ty) * dy) / seg_len_sq)) if seg_len_sq > 0 else 0.0
+            t = (
+                max(0.0, min(1.0, ((mx - tx) * dx + (my - ty) * dy) / seg_len_sq))
+                if seg_len_sq > 0
+                else 0.0
+            )
             dist = ((mx - tx - t * dx) ** 2 + (my - ty - t * dy) ** 2) ** 0.5
             if dist < best_dist:
                 best_dist = dist
@@ -7835,14 +7851,18 @@ class InteractiveMS1ChartView(QChartView):
         # Find top-N most abundant signals
         if len(visible_intensities) > 0:
             n = min(self.top_n, len(visible_intensities))
-            top_indices = np.argsort(visible_intensities)[-n:][::-1]  # Top N, highest first
+            top_indices = np.argsort(visible_intensities)[-n:][
+                ::-1
+            ]  # Top N, highest first
 
             for idx in top_indices:
                 mz = visible_mz[idx]
                 intensity = visible_intensities[idx]
 
                 # Use mapToPosition for accurate pixel position (consistent with hover)
-                tip_pos = self.chart().mapToPosition(QPointF(float(mz), float(intensity)))
+                tip_pos = self.chart().mapToPosition(
+                    QPointF(float(mz), float(intensity))
+                )
                 widget_x = tip_pos.x()
                 widget_y = tip_pos.y()
 

@@ -50,7 +50,10 @@ import numpy as np
 from .compound_manager import CompoundManager
 from .file_manager import FileManager
 from .eic_window import EICWindow
-from .compound_import_dialog import CompoundImportDialog, validate_formula_smiles_agreement
+from .compound_import_dialog import (
+    CompoundImportDialog,
+    validate_formula_smiles_agreement,
+)
 from .multi_adduct_window import MultiAdductWindow
 from natsort import natsorted, index_natsorted
 
@@ -1196,7 +1199,6 @@ class MzMLExplorerMainWindow(QMainWindow):
         isotopolog_menu = None
         any_added = False
 
-        
         custom_definitions = self._parse_custom_isotopolog_definitions(compound_data)
         if custom_definitions:
             if isotopolog_menu is None:
@@ -1259,8 +1261,6 @@ class MzMLExplorerMainWindow(QMainWindow):
 
             element_menu = None
 
-            
-
             for display_label, count in isotopolog_variants:
                 count_actions = []
 
@@ -1317,7 +1317,6 @@ class MzMLExplorerMainWindow(QMainWindow):
 
                 any_added = True
 
-
         if not any_added and isotopolog_menu is not None:
             isotopolog_menu.menuAction().setEnabled(False)
 
@@ -1340,12 +1339,20 @@ class MzMLExplorerMainWindow(QMainWindow):
 
             if total_c and total_c > 0:
                 if total_c - 1 > 0:
-                    variants.append((f"-1 C ([{isotope_label}]{total_c - 1})", total_c - 1))
+                    variants.append(
+                        (f"-1 C ([{isotope_label}]{total_c - 1})", total_c - 1)
+                    )
                 if total_c - 2 > 0:
-                    variants.append((f"-2 C ([{isotope_label}]{total_c - 2})", total_c - 2))
+                    variants.append(
+                        (f"-2 C ([{isotope_label}]{total_c - 2})", total_c - 2)
+                    )
 
-                variants.append((f"total C+1 ([{isotope_label}]{total_c + 1})", total_c + 1))
-                variants.append((f"total C+2 ([{isotope_label}]{total_c + 2})", total_c + 2))
+                variants.append(
+                    (f"total C+1 ([{isotope_label}]{total_c + 1})", total_c + 1)
+                )
+                variants.append(
+                    (f"total C+2 ([{isotope_label}]{total_c + 2})", total_c + 2)
+                )
 
         # Deduplicate by (label, count) while preserving order.
         seen = set()
@@ -2021,7 +2028,11 @@ class MzMLExplorerMainWindow(QMainWindow):
         )
         col_lower = {col.lower(): col for col in compounds_df.columns}
         formula_col = next(
-            (col_lower[c] for c in ("chemicalformula", "formula", "sum_formula", "molformula") if c in col_lower),
+            (
+                col_lower[c]
+                for c in ("chemicalformula", "formula", "sum_formula", "molformula")
+                if c in col_lower
+            ),
             None,
         )
         smiles_col = next(
@@ -2030,7 +2041,11 @@ class MzMLExplorerMainWindow(QMainWindow):
         )
         if formula_col and smiles_col:
             name_col = next(
-                (col_lower[c] for c in ("name", "compound", "compound_name") if c in col_lower),
+                (
+                    col_lower[c]
+                    for c in ("name", "compound", "compound_name")
+                    if c in col_lower
+                ),
                 "",
             )
             problematic = validate_formula_smiles_agreement(

@@ -426,7 +426,12 @@ class CompoundImportDialog(QDialog):
                     break
 
             # Auto-detect formula column
-            formula_candidates = ["formula", "chemicalformula", "sum_formula", "molformula"]
+            formula_candidates = [
+                "formula",
+                "chemicalformula",
+                "sum_formula",
+                "molformula",
+            ]
             for col in columns:
                 if any(candidate in col.lower() for candidate in formula_candidates):
                     idx = self.formula_column_combo.findText(col)

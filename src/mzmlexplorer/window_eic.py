@@ -5408,6 +5408,12 @@ class EICWindow(QWidget):
         context_menu.addSeparator()
 
         # Add MSMS viewing options (unfiltered)
+        msms_closest_action = QAction("View closest MSMS spectrum", self)
+        msms_closest_action.triggered.connect(
+            lambda: self.view_closest_msms_spectrum(rt_value)
+        )
+        context_menu.addAction(msms_closest_action)
+
         msms_3s_action = QAction("View MSMS (±3 seconds)", self)
         msms_3s_action.triggered.connect(
             lambda: self.view_msms_spectra(rt_value, 3.0 / 60.0)
@@ -5435,6 +5441,11 @@ class EICWindow(QWidget):
             context_menu.addAction(type_header)
             for ftype in filter_types:
                 sub = context_menu.addMenu(f"MSMS: {ftype}")
+                closest_action = sub.addAction("Closest spectrum")
+                closest_action.triggered.connect(
+                    lambda checked=False,
+                    ft=ftype: self.view_closest_msms_spectrum(rt_value, filter_type=ft)
+                )
                 for secs, secs_min in (
                     (3, 3.0 / 60.0),
                     (6, 6.0 / 60.0),
@@ -5499,6 +5510,53 @@ class EICWindow(QWidget):
         except Exception as e:
             QMessageBox.critical(
                 self, "Error", f"Failed to view MSMS spectra: {str(e)}"
+            )
+
+    def view_closest_msms_spectrum(
+        self, rt_center: float, filter_type: Optional[str] = None
+    ):
+        """View the single closest MSMS spectrum (per file) to rt_center.
+
+        If *filter_type* is given, only spectra whose filter-string matches the
+        configured regex and produces that type label are considered.
+        """
+        try:
+            msms_spectra = self.find_closest_msms_spectra(rt_center, filter_type=filter_type)
+
+            if not msms_spectra:
+                type_hint = f" [{filter_type}]" if filter_type else ""
+                QMessageBox.information(
+                    self,
+                    "No MSMS Found",
+                    f"No MSMS spectra{type_hint} found for m/z {self.target_mz:.4f} "
+                    f"near RT {rt_center:.2f} min",
+                )
+                return
+
+            # Derive rt_window from the actual maximum offset so the viewer
+            # title / display reflects the real distance.
+            max_offset = 0.0
+            for entry in msms_spectra.values():
+                for s in entry["spectra"]:
+                    max_offset = max(max_offset, abs(s["rt"] - rt_center))
+
+            msms_viewer = MSMSViewerWindow(
+                msms_spectra,
+                self.target_mz,
+                rt_center,
+                max_offset,
+                self.compound_data["Name"],
+                self.adduct,
+                self,
+                file_manager=self.file_manager,
+                filter_type=filter_type,
+                defaults=self.defaults,
+            )
+            msms_viewer.show()
+
+        except Exception as e:
+            QMessageBox.critical(
+                self, "Error", f"Failed to view closest MSMS spectrum: {str(e)}"
             )
 
     def view_ms1_spectra(self, rt_center: float):
@@ -6112,6 +6170,178 @@ class EICWindow(QWidget):
 
             except Exception as e:
                 print(f"Error reading MSMS from {filepath}: {e}")
+                continue
+
+        return msms_spectra
+
+    def find_closest_msms_spectra(
+        self, rt_center: float, filter_type: Optional[str] = None
+    ):
+        """For each file, find the single MSMS spectrum whose RT is closest to
+        rt_center and whose precursor m/z matches target_mz.
+
+        Returns the same dict structure as find_msms_spectra so the result can
+        be passed directly to MSMSViewerWindow.
+        """
+        msms_spectra = {}
+        precursor_tolerance = 0.01
+
+        files_data = self.file_manager.get_files_data()
+
+        for _, row in files_data.iterrows():
+            filepath = row["Filepath"]
+            filename = row["filename"]
+
+            try:
+                closest_spectrum = None
+                min_rt_diff = float("inf")
+
+                if (
+                    self.file_manager.keep_in_memory
+                    and filepath in self.file_manager.cached_data
+                ):
+                    cached_file_data = self.file_manager.cached_data[filepath]
+
+                    if isinstance(cached_file_data, dict) and "ms2" in cached_file_data:
+                        for spectrum_data in cached_file_data["ms2"]:
+                            spectrum_rt = spectrum_data["scan_time"]
+                            precursor_mz = spectrum_data.get("precursor_mz")
+                            spectrum_polarity = spectrum_data.get("polarity")
+
+                            if precursor_mz is None:
+                                continue
+                            if abs(precursor_mz - self.target_mz) > precursor_tolerance:
+                                continue
+                            if not (
+                                (
+                                    self.polarity.lower() in ["+", "positive", "pos"]
+                                    and spectrum_polarity.lower()
+                                    in ["+", "positive", "pos"]
+                                )
+                                or (
+                                    self.polarity.lower() in ["-", "negative", "neg"]
+                                    and spectrum_polarity.lower()
+                                    in ["-", "negative", "neg"]
+                                )
+                            ):
+                                continue
+
+                            mz_array = spectrum_data["mz"]
+                            intensity_array = spectrum_data["intensity"]
+                            if len(mz_array) == 0:
+                                continue
+
+                            candidate = {
+                                "rt": spectrum_rt,
+                                "precursor_mz": precursor_mz,
+                                "precursor_intensity": spectrum_data.get(
+                                    "precursor_intensity", 0
+                                ),
+                                "mz": mz_array,
+                                "intensity": intensity_array,
+                                "scan_id": spectrum_data.get(
+                                    "scan_id", f"RT_{spectrum_rt:.2f}"
+                                ),
+                                "polarity": spectrum_polarity,
+                                "filter_string": spectrum_data.get("filter_string"),
+                            }
+                            if filter_type is not None:
+                                parsed = self._parse_filter_string_type(
+                                    candidate["filter_string"] or ""
+                                )
+                                if parsed != filter_type:
+                                    continue
+
+                            rt_diff = abs(spectrum_rt - rt_center)
+                            if rt_diff < min_rt_diff:
+                                min_rt_diff = rt_diff
+                                closest_spectrum = candidate
+
+                else:
+                    reader = self.file_manager.get_mzml_reader(filepath)
+
+                    for spectrum in reader:
+                        if spectrum.ms_level != 2:
+                            continue
+
+                        spectrum_rt = spectrum.scan_time_in_minutes()
+
+                        try:
+                            precursor_mz = (
+                                spectrum.selected_precursors[0]["mz"]
+                                if spectrum.selected_precursors
+                                else None
+                            )
+                            if precursor_mz is None:
+                                continue
+                            if abs(precursor_mz - self.target_mz) > precursor_tolerance:
+                                continue
+
+                            spectrum_polarity = (
+                                self.file_manager._get_spectrum_polarity(spectrum)
+                            )
+                            if (
+                                self.polarity
+                                and spectrum_polarity
+                                and self.polarity != spectrum_polarity
+                            ):
+                                continue
+
+                            mz_array = spectrum.mz
+                            intensity_array = spectrum.i
+                            if len(mz_array) == 0:
+                                continue
+
+                            precursor_intensity = 0
+                            try:
+                                if spectrum.selected_precursors:
+                                    precursor_intensity = (
+                                        spectrum.selected_precursors[0].get(
+                                            "intensity", 0
+                                        )
+                                        or 0
+                                    )
+                            except Exception:
+                                precursor_intensity = 0
+
+                            candidate = {
+                                "rt": spectrum_rt,
+                                "precursor_mz": precursor_mz,
+                                "precursor_intensity": precursor_intensity,
+                                "mz": mz_array,
+                                "intensity": intensity_array,
+                                "scan_id": spectrum.ID,
+                                "polarity": spectrum_polarity,
+                                "filter_string": self.file_manager._get_filter_string(
+                                    spectrum
+                                ),
+                            }
+                            if filter_type is not None:
+                                parsed = self._parse_filter_string_type(
+                                    candidate["filter_string"] or ""
+                                )
+                                if parsed != filter_type:
+                                    continue
+
+                            rt_diff = abs(spectrum_rt - rt_center)
+                            if rt_diff < min_rt_diff:
+                                min_rt_diff = rt_diff
+                                closest_spectrum = candidate
+
+                        except Exception as e:
+                            print(f"Error processing spectrum in {filename}: {e}")
+                            continue
+
+                if closest_spectrum is not None:
+                    msms_spectra[filepath] = {
+                        "filename": filename,
+                        "group": row.get("group", "Unknown"),
+                        "spectra": [closest_spectrum],
+                        "metadata": row.to_dict(),
+                    }
+
+            except Exception as e:
+                print(f"Error reading closest MSMS from {filepath}: {e}")
                 continue
 
         return msms_spectra

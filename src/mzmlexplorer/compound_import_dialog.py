@@ -31,6 +31,7 @@ import traceback
 from rdkit import Chem
 from rdkit.Chem import rdMolDescriptors
 
+
 def validate_formula_smiles_agreement(
     df: pd.DataFrame,
     formula_col: str,
@@ -583,7 +584,7 @@ class CompoundImportDialog(QDialog):
 
         except Exception as e:
             print(f"Exception in update_preview: {str(e)}")
-            
+
             traceback.print_exc()
             self.preview_table.setRowCount(0)
             self.info_label.setText(f"Error creating preview: {str(e)}")

@@ -26,6 +26,10 @@ from PyQt6.QtCore import Qt, QTimer
 from typing import Optional, Dict, Any
 from .FormulaTools import formulaTools
 
+import traceback
+
+from rdkit import Chem
+from rdkit.Chem import rdMolDescriptors
 
 def validate_formula_smiles_agreement(
     df: pd.DataFrame,
@@ -44,8 +48,6 @@ def validate_formula_smiles_agreement(
     Returns a list of human-readable labels for every row with a discrepancy or
     a parse error.
     """
-    from rdkit import Chem
-    from rdkit.Chem import rdMolDescriptors
 
     ft = formulaTools()
     problematic = []
@@ -581,8 +583,7 @@ class CompoundImportDialog(QDialog):
 
         except Exception as e:
             print(f"Exception in update_preview: {str(e)}")
-            import traceback
-
+            
             traceback.print_exc()
             self.preview_table.setRowCount(0)
             self.info_label.setText(f"Error creating preview: {str(e)}")

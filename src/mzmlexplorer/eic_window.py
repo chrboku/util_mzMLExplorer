@@ -3,6 +3,9 @@ EIC (Extracted Ion Chromatogram) window for displaying chromatographic data
 """
 
 import sys
+import os
+import re
+import traceback
 import pandas as pd
 import time
 from PyQt6.QtWidgets import (
@@ -55,6 +58,7 @@ from scipy.spatial.distance import squareform
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 
+from .compound_manager import CompoundManager
 
 class NumericTableWidgetItem(QTableWidgetItem):
     """QTableWidgetItem that sorts numerically using the UserRole value."""
@@ -256,13 +260,19 @@ class MSMSPopupWindow(QWidget):
             f"{precursor_intensity:.1e}" if precursor_intensity > 0 else "N/A"
         )
 
+        scan_id = self.spectrum_data.get("scan_id", "")
+        filter_str = self.spectrum_data.get("filter_string", "")
         header_text = (
             f"<b>File:</b> {self.filename}<br>"
             f"<b>Group:</b> {self.group}<br>"
-            f"<b>RT:</b> {self.spectrum_data['rt']:.2f} min<br>"
+            f"<b>RT:</b> {self.spectrum_data['rt']:.4f} min<br>"
             f"<b>Precursor m/z:</b> {self.spectrum_data['precursor_mz']:.4f}<br>"
             f"<b>Precursor Intensity:</b> {intensity_text}"
         )
+        if scan_id:
+            header_text += f"<br><b>Scan:</b> {scan_id}"
+        if filter_str:
+            header_text += f"<br><b>Filter:</b> {filter_str}"
 
         header_label = QLabel(header_text)
         header_label.setStyleSheet("""
@@ -274,7 +284,9 @@ class MSMSPopupWindow(QWidget):
                 border-radius: 3px;
             }
         """)
-        header_label.setMaximumHeight(50)  # Set maximum height for minimal appearance
+        header_label.setMaximumHeight(
+            100
+        )  # enough room for scan_id + filter_string lines
         layout.addWidget(header_label)
 
         # Create splitter for table and chart (horizontal layout)
@@ -512,9 +524,19 @@ class MSMSPopupWindow(QWidget):
 
         chart.setTitle(
             f"MSMS Spectrum\n"
-            f"RT: {self.spectrum_data['rt']:.2f} min, "
+            f"RT: {self.spectrum_data['rt']:.4f} min, "
             f"Precursor: {self.spectrum_data['precursor_mz']:.4f}, "
             f"Intensity: {intensity_text}"
+            + (
+                f"\nScan: {self.spectrum_data['scan_id']}"
+                if self.spectrum_data.get("scan_id")
+                else ""
+            )
+            + (
+                f" | Filter: {self.spectrum_data['filter_string']}"
+                if self.spectrum_data.get("filter_string")
+                else ""
+            )
         )
 
         # Create series for the spectrum
@@ -1240,8 +1262,6 @@ class EICWindow(QWidget):
             # Fallback: Calculate target m/z using compound manager
             try:
                 # Use the compound manager to calculate m/z properly
-                from .compound_manager import CompoundManager
-
                 temp_manager = CompoundManager()
 
                 # Create a temporary DataFrame with just this compound
@@ -1290,8 +1310,6 @@ class EICWindow(QWidget):
 
     def _load_stylesheet(self):
         """Apply the shared application stylesheet so table styles are consistent."""
-        import os
-
         stylesheet_path = os.path.join(os.path.dirname(__file__), "style.css")
         if os.path.exists(stylesheet_path):
             with open(stylesheet_path, "r") as f:
@@ -5834,6 +5852,67 @@ class EICWindow(QWidget):
             # Fallback to recalculating ranges
             self.update_axes_ranges()
 
+    def _parse_filter_string_type(self, filter_string: str) -> Optional[str]:
+        """Apply the user-configured regex to a filter string and return the type label.
+
+        Returns None if no pattern is configured or no match is found.
+        """
+        pattern = self.defaults.get("msms_filter_regex", "")
+        replacement = self.defaults.get("msms_filter_replacement", "")
+        if not pattern or not filter_string:
+            return None
+        try:
+            m = re.search(pattern, filter_string)
+            if m:
+                return m.expand(replacement)
+        except re.error:
+            pass
+        return None
+
+    def _get_msms_filter_types_at_rt(self, rt_center: float, rt_window: float) -> list:
+        """Return a sorted list of unique filter-string type labels for MS2 spectra near *rt_center*.
+
+        Only works when cached data is available (memory mode). Returns an empty list otherwise.
+        """
+        rt_start = rt_center - rt_window
+        rt_end = rt_center + rt_window
+        precursor_tolerance = 0.01  # 10 mDa
+
+        pattern = self.defaults.get("msms_filter_regex", "")
+        if not pattern:
+            return []
+        try:
+            compiled = re.compile(pattern)
+        except re.error:
+            return []
+        replacement = self.defaults.get("msms_filter_replacement", "")
+
+        types_seen: set = set()
+        files_data = self.file_manager.get_files_data()
+
+        for _, row in files_data.iterrows():
+            filepath = row["Filepath"]
+            if not (
+                self.file_manager.keep_in_memory
+                and filepath in self.file_manager.cached_data
+            ):
+                continue
+            cached = self.file_manager.cached_data[filepath]
+            if not (isinstance(cached, dict) and "ms2" in cached):
+                continue
+            for sd in cached["ms2"]:
+                if not (rt_start <= sd["scan_time"] <= rt_end):
+                    continue
+                pmz = sd.get("precursor_mz")
+                if pmz is None or abs(pmz - self.target_mz) > precursor_tolerance:
+                    continue
+                fs = sd.get("filter_string") or ""
+                m = compiled.search(fs)
+                if m:
+                    types_seen.add(m.expand(replacement))
+
+        return sorted(types_seen)
+
     def show_context_menu(self, rt_value: float, position: QPointF):
         """Show context menu at the specified position"""
         context_menu = QMenu(self)
@@ -5879,7 +5958,7 @@ class EICWindow(QWidget):
 
         context_menu.addSeparator()
 
-        # Add MSMS viewing options
+        # Add MSMS viewing options (unfiltered)
         msms_3s_action = QAction("View MSMS (±3 seconds)", self)
         msms_3s_action.triggered.connect(
             lambda: self.view_msms_spectra(rt_value, 3.0 / 60.0)
@@ -5898,26 +5977,58 @@ class EICWindow(QWidget):
         )
         context_menu.addAction(msms_9s_action)
 
+        # Add per-type MSMS submenus when a filter regex is configured
+        filter_types = self._get_msms_filter_types_at_rt(rt_value, 9.0 / 60.0)
+        if filter_types:
+            context_menu.addSeparator()
+            type_header = QAction("— by filter-string type —", self)
+            type_header.setEnabled(False)
+            context_menu.addAction(type_header)
+            for ftype in filter_types:
+                sub = context_menu.addMenu(f"MSMS: {ftype}")
+                for secs, secs_min in (
+                    (3, 3.0 / 60.0),
+                    (6, 6.0 / 60.0),
+                    (9, 9.0 / 60.0),
+                ):
+                    action = sub.addAction(f"±{secs} seconds")
+                    action.triggered.connect(
+                        lambda checked=False,
+                        ft=ftype,
+                        sw=secs_min: self.view_msms_spectra(
+                            rt_value, sw, filter_type=ft
+                        )
+                    )
+
         # Show the menu at the clicked position
         global_pos = self.chart_view.mapToGlobal(position.toPoint())
         context_menu.exec(global_pos)
 
-    def view_msms_spectra(self, rt_center: float, rt_window: float):
-        """View MSMS spectra within the specified RT window"""
+    def view_msms_spectra(
+        self, rt_center: float, rt_window: float, filter_type: Optional[str] = None
+    ):
+        """View MSMS spectra within the specified RT window.
+
+        If *filter_type* is given, only spectra whose filter-string matches the
+        configured regex and produces that type label are shown.
+        """
         try:
             # Calculate RT window
             rt_start = rt_center - rt_window
             rt_end = rt_center + rt_window
 
-            # Find MSMS spectra
-            msms_spectra = self.find_msms_spectra(rt_start, rt_end)
+            # Find MSMS spectra (optionally restricted to one filter-string type)
+            msms_spectra = self.find_msms_spectra(
+                rt_start, rt_end, filter_type=filter_type
+            )
 
             if not msms_spectra:
+                type_hint = f" [{filter_type}]" if filter_type else ""
                 QMessageBox.information(
                     self,
                     "No MSMS Found",
-                    f"No MSMS spectra found for m/z {self.target_mz:.4f} "
-                    f"in RT window {rt_center:.2f} ± {rt_window:.1f} min",
+                    f"No MSMS spectra{type_hint} found for m/z {self.target_mz:.4f} "
+                    f"in RT window {rt_center:.2f} ± {rt_window * 60:.0f} s",
                 )
                 return
 
@@ -5931,6 +6042,8 @@ class EICWindow(QWidget):
                 self.adduct,
                 self,
                 file_manager=self.file_manager,
+                filter_type=filter_type,
+                defaults=self.defaults,
             )
             msms_viewer.show()
 
@@ -6031,6 +6144,10 @@ class EICWindow(QWidget):
                                     "polarity": spectrum_polarity,
                                     "filename": filename,
                                     "group": group,
+                                    "scan_id": spectrum_data.get("scan_id"),
+                                    "filter_string": spectrum_data.get(
+                                        "filter_string", "NA"
+                                    ),
                                 }
 
                 else:
@@ -6082,6 +6199,10 @@ class EICWindow(QWidget):
                                         "polarity": spectrum_polarity,
                                         "filename": filename,
                                         "group": group,
+                                        "scan_id": spectrum.ID,
+                                        "filter_string": spectrum.get(
+                                            "MS:1000512", "NA"
+                                        ),
                                     }
 
                 # Add the closest spectrum if found
@@ -6351,8 +6472,14 @@ class EICWindow(QWidget):
         except Exception as e:
             print(f"Could not auto-add scatter plot: {str(e)}")
 
-    def find_msms_spectra(self, rt_start: float, rt_end: float):
-        """Find MSMS spectra within RT window for the target m/z and polarity"""
+    def find_msms_spectra(
+        self, rt_start: float, rt_end: float, filter_type: Optional[str] = None
+    ):
+        """Find MSMS spectra within RT window for the target m/z and polarity.
+
+        If *filter_type* is given only spectra whose filter string, parsed by
+        the configured regex, produces that type label are returned.
+        """
         msms_spectra = {}  # filepath -> list of spectra
 
         # Define precursor tolerance (in Da)
@@ -6427,7 +6554,15 @@ class EICWindow(QWidget):
                                         "scan_id", f"RT_{spectrum_rt:.2f}"
                                     ),
                                     "polarity": spectrum_polarity,
+                                    "filter_string": spectrum_data.get("filter_string"),
                                 }
+                                # Apply filter-type restriction
+                                if filter_type is not None:
+                                    parsed = self._parse_filter_string_type(
+                                        msms_spectrum["filter_string"] or ""
+                                    )
+                                    if parsed != filter_type:
+                                        continue
                                 file_msms.append(msms_spectrum)
 
                 else:
@@ -6499,7 +6634,17 @@ class EICWindow(QWidget):
                                         "intensity": intensity_array,
                                         "scan_id": spectrum.ID,
                                         "polarity": spectrum_polarity,
+                                        "filter_string": self.file_manager._get_filter_string(
+                                            spectrum
+                                        ),
                                     }
+                                    # Apply filter-type restriction
+                                    if filter_type is not None:
+                                        parsed = self._parse_filter_string_type(
+                                            spectrum_data["filter_string"] or ""
+                                        )
+                                        if parsed != filter_type:
+                                            continue
                                     file_msms.append(spectrum_data)
 
                             except Exception as e:
@@ -6999,9 +7144,15 @@ class MS1ViewerWindow(QWidget):
 
             # File header
             display_name = filename.split(".")[0] if "." in filename else filename
+            scan_id = spectrum.get("scan_id", "")
+            filter_str = spectrum.get("filter_string", "")
             file_header_text = (
-                f"<b>{display_name}</b> | Group: {group} | RT: {spectrum['rt']:.2f} min"
+                f"<b>{display_name}</b> | Group: {group} | RT: {spectrum['rt']:.4f} min"
             )
+            if scan_id:
+                file_header_text += f" | Scan: {scan_id}"
+            if filter_str:
+                file_header_text += f" | Filter: {filter_str}"
             file_label = QLabel(file_header_text)
             file_label.setStyleSheet("""
                 QLabel { 
@@ -7915,6 +8066,8 @@ class MSMSViewerWindow(QWidget):
         adduct,
         parent=None,
         file_manager=None,
+        filter_type=None,
+        defaults=None,
     ):
         super().__init__(parent)
 
@@ -7934,6 +8087,8 @@ class MSMSViewerWindow(QWidget):
         self.compound_name = compound_name
         self.adduct = adduct
         self.file_manager = file_manager
+        self.filter_type = filter_type
+        self.defaults = defaults or {}
 
         self.init_ui()
 
@@ -7949,10 +8104,12 @@ class MSMSViewerWindow(QWidget):
     def init_ui(self):
         """Initialize the MSMS viewer UI"""
         total_spectra = sum(len(data["spectra"]) for data in self.msms_spectra.values())
+        type_tag = f" | Filter: {self.filter_type}" if self.filter_type else ""
         self.setWindowTitle(
             f"MSMS: {self.compound_name} ({self.adduct}) | "
             f"m/z {self.target_mz:.4f} | "
-            f"RT {self.rt_center:.2f}±{self.rt_window:.1f} min | "
+            f"RT {self.rt_center:.2f}\u00b1{self.rt_window * 60:.0f} s"
+            f"{type_tag} | "
             f"{len(self.msms_spectra)} files | {total_spectra} spectra"
         )
         self.setGeometry(100, 100, 1800, 1000)
@@ -8092,10 +8249,54 @@ class MSMSViewerWindow(QWidget):
         # Calculate cosine similarities
         self._calculate_cosine_similarities()
 
+    def _get_pair_mz_tolerance(self, spec1, spec2) -> float:
+        """Return the appropriate m/z tolerance (Da) for a pair of spectra.
+
+        Looks up per–filter-type-group overrides from *self.defaults*; falls
+        back to the configured default tolerance when no match is found.
+        """
+        defaults = self.defaults
+        default_tol = defaults.get("msms_similarity_default_tolerance", 0.1)
+        group_tols = {
+            entry["filter_type"]: float(entry["mz_tolerance"])
+            for entry in defaults.get("msms_similarity_group_tolerances", [])
+        }
+        if not group_tols:
+            return default_tol
+
+        pattern = defaults.get("msms_filter_regex", "")
+        replacement = defaults.get("msms_filter_replacement", "")
+        if not pattern:
+            return default_tol
+
+        try:
+            compiled = re.compile(pattern)
+        except re.error:
+            return default_tol
+
+        def parse_type(fs):
+            if not fs:
+                return None
+            m = compiled.search(fs)
+            return m.expand(replacement) if m else None
+
+        type1 = parse_type(spec1.get("filter_string") or "")
+        type2 = parse_type(spec2.get("filter_string") or "")
+
+        # Prefer exact match when both spectra share the same filter type
+        if type1 is not None and type1 == type2 and type1 in group_tols:
+            return group_tols[type1]
+        for ft in (type1, type2):
+            if ft and ft in group_tols:
+                return group_tols[ft]
+        return default_tol
+
     def _calculate_cosine_similarities(self):
         """Calculate cosine similarity scores within and between files"""
         self.intra_file_similarities = {}  # filename -> similarity stats
         self.inter_file_similarities = {}  # (file1, file2) -> list of all similarities
+
+        method = self.defaults.get("msms_similarity_method", "CosineHungarian")
 
         # Calculate intra-file similarities (within each file)
         for filepath, file_data in self.processed_data:
@@ -8106,7 +8307,10 @@ class MSMSViewerWindow(QWidget):
             if len(spectra) > 1:
                 for i in range(len(spectra)):
                     for j in range(i + 1, len(spectra)):
-                        sim = calculate_cosine_similarity(spectra[i], spectra[j])
+                        tol = self._get_pair_mz_tolerance(spectra[i], spectra[j])
+                        sim = calculate_cosine_similarity(
+                            spectra[i], spectra[j], mz_tolerance=tol, method=method
+                        )
                         similarities.append(sim)
 
             self.intra_file_similarities[filename] = calculate_similarity_statistics(
@@ -8128,7 +8332,10 @@ class MSMSViewerWindow(QWidget):
                 similarities = []
                 for spec1 in spectra1:
                     for spec2 in spectra2:
-                        sim = calculate_cosine_similarity(spec1, spec2)
+                        tol = self._get_pair_mz_tolerance(spec1, spec2)
+                        sim = calculate_cosine_similarity(
+                            spec1, spec2, mz_tolerance=tol, method=method
+                        )
                         similarities.append(sim)
 
                 key = (filename1, filename2)
@@ -8195,6 +8402,9 @@ class MSMSViewerWindow(QWidget):
             inter_table.customContextMenuRequested.connect(
                 lambda pos: self._show_similarity_context_menu(inter_table, pos)
             )
+
+            # Single click opens the two spectra in individual viewer windows
+            inter_table.cellClicked.connect(self._on_similarity_cell_clicked)
 
             # Store reference to inter_table for context menu handler
             self.inter_table = inter_table
@@ -8318,9 +8528,19 @@ class MSMSViewerWindow(QWidget):
         )
 
         chart.setTitle(
-            f"RT: {spectrum_data['rt']:.2f} min\n"
-            f"Precursor: {spectrum_data['precursor_mz']:.4f}\n"
+            f"RT: {spectrum_data['rt']:.2f} min / {spectrum_data['rt'] / 60.0:.1f} sec /  | "
+            f"Precursor: {spectrum_data['precursor_mz']:.4f} | "
             f"Intensity: {intensity_text}"
+            + (
+                f"\nScan: {spectrum_data['scan_id']}"
+                if spectrum_data.get("scan_id")
+                else ""
+            )
+            + (
+                f" | Filter: {spectrum_data['filter_string']}"
+                if spectrum_data.get("filter_string")
+                else ""
+            )
         )
 
         # Create series for the spectrum
@@ -8526,13 +8746,110 @@ class MSMSViewerWindow(QWidget):
             title_b = f"{file2_data['filename']} - RT: {spectrum_b['rt']:.2f} min"
 
         # Calculate cosine similarity between these two spectra
-        similarity = calculate_cosine_similarity(spectrum_a, spectrum_b)
-
-        # Create and show mirror plot dialog
-        dialog = MirrorPlotDialog(
-            spectrum_a, spectrum_b, title_a, title_b, similarity, self
+        tol = self._get_pair_mz_tolerance(spectrum_a, spectrum_b)
+        method = self.defaults.get("msms_similarity_method", "CosineHungarian")
+        similarity = calculate_cosine_similarity(
+            spectrum_a, spectrum_b, mz_tolerance=tol, method=method
         )
-        dialog.exec()
+
+        # Open enhanced mirror plot window
+        if not hasattr(self, "_open_popups"):
+            self._open_popups = []
+        window = EnhancedMirrorPlotWindow(
+            spectrum_a,
+            spectrum_b,
+            title_a,
+            title_b,
+            similarity,
+            mz_tolerance=tol,
+            method=method,
+        )
+        window.destroyed.connect(
+            lambda: self._open_popups.remove(window)
+            if window in self._open_popups
+            else None
+        )
+        self._open_popups.append(window)
+        window.show()
+
+    def _on_similarity_cell_clicked(self, row: int, col: int):
+        """Open the two representative spectra for the clicked similarity cell."""
+        if not hasattr(self, "inter_table"):
+            return
+        item = self.inter_table.item(row, col)
+        if not item:
+            return
+        metadata = item.data(Qt.ItemDataRole.UserRole)
+        if not metadata:
+            return
+
+        file1_name = metadata["file1_name"]
+        file2_name = metadata["file2_name"]
+        is_diagonal = metadata["is_diagonal"]
+
+        # Locate the spectrum lists from processed_data
+        file1_data = next(
+            (d for _, d in self.processed_data if d["filename"] == file1_name), None
+        )
+        file2_data = next(
+            (d for _, d in self.processed_data if d["filename"] == file2_name), None
+        )
+        if not file1_data or not file2_data:
+            return
+
+        spectra1 = file1_data["spectra"]
+        spectra2 = file2_data["spectra"]
+
+        if is_diagonal:
+            # Show the two most intense spectra from the same file
+            if len(spectra1) < 2:
+                QMessageBox.information(
+                    self,
+                    "Single spectrum",
+                    f"{file1_name} has only one spectrum — nothing to compare.",
+                )
+                return
+            spec_a, spec_b = spectra1[0], spectra1[1]
+            name_a = name_b = file1_data["filename"]
+            group_a = group_b = file1_data.get("group", "")
+        else:
+            if not spectra1 or not spectra2:
+                QMessageBox.warning(self, "No Spectra", "No spectra available.")
+                return
+            spec_a = spectra1[0]
+            spec_b = spectra2[0]
+            name_a = file1_data["filename"]
+            name_b = file2_data["filename"]
+            group_a = file1_data.get("group", "")
+            group_b = file2_data.get("group", "")
+
+        title_a = f"{name_a} — RT: {spec_a['rt']:.2f} min"
+        title_b = f"{name_b} — RT: {spec_b['rt']:.2f} min"
+
+        tol = self._get_pair_mz_tolerance(spec_a, spec_b)
+        method = self.defaults.get("msms_similarity_method", "CosineHungarian")
+        similarity = calculate_cosine_similarity(
+            spec_a, spec_b, mz_tolerance=tol, method=method
+        )
+
+        if not hasattr(self, "_open_popups"):
+            self._open_popups = []
+        window = EnhancedMirrorPlotWindow(
+            spec_a,
+            spec_b,
+            title_a,
+            title_b,
+            similarity,
+            mz_tolerance=tol,
+            method=method,
+        )
+        window.destroyed.connect(
+            lambda: self._open_popups.remove(window)
+            if window in self._open_popups
+            else None
+        )
+        self._open_popups.append(window)
+        window.show()
 
     def closeEvent(self, event):
         """Clean up when closing the window"""
@@ -8542,156 +8859,411 @@ class MSMSViewerWindow(QWidget):
         event.accept()
 
 
-class MirrorPlotDialog(QDialog):
-    """Dialog for displaying two MSMS spectra as a mirror plot"""
+class EnhancedMirrorPlotWindow(QWidget):
+    """Mirror plot + fragment comparison table for two MSMS spectra.
+
+    Spectrum A is drawn with positive intensities (blue), spectrum B with
+    negative intensities (red).  Clicking any row in the fragment table
+    highlights the corresponding peak(s) in firebrick colour.
+
+    Matched fragments are placed in the same row; fragments present in only
+    one spectrum leave the other spectrum's columns blank.
+    """
+
+    _MATCH_BG = QColor(220, 235, 252)  # light blue  – matched pair
+    _ONLY_A_BG = QColor(255, 235, 230)  # light peach – only in A
+    _ONLY_B_BG = QColor(255, 235, 230)  # light rose  – only in B
+    # custom Qt data role used to store the original row-index so sorting works:
+    _ROW_IDX_ROLE = Qt.ItemDataRole.UserRole + 1
 
     def __init__(
-        self, spectrum_a, spectrum_b, title_a, title_b, similarity, parent=None
+        self,
+        spectrum_a,
+        spectrum_b,
+        title_a,
+        title_b,
+        similarity,
+        mz_tolerance=0.1,
+        method="CosineHungarian",
+        parent=None,
     ):
         super().__init__(parent)
+        self.setWindowFlags(
+            Qt.WindowType.Window
+            | Qt.WindowType.WindowMinimizeButtonHint
+            | Qt.WindowType.WindowMaximizeButtonHint
+            | Qt.WindowType.WindowCloseButtonHint
+        )
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
 
         self.spectrum_a = spectrum_a
         self.spectrum_b = spectrum_b
         self.title_a = title_a
         self.title_b = title_b
         self.similarity = similarity
+        self.mz_tolerance = mz_tolerance
+        self.method = method
 
-        self.init_ui()
+        self._mz_a = np.array(spectrum_a["mz"], dtype=float)
+        self._int_a = np.array(spectrum_a["intensity"], dtype=float)
+        self._mz_b = np.array(spectrum_b["mz"], dtype=float)
+        self._int_b = np.array(spectrum_b["intensity"], dtype=float)
 
-    def init_ui(self):
-        """Initialize the mirror plot dialog UI"""
-        self.setWindowTitle("Mirror Plot Comparison")
-        self.setGeometry(200, 200, 900, 700)
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 10, 10, 10)
-
-        # Header with similarity score
-        header = QLabel(
-            f"<b>Mirror Plot Comparison</b><br>Cosine Similarity: {self.similarity:.4f}"
+        _max_a = (
+            float(np.max(self._int_a))
+            if len(self._int_a) > 0 and np.max(self._int_a) > 0
+            else 1.0
         )
-        header.setStyleSheet("font-size: 14px; padding: 10px;")
-        header.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(header)
-
-        # Create matplotlib figure for mirror plot
-        from matplotlib.figure import Figure
-        from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
-
-        fig = Figure(figsize=(9, 7))
-        canvas = FigureCanvas(fig)
-
-        # Create mirror plot
-        ax = fig.add_subplot(111)
-
-        # Get spectrum data
-        mz_a = self.spectrum_a["mz"]
-        intensity_a = self.spectrum_a["intensity"]
-        mz_b = self.spectrum_b["mz"]
-        intensity_b = self.spectrum_b["intensity"]
-
-        # Normalize intensities to 0-100
-        if len(intensity_a) > 0 and np.max(intensity_a) > 0:
-            intensity_a_norm = (intensity_a / np.max(intensity_a)) * 100
-        else:
-            intensity_a_norm = intensity_a
-
-        if len(intensity_b) > 0 and np.max(intensity_b) > 0:
-            intensity_b_norm = (intensity_b / np.max(intensity_b)) * 100
-        else:
-            intensity_b_norm = intensity_b
-
-        # Plot spectrum A (top, positive direction)
-        ax.vlines(
-            mz_a,
-            0,
-            intensity_a_norm,
-            colors="blue",
-            alpha=0.7,
-            linewidth=1.5,
-            label=self.title_a,
+        _max_b = (
+            float(np.max(self._int_b))
+            if len(self._int_b) > 0 and np.max(self._int_b) > 0
+            else 1.0
         )
+        self._max_a = _max_a
+        self._max_b = _max_b
+        self._rel_a = self._int_a / _max_a * 100.0
+        self._rel_b = self._int_b / _max_b * 100.0
 
-        # Plot spectrum B (bottom, negative direction)
-        ax.vlines(
-            mz_b,
-            0,
-            -intensity_b_norm,
-            colors="red",
-            alpha=0.7,
-            linewidth=1.5,
-            label=self.title_b,
+        self._rows: list = self._compute_fragment_table()
+        self._highlight_a: set = set()
+        self._highlight_b: set = set()
+
+        self.setWindowTitle(f"Mirror Plot — {title_a}  vs  {title_b}")
+        self.resize(1420, 720)
+        self._init_ui()
+
+    # ------------------------------------------------------------------
+    def _compute_fragment_table(self) -> list:
+        """Greedy intensity-weighted peak matching (mirrors CosineGreedy logic).
+
+        Returns a list of row dicts, sorted by ascending m/z.  Keys:
+        idx_a, mz_a, int_a  (None if this row is unmatched from B only)
+        idx_b, mz_b, int_b  (None if this row is unmatched from A only)
+        delta_mz, delta_ppm (None if not matched)
+        """
+        mz_a, int_a = self._mz_a, self._int_a
+        mz_b, int_b = self._mz_b, self._int_b
+        tol = self.mz_tolerance
+
+        # All candidate pairs within tolerance, sorted by product of intensities
+        candidates = [
+            (i, j, float(int_a[i]) * float(int_b[j]))
+            for i in range(len(mz_a))
+            for j in range(len(mz_b))
+            if abs(float(mz_a[i]) - float(mz_b[j])) <= tol
+        ]
+        candidates.sort(key=lambda x: -x[2])
+
+        used_a: set = set()
+        used_b: set = set()
+        pairs: list = []
+        for i, j, _ in candidates:
+            if i not in used_a and j not in used_b:
+                pairs.append((i, j))
+                used_a.add(i)
+                used_b.add(j)
+
+        rows: list = []
+        for i, j in pairs:
+            delta = float(mz_a[i]) - float(mz_b[j])
+            rows.append(
+                {
+                    "idx_a": i,
+                    "mz_a": float(mz_a[i]),
+                    "int_a": float(int_a[i]),
+                    "idx_b": j,
+                    "mz_b": float(mz_b[j]),
+                    "int_b": float(int_b[j]),
+                    "delta_mz": delta,
+                    "delta_ppm": delta / float(mz_b[j]) * 1e6
+                    if float(mz_b[j]) != 0.0
+                    else 0.0,
+                }
+            )
+        for i in range(len(mz_a)):
+            if i not in used_a:
+                rows.append(
+                    {
+                        "idx_a": i,
+                        "mz_a": float(mz_a[i]),
+                        "int_a": float(int_a[i]),
+                        "idx_b": None,
+                        "mz_b": None,
+                        "int_b": None,
+                        "delta_mz": None,
+                        "delta_ppm": None,
+                    }
+                )
+        for j in range(len(mz_b)):
+            if j not in used_b:
+                rows.append(
+                    {
+                        "idx_a": None,
+                        "mz_a": None,
+                        "int_a": None,
+                        "idx_b": j,
+                        "mz_b": float(mz_b[j]),
+                        "int_b": float(int_b[j]),
+                        "delta_mz": None,
+                        "delta_ppm": None,
+                    }
+                )
+
+        rows.sort(key=lambda r: r["mz_a"] if r["mz_a"] is not None else r["mz_b"])
+        return rows
+
+    # ------------------------------------------------------------------
+    def _init_ui(self):
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(8, 6, 8, 8)
+        outer.setSpacing(4)
+
+        # ---- header block (fixed height — must not stretch vertically) ----
+        n_matched = sum(
+            1 for r in self._rows if r["idx_a"] is not None and r["idx_b"] is not None
         )
+        n_only_a = sum(1 for r in self._rows if r["idx_b"] is None)
+        n_only_b = sum(1 for r in self._rows if r["idx_a"] is None)
 
-        # Styling
-        ax.set_xlabel("m/z", fontsize=12)
-        ax.set_ylabel("Relative Intensity (%)", fontsize=12)
-        ax.set_title(
-            f"Mirror Plot (Cosine Similarity: {self.similarity:.4f})",
-            fontsize=13,
-            fontweight="bold",
+        def _spec_info_html(spectrum, title, label):
+            """Build one info line for a spectrum."""
+            prec_mz = spectrum.get("precursor_mz", None)
+            prec_int = spectrum.get("precursor_intensity", None)
+            scan_id = (
+                spectrum.get("id") or spectrum.get("scan_id") or spectrum.get("index")
+            )
+            fs = spectrum.get("filter_string") or ""
+            parts = [f"<b>{label}: {title}</b>"]
+            if prec_mz is not None:
+                parts.append(f"precursor m/z: <b>{float(prec_mz):.4f}</b>")
+            if prec_int is not None:
+                parts.append(f"precursor int.: <b>{float(prec_int):.3e}</b>")
+            if scan_id is not None:
+                parts.append(f"scan: <b>{scan_id}</b>")
+            if fs:
+                parts.append(f"<span style='color:#555;font-size:10px'>{fs}</span>")
+            return " &nbsp;|&nbsp; ".join(parts)
+
+        score_line = (
+            f"{self.method} score: <b>{self.similarity:.4f}</b>"
+            f" &nbsp;|&nbsp; tolerance: {self.mz_tolerance:.4f} Da"
+            f" &nbsp;|&nbsp; matched: <b>{n_matched}</b>"
+            f" &nbsp; only-A: <b>{n_only_a}</b>"
+            f" &nbsp; only-B: <b>{n_only_b}</b>"
         )
-        ax.axhline(y=0, color="black", linewidth=0.8)
-        ax.legend(loc="upper right", fontsize=10)
-        ax.grid(True, alpha=0.3)
-
-        # Set y-axis limits
-        ax.set_ylim(-105, 105)
-
-        # Adjust layout
-        fig.tight_layout()
-
-        layout.addWidget(canvas)
-
-        # Add detailed information section
-        info_box = QGroupBox("Spectrum Details")
-        info_layout = QVBoxLayout(info_box)
-
-        info_text = QLabel()
-        info_html = f"<table style='width:100%; font-size:11px;'>"
-        info_html += f"<tr><th style='text-align:left; padding:5px;'>Spectrum</th>"
-        info_html += f"<th style='text-align:left; padding:5px;'>Precursor m/z</th>"
-        info_html += (
-            f"<th style='text-align:left; padding:5px;'>Precursor Intensity</th>"
+        hdr_html = (
+            f"{_spec_info_html(self.spectrum_a, self.title_a, 'A')}<br>"
+            f"{_spec_info_html(self.spectrum_b, self.title_b, 'B')}<br>"
+            f"<span style='color:#444'>{score_line}</span>"
         )
-        info_html += f"<th style='text-align:left; padding:5px;'>Signals</th>"
-        info_html += f"<th style='text-align:left; padding:5px;'>RT (min)</th></tr>"
+        hdr = QLabel(hdr_html)
+        hdr.setStyleSheet("font-size: 11px; padding: 3px 4px;")
+        hdr.setWordWrap(True)
+        hdr.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        outer.addWidget(hdr, 0)  # stretch=0 → never grows vertically
 
-        info_html += f"<tr style='background-color:#e3f2fd;'>"
-        info_html += f"<td style='padding:5px;'>A: {self.title_a}</td>"
-        info_html += (
-            f"<td style='padding:5px;'>{self.spectrum_a['precursor_mz']:.4f}</td>"
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        outer.addWidget(splitter, 1)  # stretch=1 → takes all remaining space
+
+        # ---- left: mirror plot ----
+        plot_w = QWidget()
+        plot_l = QVBoxLayout(plot_w)
+        plot_l.setContentsMargins(0, 0, 0, 0)
+        plot_l.setSpacing(0)
+        self._fig = Figure(figsize=(7, 5), tight_layout=True)
+        self._canvas = FigureCanvas(self._fig)
+        self._ax = self._fig.add_subplot(111)
+        toolbar = NavigationToolbar(self._canvas, plot_w)
+        plot_l.addWidget(toolbar)
+        plot_l.addWidget(self._canvas)
+        splitter.addWidget(plot_w)
+
+        # ---- right: fragment table ----
+        tbl_w = QWidget()
+        tbl_l = QVBoxLayout(tbl_w)
+        tbl_l.setContentsMargins(4, 0, 0, 0)
+        tbl_l.setSpacing(2)
+
+        hint = QLabel(
+            "<small>Click a row to highlight that peak in the mirror plot.&nbsp;&nbsp;"
+            "<span style='background:#dceafc;padding:1px 4px'>Blue background</span> = matched &nbsp;"
+            "<span style='background:#ffebee;padding:1px 4px'>Peach background</span> = only in A or B</small>"
         )
-        info_html += f"<td style='padding:5px;'>{self.spectrum_a.get('precursor_intensity', 0):.2e}</td>"
-        info_html += f"<td style='padding:5px;'>{len(mz_a)}</td>"
-        info_html += f"<td style='padding:5px;'>{self.spectrum_a['rt']:.2f}</td></tr>"
+        hint.setWordWrap(True)
+        hint.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        tbl_l.addWidget(hint, 0)
 
-        info_html += f"<tr style='background-color:#ffebee;'>"
-        info_html += f"<td style='padding:5px;'>B: {self.title_b}</td>"
-        info_html += (
-            f"<td style='padding:5px;'>{self.spectrum_b['precursor_mz']:.4f}</td>"
-        )
-        info_html += f"<td style='padding:5px;'>{self.spectrum_b.get('precursor_intensity', 0):.2e}</td>"
-        info_html += f"<td style='padding:5px;'>{len(mz_b)}</td>"
-        info_html += f"<td style='padding:5px;'>{self.spectrum_b['rt']:.2f}</td></tr>"
+        COL_HEADERS = [
+            "m/z",
+            "A m/z",
+            "A Intensity",
+            "A Rel.%",
+            "B m/z",
+            "B Intensity",
+            "B Rel.%",
+            "\u0394m/z (Da)",
+            "\u0394m/z (ppm)",
+        ]
+        self._table = QTableWidget(len(self._rows), len(COL_HEADERS))
+        self._table.setHorizontalHeaderLabels(COL_HEADERS)
+        self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        # NOTE: keep sorting disabled until after population — enabling it first
+        # causes Qt to re-sort after every setItem(), scattering values into
+        # wrong rows and leaving most cells empty.
+        self._table.setSortingEnabled(False)
+        hh = self._table.horizontalHeader()
+        hh.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        hh.setStretchLastSection(True)
+        self._table.verticalHeader().setDefaultSectionSize(20)
 
-        info_html += "</table>"
-        info_text.setText(info_html)
-        info_text.setWordWrap(True)
-        info_layout.addWidget(info_text)
+        RA = Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
 
-        layout.addWidget(info_box)
+        for row_idx, row in enumerate(self._rows):
+            is_matched = row["idx_a"] is not None and row["idx_b"] is not None
+            has_a = row["idx_a"] is not None
+            has_b = row["idx_b"] is not None
+            bg = (
+                self._MATCH_BG
+                if is_matched
+                else self._ONLY_B_BG
+                if not has_a
+                else self._ONLY_A_BG
+            )
 
-        # Close button
-        close_btn = QPushButton("Close")
-        close_btn.setMaximumWidth(100)
-        close_btn.clicked.connect(self.accept)
+            # Start with empty placeholder items so every cell has a background
+            items = [QTableWidgetItem("") for _ in range(len(COL_HEADERS))]
 
-        btn_layout = QHBoxLayout()
-        btn_layout.addStretch()
-        btn_layout.addWidget(close_btn)
-        btn_layout.addStretch()
-        layout.addLayout(btn_layout)
+            # col 0: mean m/z (average when matched, single value otherwise)
+            mean_mz = (
+                (row["mz_a"] + row["mz_b"]) / 2.0
+                if is_matched
+                else row["mz_a"]
+                if has_a
+                else row["mz_b"]
+            )
+            items[0] = NumericTableWidgetItem(f"{mean_mz:.4f}")
+            items[0].setData(Qt.ItemDataRole.UserRole, mean_mz)
+
+            if has_a:
+                rel_a = row["int_a"] / self._max_a * 100.0
+                items[1] = NumericTableWidgetItem(f"{row['mz_a']:.4f}")
+                items[1].setData(Qt.ItemDataRole.UserRole, row["mz_a"])
+                items[2] = NumericTableWidgetItem(f"{row['int_a']:.4e}")
+                items[2].setData(Qt.ItemDataRole.UserRole, row["int_a"])
+                items[3] = NumericTableWidgetItem(f"{rel_a:.1f}")
+                items[3].setData(Qt.ItemDataRole.UserRole, rel_a)
+
+            if has_b:
+                rel_b = row["int_b"] / self._max_b * 100.0
+                items[4] = NumericTableWidgetItem(f"{row['mz_b']:.4f}")
+                items[4].setData(Qt.ItemDataRole.UserRole, row["mz_b"])
+                items[5] = NumericTableWidgetItem(f"{row['int_b']:.4e}")
+                items[5].setData(Qt.ItemDataRole.UserRole, row["int_b"])
+                items[6] = NumericTableWidgetItem(f"{rel_b:.1f}")
+                items[6].setData(Qt.ItemDataRole.UserRole, rel_b)
+
+            if is_matched:
+                items[7] = NumericTableWidgetItem(f"{row['delta_mz']:.4f}")
+                items[7].setData(Qt.ItemDataRole.UserRole, abs(row["delta_mz"]))
+                items[8] = NumericTableWidgetItem(f"{row['delta_ppm']:.2f}")
+                items[8].setData(Qt.ItemDataRole.UserRole, abs(row["delta_ppm"]))
+
+            # Store original row index on every item in this row so that after
+            # the user enables sorting, _on_row_clicked can look up the row data
+            # from any column-0 item in the visually-reordered table.
+            for col_idx, it in enumerate(items):
+                it.setData(self._ROW_IDX_ROLE, row_idx)
+                it.setBackground(bg)
+                it.setTextAlignment(RA)
+                self._table.setItem(row_idx, col_idx, it)
+
+        # Enable sorting only after all rows are fully populated
+        self._table.setSortingEnabled(True)
+        self._table.cellClicked.connect(self._on_row_clicked)
+        tbl_l.addWidget(self._table, 1)  # stretch=1 → fills remaining height
+        splitter.addWidget(tbl_w)
+        splitter.setSizes([680, 540])
+
+        self._draw_plot()
+
+    # ------------------------------------------------------------------
+    def _draw_plot(self):
+        """Redraw the mirror plot, highlighting selected peaks in firebrick."""
+        ax = self._ax
+        ax.clear()
+
+        _NORMAL_COLOR = "#1565c0"
+        _HL_COLOR = "firebrick"
+
+        for i in range(len(self._mz_a)):
+            hl = i in self._highlight_a
+            ax.vlines(
+                float(self._mz_a[i]),
+                0.0,
+                float(self._rel_a[i]),
+                colors=_HL_COLOR if hl else _NORMAL_COLOR,
+                linewidth=2.4 if hl else 1.4,
+                alpha=0.95 if hl else 0.85,
+            )
+
+        for i in range(len(self._mz_b)):
+            hl = i in self._highlight_b
+            ax.vlines(
+                float(self._mz_b[i]),
+                0.0,
+                -float(self._rel_b[i]),
+                colors=_HL_COLOR if hl else _NORMAL_COLOR,
+                linewidth=2.4 if hl else 1.4,
+                alpha=0.95 if hl else 0.85,
+            )
+
+        ax.axhline(0.0, color="black", linewidth=0.8)
+
+        ticks = np.arange(-100, 101, 25)
+        ax.set_yticks(ticks)
+        ax.set_yticklabels([str(abs(int(t))) for t in ticks])
+        ax.set_ylim(-110, 110)
+        ax.set_xlabel("m/z", fontsize=11)
+        ax.set_ylabel("Relative Intensity (%)", fontsize=11)
+        ax.set_title(f"{self.method}  ·  score: {self.similarity:.4f}", fontsize=11)
+        ax.grid(True, alpha=0.2)
+
+        from matplotlib.patches import Patch
+
+        legend_handles = [
+            Patch(facecolor=_NORMAL_COLOR, label=f"↑ {self.title_a}"),
+            Patch(facecolor=_NORMAL_COLOR, label=f"↓ {self.title_b}"),
+        ]
+        if self._highlight_a or self._highlight_b:
+            legend_handles.append(Patch(facecolor=_HL_COLOR, label="selected"))
+        ax.legend(handles=legend_handles, loc="upper right", fontsize=9)
+        self._fig.tight_layout()
+        self._canvas.draw_idle()
+
+    # ------------------------------------------------------------------
+    def _on_row_clicked(self, row: int, col: int):
+        """Highlight the peaks corresponding to the clicked table row."""
+        # The table may be sorted; retrieve original row index from any item in
+        # this visual row (we stored _ROW_IDX_ROLE on all columns during build).
+        item = self._table.item(row, col) or self._table.item(row, 0)
+        if item is None:
+            return
+        orig_idx = item.data(self._ROW_IDX_ROLE)
+        if orig_idx is None:
+            # fallback: scan all columns
+            for c in range(self._table.columnCount()):
+                it = self._table.item(row, c)
+                if it is not None:
+                    orig_idx = it.data(self._ROW_IDX_ROLE)
+                    if orig_idx is not None:
+                        break
+        if orig_idx is None:
+            return
+        r = self._rows[int(orig_idx)]
+        self._highlight_a = {r["idx_a"]} if r["idx_a"] is not None else set()
+        self._highlight_b = {r["idx_b"]} if r["idx_b"] is not None else set()
+        self._draw_plot()
 
 
 class EmbeddedScatterPlotView(QWidget):
@@ -9088,10 +9660,6 @@ class EmbeddedScatterPlotView(QWidget):
 
     def add_target_mz_line(self, x_axis, y_axis):
         """Add horizontal lines to indicate the target m/z and extraction window"""
-        from PyQt6.QtCharts import QLineSeries
-        from PyQt6.QtGui import QPen, QColor
-        from PyQt6.QtCore import Qt
-
         # Create a horizontal line series at the target m/z
         target_line = QLineSeries()
         target_line.setName("Target m/z")
@@ -9192,8 +9760,7 @@ class EmbeddedScatterPlotView(QWidget):
 
         except Exception as e:
             print(f"Error updating scatter plot: {str(e)}")
-            import traceback
-
+            
             traceback.print_exc()
 
 

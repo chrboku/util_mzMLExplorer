@@ -30,6 +30,7 @@ from PyQt6.QtWidgets import (
     QProgressDialog,
     QFrame,
     QScrollArea,
+    QAbstractItemView,
 )
 from PyQt6.QtCore import Qt, QTimer, QMimeData, QUrl, QSettings, QEvent
 from PyQt6.QtGui import (
@@ -60,6 +61,7 @@ from natsort import natsorted, index_natsorted
 import json
 import toml
 import concurrent.futures
+import re
 
 
 class CompoundStructurePopup(QWidget):
@@ -2094,30 +2096,90 @@ class MzMLExplorerMainWindow(QMainWindow):
             window.close()
         event.accept()
 
+    @staticmethod
+    def _get_default_eic_settings():
+        """Return the hardcoded default values for EIC/MSMS settings."""
+        return {
+            "mz_tolerance_ppm": 5.0,
+            "separate_groups": False,
+            "rt_shift_min": 1.0,
+            "crop_rt_window": True,
+            "normalize_samples": False,
+            "legend_position": "Right",
+            "eic_method": "Sum of all signals",
+            "msms_filter_regex": "(FTMS|ITMS).*",
+            "msms_filter_replacement": "\\1",
+            "msms_similarity_method": "CosineHungarian",
+            "msms_similarity_default_tolerance": 0.1,
+            "msms_similarity_group_tolerances": [
+                {"filter_type": "ITMS", "mz_tolerance": 0.5},
+                {"filter_type": "FTMS", "mz_tolerance": 0.01},
+            ],
+        }
+
+    @staticmethod
+    def _get_default_memory_settings():
+        """Return the hardcoded default values for memory settings."""
+        return {
+            "keep_in_memory": True,
+            "parallel_tasks": 4,
+        }
+
     def load_eic_defaults(self):
         """Load EIC window default settings"""
+        _d = self._get_default_eic_settings()
         self.eic_defaults = {
-            "mz_tolerance_ppm": float(self.settings.value("eic/mz_tolerance_ppm", 5.0)),
-            "separate_groups": self.settings.value(
-                "eic/separate_groups", False, type=bool
+            "mz_tolerance_ppm": float(
+                self.settings.value("eic/mz_tolerance_ppm", _d["mz_tolerance_ppm"])
             ),
-            "rt_shift_min": float(self.settings.value("eic/rt_shift_min", 1.0)),
+            "separate_groups": self.settings.value(
+                "eic/separate_groups", _d["separate_groups"], type=bool
+            ),
+            "rt_shift_min": float(
+                self.settings.value("eic/rt_shift_min", _d["rt_shift_min"])
+            ),
             "crop_rt_window": self.settings.value(
-                "eic/crop_rt_window", True, type=bool
+                "eic/crop_rt_window", _d["crop_rt_window"], type=bool
             ),
             "normalize_samples": self.settings.value(
-                "eic/normalize_samples", False, type=bool
+                "eic/normalize_samples", _d["normalize_samples"], type=bool
             ),
-            "legend_position": self.settings.value("eic/legend_position", "Right"),
-            "eic_method": self.settings.value("eic/eic_method", "Sum of all signals"),
+            "legend_position": self.settings.value(
+                "eic/legend_position", _d["legend_position"]
+            ),
+            "eic_method": self.settings.value("eic/eic_method", _d["eic_method"]),
+            "msms_filter_regex": self.settings.value(
+                "msms_filter/regex", _d["msms_filter_regex"]
+            ),
+            "msms_filter_replacement": self.settings.value(
+                "msms_filter/replacement", _d["msms_filter_replacement"]
+            ),
+            "msms_similarity_method": self.settings.value(
+                "msms_similarity/method", _d["msms_similarity_method"]
+            ),
+            "msms_similarity_default_tolerance": float(
+                self.settings.value(
+                    "msms_similarity/default_tolerance",
+                    _d["msms_similarity_default_tolerance"],
+                )
+            ),
+            "msms_similarity_group_tolerances": json.loads(
+                self.settings.value(
+                    "msms_similarity/group_tolerances",
+                    json.dumps(_d["msms_similarity_group_tolerances"]),
+                )
+            ),
         }
 
         # Load memory settings
+        _m = self._get_default_memory_settings()
         self.memory_settings = {
             "keep_in_memory": self.settings.value(
-                "memory/keep_in_memory", True, type=bool
+                "memory/keep_in_memory", _m["keep_in_memory"], type=bool
             ),
-            "parallel_tasks": int(self.settings.value("memory/parallel_tasks", 4)),
+            "parallel_tasks": int(
+                self.settings.value("memory/parallel_tasks", _m["parallel_tasks"])
+            ),
         }
 
         # Apply memory settings to file manager
@@ -2145,6 +2207,25 @@ class MzMLExplorerMainWindow(QMainWindow):
         )
         self.settings.setValue(
             "eic/eic_method", self.eic_defaults.get("eic_method", "Sum of all signals")
+        )
+        self.settings.setValue(
+            "msms_filter/regex", self.eic_defaults.get("msms_filter_regex", "")
+        )
+        self.settings.setValue(
+            "msms_filter/replacement",
+            self.eic_defaults.get("msms_filter_replacement", ""),
+        )
+        self.settings.setValue(
+            "msms_similarity/method",
+            self.eic_defaults.get("msms_similarity_method", "CosineHungarian"),
+        )
+        self.settings.setValue(
+            "msms_similarity/default_tolerance",
+            self.eic_defaults.get("msms_similarity_default_tolerance", 0.1),
+        )
+        self.settings.setValue(
+            "msms_similarity/group_tolerances",
+            json.dumps(self.eic_defaults.get("msms_similarity_group_tolerances", [])),
         )
 
     def _on_eic_settings_changed(self, key: str, value) -> None:
@@ -2281,7 +2362,9 @@ class MzMLExplorerMainWindow(QMainWindow):
             self.eic_defaults, self.memory_settings, self.file_manager, self
         )
         if dialog.exec() == QDialog.DialogCode.Accepted:
-            self.eic_defaults, self.memory_settings = dialog.get_values()
+            new_eic, new_mem = dialog.get_values()
+            self.eic_defaults.update(new_eic)
+            self.memory_settings.update(new_mem)
             self.save_eic_defaults()
             self.save_memory_settings()
 
@@ -2310,91 +2393,9 @@ class MzMLExplorerMainWindow(QMainWindow):
         """Worker function to load a single file in a separate thread"""
         idx, row = row_data
         filepath = row["Filepath"]
-
         try:
-            # Try disk cache first
-            cached = self.file_manager._load_from_cache(filepath)
-            if cached is not None:
-                print(f"Loaded {os.path.basename(filepath)} from cache.")
-                return idx, filepath, cached["ms1"], cached["ms2"]
-
-            # Create a new reader for this thread
-            reader = pymzml.run.Reader(filepath)
-            ms1_spectra_data = []
-            ms2_spectra_data = []
-
-            for spectrum in reader:
-                if spectrum.ms_level == 1:  # MS1 spectra
-                    spectrum_data = {
-                        "scan_time": spectrum.scan_time_in_minutes(),
-                        "mz": spectrum.mz,
-                        "intensity": spectrum.i,
-                        "polarity": self.file_manager._get_spectrum_polarity(spectrum),
-                    }
-                    ms1_spectra_data.append(spectrum_data)
-                elif spectrum.ms_level == 2:  # MS2/MSMS spectra
-                    try:
-                        # Get precursor information
-                        precursor_mz = None
-                        if (
-                            hasattr(spectrum, "selected_precursors")
-                            and spectrum.selected_precursors
-                        ):
-                            precursor_info = spectrum.selected_precursors[0]
-                            if "mz" in precursor_info:
-                                precursor_mz = float(precursor_info["mz"])
-
-                        # Alternative method to get precursor m/z
-                        if precursor_mz is None and hasattr(spectrum, "element"):
-                            for elem in spectrum.element.iter():
-                                if elem.tag.endswith("precursorList"):
-                                    for precursor in elem:
-                                        if precursor.tag.endswith("precursor"):
-                                            for selected_ion in precursor:
-                                                if selected_ion.tag.endswith(
-                                                    "selectedIonList"
-                                                ):
-                                                    for ion in selected_ion:
-                                                        for cv_param in ion:
-                                                            if (
-                                                                cv_param.tag.endswith(
-                                                                    "cvParam"
-                                                                )
-                                                                and cv_param.get(
-                                                                    "accession"
-                                                                )
-                                                                == "MS:1000744"
-                                                            ):  # selected ion m/z
-                                                                precursor_mz = float(
-                                                                    cv_param.get(
-                                                                        "value"
-                                                                    )
-                                                                )
-                                                                break
-
-                        spectrum_data = {
-                            "scan_time": spectrum.scan_time_in_minutes(),
-                            "mz": spectrum.mz,
-                            "intensity": spectrum.i,
-                            "polarity": self.file_manager._get_spectrum_polarity(
-                                spectrum
-                            ),
-                            "precursor_mz": precursor_mz,
-                            "scan_id": spectrum.ID
-                            if hasattr(spectrum, "ID")
-                            else f"RT_{spectrum.scan_time_in_minutes():.2f}",
-                        }
-                        ms2_spectra_data.append(spectrum_data)
-                    except Exception as e:
-                        print(f"Error processing MS2 spectrum in {filepath}: {e}")
-                        continue
-
-            # Persist to disk cache for future runs
-            data = {"ms1": ms1_spectra_data, "ms2": ms2_spectra_data}
-            self.file_manager._save_to_cache(filepath, data)
-
-            return idx, filepath, ms1_spectra_data, ms2_spectra_data
-
+            data = self.file_manager.load_single_file(filepath)
+            return idx, filepath, data["ms1"], data["ms2"]
         except Exception as e:
             print(f"Error loading file {filepath}: {e}")
             return idx, filepath, [], []
@@ -3084,6 +3085,18 @@ class UnifiedOptionsDialog(QDialog):
         eic_section.add_content(eic_content)
         content_layout.addWidget(eic_section)
 
+        # MSMS Filter String Parsing Section
+        msms_filter_section = CollapsibleSection("MSMS Filter String Parsing")
+        msms_filter_content = self.create_msms_filter_content()
+        msms_filter_section.add_content(msms_filter_content)
+        content_layout.addWidget(msms_filter_section)
+
+        # MSMS Similarity Scoring Section
+        msms_similarity_section = CollapsibleSection("MSMS Similarity Scoring")
+        msms_similarity_content = self.create_msms_similarity_content()
+        msms_similarity_section.add_content(msms_similarity_content)
+        content_layout.addWidget(msms_similarity_section)
+
         content_layout.addStretch()
         scroll.setWidget(content_widget)
         layout.addWidget(scroll)
@@ -3228,6 +3241,186 @@ class UnifiedOptionsDialog(QDialog):
 
         return widget
 
+    def create_msms_filter_content(self):
+        """Create the MSMS filter string parsing content widget"""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+
+        desc_label = QLabel(
+            "Define a regex to parse the Orbitrap/instrument filter string of each MS2 spectrum "
+            "into a short type label.\n"
+            "Match regex: a Python regex applied to the filter string (may use capture groups).\n"
+            "Type label: replacement string using \\1, \\2 … to form the type label from groups.\n"
+            "Example — Match: r'@(\\w+?)\\d' → Label: \\1  produces 'hcd', 'cid', etc."
+        )
+        desc_label.setWordWrap(True)
+        desc_label.setStyleSheet("QLabel { color: #555; margin-bottom: 10px; }")
+        layout.addWidget(desc_label)
+
+        form_layout = QFormLayout()
+
+        self.msms_filter_regex_edit = QLineEdit()
+        self.msms_filter_regex_edit.setPlaceholderText("e.g.  @(\\w+?)\\d")
+        self.msms_filter_regex_edit.setText(
+            self.eic_defaults.get("msms_filter_regex", "")
+        )
+        form_layout.addRow("Match regex:", self.msms_filter_regex_edit)
+
+        self.msms_filter_replacement_edit = QLineEdit()
+        self.msms_filter_replacement_edit.setPlaceholderText("e.g.  \\1")
+        self.msms_filter_replacement_edit.setText(
+            self.eic_defaults.get("msms_filter_replacement", "")
+        )
+        form_layout.addRow("Type label:", self.msms_filter_replacement_edit)
+
+        layout.addLayout(form_layout)
+
+        # Live test row
+        test_layout = QHBoxLayout()
+        self.msms_filter_test_input = QLineEdit()
+        self.msms_filter_test_input.setPlaceholderText(
+            "Paste a filter string here to preview…"
+        )
+        test_layout.addWidget(self.msms_filter_test_input)
+        test_btn = QPushButton("Test")
+        test_btn.setMaximumWidth(60)
+        test_btn.clicked.connect(self._test_msms_filter_regex)
+        test_layout.addWidget(test_btn)
+        self.msms_filter_test_result = QLabel("")
+        self.msms_filter_test_result.setStyleSheet(
+            "QLabel { color: #060; font-weight: bold; }"
+        )
+        test_layout.addWidget(self.msms_filter_test_result)
+        layout.addLayout(test_layout)
+
+        return widget
+
+    def create_msms_similarity_content(self):
+        """Create the MSMS similarity scoring content widget."""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+
+        desc_label = QLabel(
+            "Configure the cosine-similarity scoring method used when comparing MS2 spectra.\n"
+            "You can set a default m/z tolerance (Da) and optionally override it per filter-type group "
+            "(requires the Match regex above to be configured)."
+        )
+        desc_label.setWordWrap(True)
+        desc_label.setStyleSheet("QLabel { color: #555; margin-bottom: 8px; }")
+        layout.addWidget(desc_label)
+
+        form_layout = QFormLayout()
+
+        self.msms_similarity_method_combo = QComboBox()
+        self.msms_similarity_method_combo.addItems(["CosineHungarian", "CosineGreedy"])
+        current_method = self.eic_defaults.get(
+            "msms_similarity_method", "CosineHungarian"
+        )
+        idx = self.msms_similarity_method_combo.findText(current_method)
+        if idx >= 0:
+            self.msms_similarity_method_combo.setCurrentIndex(idx)
+        form_layout.addRow("Scoring method:", self.msms_similarity_method_combo)
+
+        self.msms_similarity_default_tol_spin = QDoubleSpinBox()
+        self.msms_similarity_default_tol_spin.setRange(0.0001, 1.0)
+        self.msms_similarity_default_tol_spin.setDecimals(4)
+        self.msms_similarity_default_tol_spin.setSingleStep(0.005)
+        self.msms_similarity_default_tol_spin.setSuffix(" Da")
+        self.msms_similarity_default_tol_spin.setValue(
+            self.eic_defaults.get("msms_similarity_default_tolerance", 0.1)
+        )
+        form_layout.addRow(
+            "Default m/z tolerance:", self.msms_similarity_default_tol_spin
+        )
+        layout.addLayout(form_layout)
+
+        # Per-group tolerance table
+        group_tol_label = QLabel(
+            "<b>Per-group m/z tolerances</b> (optional — override per filter-type label):"
+        )
+        group_tol_label.setWordWrap(True)
+        layout.addWidget(group_tol_label)
+
+        self.msms_similarity_group_tol_table = QTableWidget(0, 2)
+        self.msms_similarity_group_tol_table.setHorizontalHeaderLabels(
+            ["Filter Type", "Tolerance (Da)"]
+        )
+        self.msms_similarity_group_tol_table.horizontalHeader().setStretchLastSection(
+            True
+        )
+        self.msms_similarity_group_tol_table.setMaximumHeight(160)
+        self.msms_similarity_group_tol_table.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectRows
+        )
+
+        # Populate with stored values
+        for entry in self.eic_defaults.get("msms_similarity_group_tolerances", []):
+            self._msms_similarity_add_table_row(
+                entry.get("filter_type", ""), entry.get("mz_tolerance", 0.1)
+            )
+
+        layout.addWidget(self.msms_similarity_group_tol_table)
+
+        btn_layout = QHBoxLayout()
+        add_row_btn = QPushButton("Add Row")
+        add_row_btn.setMaximumWidth(80)
+        add_row_btn.clicked.connect(
+            lambda: self._msms_similarity_add_table_row("", 0.1)
+        )
+        remove_row_btn = QPushButton("Remove Row")
+        remove_row_btn.setMaximumWidth(90)
+        remove_row_btn.clicked.connect(self._msms_similarity_remove_selected_row)
+        btn_layout.addWidget(add_row_btn)
+        btn_layout.addWidget(remove_row_btn)
+        btn_layout.addStretch()
+        layout.addLayout(btn_layout)
+
+        return widget
+
+    def _msms_similarity_add_table_row(self, filter_type: str, tolerance: float):
+        """Append one row to the per-group tolerance table."""
+        table = self.msms_similarity_group_tol_table
+        row = table.rowCount()
+        table.insertRow(row)
+        table.setItem(row, 0, QTableWidgetItem(str(filter_type)))
+        tol_item = QTableWidgetItem(str(tolerance))
+        tol_item.setTextAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
+        table.setItem(row, 1, tol_item)
+
+    def _msms_similarity_remove_selected_row(self):
+        """Remove the currently selected row from the per-group tolerance table."""
+        table = self.msms_similarity_group_tol_table
+        selected = table.selectedItems()
+        if selected:
+            table.removeRow(table.row(selected[0]))
+
+    def _test_msms_filter_regex(self):
+        """Test the current regex/replacement against the sample input and show the result."""
+        pattern = self.msms_filter_regex_edit.text().strip()
+        replacement = self.msms_filter_replacement_edit.text()
+        test_input = self.msms_filter_test_input.text().strip()
+        if not pattern:
+            self.msms_filter_test_result.setText("(no pattern)")
+            self.msms_filter_test_result.setStyleSheet("QLabel { color: #888; }")
+            return
+        try:
+            compiled = re.compile(pattern)
+            m = compiled.search(test_input)
+            if m:
+                label = m.expand(replacement)
+                self.msms_filter_test_result.setText(f"→ '{label}'")
+                self.msms_filter_test_result.setStyleSheet(
+                    "QLabel { color: #060; font-weight: bold; }"
+                )
+            else:
+                self.msms_filter_test_result.setText("(no match)")
+                self.msms_filter_test_result.setStyleSheet("QLabel { color: #a60; }")
+        except re.error as exc:
+            self.msms_filter_test_result.setText(f"Regex error: {exc}")
+            self.msms_filter_test_result.setStyleSheet("QLabel { color: #c00; }")
+
     def on_memory_mode_changed(self):
         """Handle memory mode checkbox change"""
         self.update_memory_warning()
@@ -3271,26 +3464,66 @@ class UnifiedOptionsDialog(QDialog):
 
     def reset_all_to_defaults(self):
         """Reset all values to application defaults"""
+        defaults = MzMLExplorerMainWindow._get_default_eic_settings()
+        mem_defaults = MzMLExplorerMainWindow._get_default_memory_settings()
+
         # Reset EIC defaults
-        self.mz_tolerance_spin.setValue(5.0)
-        self.separate_groups_cb.setChecked(True)
-        self.rt_shift_spin.setValue(1.0)
-        self.crop_rt_cb.setChecked(False)
-        self.normalize_cb.setChecked(False)
+        self.mz_tolerance_spin.setValue(defaults["mz_tolerance_ppm"])
+        self.separate_groups_cb.setChecked(defaults["separate_groups"])
+        self.rt_shift_spin.setValue(defaults["rt_shift_min"])
+        self.crop_rt_cb.setChecked(defaults["crop_rt_window"])
+        self.normalize_cb.setChecked(defaults["normalize_samples"])
 
         # Reset memory settings
-        self.keep_in_memory_cb.setChecked(False)
-        self.parallel_tasks_spin.setValue(4)
+        self.keep_in_memory_cb.setChecked(mem_defaults["keep_in_memory"])
+        self.parallel_tasks_spin.setValue(mem_defaults["parallel_tasks"])
         self.update_memory_warning()
+
+        # Reset MSMS filter settings
+        self.msms_filter_regex_edit.setText(defaults["msms_filter_regex"])
+        self.msms_filter_replacement_edit.setText(defaults["msms_filter_replacement"])
+
+        # Reset MSMS similarity settings
+        self.msms_similarity_method_combo.setCurrentText(
+            defaults["msms_similarity_method"]
+        )
+        self.msms_similarity_default_tol_spin.setValue(
+            defaults["msms_similarity_default_tolerance"]
+        )
+        self.msms_similarity_group_tol_table.setRowCount(0)
+        for entry in defaults["msms_similarity_group_tolerances"]:
+            self._msms_similarity_add_table_row(
+                entry["filter_type"], entry["mz_tolerance"]
+            )
 
     def get_values(self):
         """Get the current values from the dialog"""
+        # Collect per-group tolerances from the table
+        table = self.msms_similarity_group_tol_table
+        group_tolerances = []
+        for row in range(table.rowCount()):
+            ft_item = table.item(row, 0)
+            tol_item = table.item(row, 1)
+            if ft_item and tol_item:
+                ft = ft_item.text().strip()
+                try:
+                    tol = float(tol_item.text())
+                except ValueError:
+                    tol = 0.1
+                if ft:
+                    group_tolerances.append({"filter_type": ft, "mz_tolerance": tol})
+
         eic_values = {
             "mz_tolerance_ppm": self.mz_tolerance_spin.value(),
             "separate_groups": self.separate_groups_cb.isChecked(),
             "rt_shift_min": self.rt_shift_spin.value(),
             "crop_rt_window": self.crop_rt_cb.isChecked(),
             "normalize_samples": self.normalize_cb.isChecked(),
+            "msms_filter_regex": self.msms_filter_regex_edit.text(),
+            "msms_filter_replacement": self.msms_filter_replacement_edit.text(),
+            "msms_similarity_method": self.msms_similarity_method_combo.currentText(),
+            "msms_similarity_default_tolerance": self.msms_similarity_default_tol_spin.value(),
+            "msms_similarity_group_tolerances": group_tolerances,
         }
 
         memory_values = {

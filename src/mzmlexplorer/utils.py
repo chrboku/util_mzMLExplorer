@@ -6,6 +6,10 @@ from typing import Dict, Optional
 
 from .FormulaTools import formulaTools
 
+import numpy as np
+from matchms import Spectrum as MatchmsSpectrum
+from matchms.similarity import CosineGreedy, CosineHungarian
+import colorsys
 
 # Atomic masses (monoisotopic)
 ATOMIC_MASSES = {
@@ -146,8 +150,6 @@ def generate_color_palette(n_colors: int) -> list[str]:
 
     # If we need more colors than available, generate more using a simple algorithm
     if n_colors > len(colors):
-        import colorsys
-
         for i in range(len(colors), n_colors):
             hue = (i * 0.618033988749895) % 1  # Golden ratio conjugate
             rgb = colorsys.hsv_to_rgb(hue, 0.7, 0.9)
@@ -187,81 +189,50 @@ def format_mz(mz: float, decimals: int = 4) -> str:
 
 
 def calculate_cosine_similarity(
-    spectrum1: Dict, spectrum2: Dict, mz_tolerance: float = 0.01
+    spectrum1: Dict,
+    spectrum2: Dict,
+    mz_tolerance: float = 0.1,
+    method: str = "CosineHungarian",
 ) -> float:
     """
-    Calculate the cosine similarity between two MS/MS spectra.
+    Calculate the cosine similarity between two MS/MS spectra using matchms.
 
     Args:
         spectrum1: First spectrum data with 'mz' and 'intensity' arrays
         spectrum2: Second spectrum data with 'mz' and 'intensity' arrays
         mz_tolerance: m/z tolerance for peak matching in Da
+        method: Scoring method — 'CosineHungarian' (default) or 'CosineGreedy'
 
     Returns:
         Cosine similarity score (0-1)
     """
-    import numpy as np
 
-    # Get spectrum data
-    mz1 = np.array(spectrum1["mz"])
-    intensity1 = np.array(spectrum1["intensity"])
-    mz2 = np.array(spectrum2["mz"])
-    intensity2 = np.array(spectrum2["intensity"])
+    mz1 = np.array(spectrum1["mz"], dtype=float)
+    int1 = np.array(spectrum1["intensity"], dtype=float)
+    mz2 = np.array(spectrum2["mz"], dtype=float)
+    int2 = np.array(spectrum2["intensity"], dtype=float)
 
-    # Normalize intensities
-    if len(intensity1) > 0 and np.max(intensity1) > 0:
-        intensity1 = intensity1 / np.max(intensity1)
-    if len(intensity2) > 0 and np.max(intensity2) > 0:
-        intensity2 = intensity2 / np.max(intensity2)
-
-    # If either spectrum is empty, return 0
     if len(mz1) == 0 or len(mz2) == 0:
         return 0.0
 
-    # Create intensity vectors for matching peaks
-    matched_intensity1 = []
-    matched_intensity2 = []
+    spec_a = MatchmsSpectrum(
+        mz=mz1,
+        intensities=int1,
+        metadata={"precursor_mz": spectrum1.get("precursor_mz", 0.0)},
+    )
+    spec_b = MatchmsSpectrum(
+        mz=mz2,
+        intensities=int2,
+        metadata={"precursor_mz": spectrum2.get("precursor_mz", 0.0)},
+    )
 
-    # For each peak in spectrum1, find matching peak in spectrum2
-    for i, mz in enumerate(mz1):
-        intensity = intensity1[i]
+    if method == "CosineGreedy":
+        scorer = CosineGreedy(tolerance=mz_tolerance)
+    else:
+        scorer = CosineHungarian(tolerance=mz_tolerance)
 
-        # Find matching peak in spectrum2
-        matches = np.where(np.abs(mz2 - mz) <= mz_tolerance)[0]
-        if len(matches) > 0:
-            # Use the closest match
-            closest_idx = matches[np.argmin(np.abs(mz2[matches] - mz))]
-            matched_intensity1.append(intensity)
-            matched_intensity2.append(intensity2[closest_idx])
-
-        else:
-            matched_intensity1.append(intensity)
-            matched_intensity2.append(0.0)
-
-    # For each peak in spectrum2 that doesn't have a match in spectrum1
-    for i, mz in enumerate(mz2):
-        intensity = intensity2[i]
-
-        # Check if this peak was already matched
-        if not np.any(np.abs(mz1 - mz) <= mz_tolerance):
-            matched_intensity1.append(0.0)
-            matched_intensity2.append(intensity)
-
-    if len(matched_intensity1) == 0:
-        return 0.0
-
-    matched_intensity1 = np.array(matched_intensity1)
-    matched_intensity2 = np.array(matched_intensity2)
-
-    # Calculate cosine similarity
-    dot_product = np.dot(matched_intensity1, matched_intensity2)
-    norm1 = np.linalg.norm(matched_intensity1)
-    norm2 = np.linalg.norm(matched_intensity2)
-
-    if norm1 == 0 or norm2 == 0:
-        return 0.0
-
-    return dot_product / (norm1 * norm2)
+    result = scorer.pair(spec_a, spec_b)
+    return float(result["score"])
 
 
 def calculate_similarity_statistics(similarities: list) -> Dict[str, float]:
@@ -274,8 +245,6 @@ def calculate_similarity_statistics(similarities: list) -> Dict[str, float]:
     Returns:
         Dictionary with statistical measures
     """
-    import numpy as np
-
     if not similarities:
         return {
             "min": 0.0,

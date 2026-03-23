@@ -5,6 +5,9 @@ File manager for handling mzML files and their metadata
 import os
 import hashlib
 import pickle
+import json
+from natsort import natsort_keygen
+import importlib.metadata
 import pandas as pd
 import pymzml
 from typing import Dict, List, Optional, Tuple
@@ -61,27 +64,56 @@ class FileManager:
         """Return the cache file path for a given mzML file."""
         return filepath + ".cached.pkl"
 
+    def _get_software_version(self) -> str:
+        """Return the installed package version, falling back to 'unknown'."""
+        try:
+            return importlib.metadata.version("util-mzmlexplorer")
+        except Exception:
+            return "unknown"
+
     def _load_from_cache(self, filepath: str):
         """
-        Load parsed mzML data from disk cache if the stored hash matches the file.
+        Load parsed mzML data from disk cache.
 
-        Returns the cached data dict (``{"ms1": ..., "ms2": ...}``) on a hit,
-        or ``None`` on a miss / stale cache.
+        Returns the cached data dict ({"ms1": ..., "ms2": ...}) only when both
+        the stored file hash and the stored software version match the current
+        values.  Returns ``None`` in every other case (missing file, hash or
+        version mismatch, corrupt / old-format pickle, any I/O error).  The
+        caller is then responsible for re-parsing the mzML file and writing a
+        fresh cache via ``_save_to_cache``.
         """
         cache_path = self._get_cache_path(filepath)
         if not os.path.exists(cache_path):
             return None
         try:
             file_hash = self._compute_file_hash(filepath)
+            current_version = self._get_software_version()
             with open(cache_path, "rb") as f:
-                cached_hash, data = pickle.load(f)
-            if cached_hash == file_hash:
+                payload = pickle.load(f)
+            # Support only the current 3-tuple format (hash, version, data).
+            # Any other format (e.g. old 2-tuple) raises ValueError and falls
+            # through to the except block below, triggering a fresh import.
+            cached_hash, cached_version, data = payload
+            if cached_hash == file_hash and cached_version == current_version:
                 return data
-            # Hash mismatch – stale cache
+            # Hash or version mismatch – invalidate and signal re-import.
+            reason = (
+                "file changed"
+                if cached_hash != file_hash
+                else f"version {cached_version} → {current_version}"
+            )
+            print(
+                f"Cache invalidated for {os.path.basename(filepath)} ({reason}); re-importing mzML file."
+            )
             os.remove(cache_path)
             return None
         except Exception as e:
-            print(f"Cache load failed for {os.path.basename(filepath)}: {e}")
+            # Corrupt file, wrong tuple format from an older version, or any
+            # other error: delete the stale cache and return None so the caller
+            # re-parses the mzML file and writes a fresh cache.
+            print(
+                f"Cache load failed for {os.path.basename(filepath)}: {e}; re-importing mzML file."
+            )
             try:
                 os.remove(cache_path)
             except OSError:
@@ -93,12 +125,139 @@ class FileManager:
         cache_path = self._get_cache_path(filepath)
         try:
             file_hash = self._compute_file_hash(filepath)
+            current_version = self._get_software_version()
             with open(cache_path, "wb") as f:
-                pickle.dump((file_hash, data), f)
+                pickle.dump((file_hash, current_version, data), f)
         except Exception as e:
             print(f"Cache save failed for {os.path.basename(filepath)}: {e}")
 
     # ------------------------------------------------------------------
+
+    def _get_filter_string(self, spectrum) -> Optional[str]:
+        """Extract the filter string (MS:1000512) from a spectrum element."""
+        if hasattr(spectrum, "element") and spectrum.element is not None:
+            for elem in spectrum.element.iter():
+                if (
+                    elem.tag.endswith("cvParam")
+                    and elem.get("accession") == "MS:1000512"
+                ):
+                    return elem.get("value")
+        return None
+
+    def load_single_file(self, filepath: str) -> dict:
+        """Parse a single mzML file and return {"ms1": [...], "ms2": [...]}.
+
+        Checks the disk cache first.  If the cache is missing, stale (file
+        changed or software version changed), corrupt, or in an old format,
+        ``_load_from_cache`` returns ``None`` and the mzML file is re-parsed
+        from scratch.  The result is always written to a fresh cache file
+        before returning.
+        """
+        # Try disk cache first
+        cached = self._load_from_cache(filepath)
+        if cached is not None:
+            print(f"Loaded {os.path.basename(filepath)} from cache.")
+            return cached
+
+        print(f"Loading {os.path.basename(filepath)}...")
+        reader = pymzml.run.Reader(filepath)
+        ms1_spectra_data = []
+        ms2_spectra_data = []
+
+        for spectrum in reader:
+            spec_id = spectrum.ID
+            if spectrum.ms_level == 1:  # MS1 spectra
+                spectrum_data = {
+                    "scan_time": spectrum.scan_time_in_minutes(),
+                    "mz": spectrum.mz,
+                    "intensity": spectrum.i,
+                    "polarity": self._get_spectrum_polarity(spectrum),
+                    "scan_id": spec_id,
+                    "filter_string": self._get_filter_string(spectrum),
+                }
+                ms1_spectra_data.append(spectrum_data)
+            elif spectrum.ms_level == 2:  # MS2/MSMS spectra
+                try:
+                    precursor_mz = None
+                    precursor_intensity = 0
+                    if (
+                        hasattr(spectrum, "selected_precursors")
+                        and spectrum.selected_precursors
+                    ):
+                        precursor_info = spectrum.selected_precursors[0]
+                        if "mz" in precursor_info:
+                            precursor_mz = float(precursor_info["mz"])
+                        if "intensity" in precursor_info:
+                            try:
+                                precursor_intensity = float(precursor_info["intensity"])
+                            except:
+                                precursor_intensity = 0
+
+                    # Alternative method to get precursor m/z
+                    if precursor_mz is None and hasattr(spectrum, "element"):
+                        for elem in spectrum.element.iter():
+                            if elem.tag.endswith("precursorList"):
+                                for precursor in elem:
+                                    if precursor.tag.endswith("precursor"):
+                                        for selected_ion in precursor:
+                                            if selected_ion.tag.endswith(
+                                                "selectedIonList"
+                                            ):
+                                                for ion in selected_ion:
+                                                    for cv_param in ion:
+                                                        if (
+                                                            cv_param.tag.endswith(
+                                                                "cvParam"
+                                                            )
+                                                            and cv_param.get(
+                                                                "accession"
+                                                            )
+                                                            == "MS:1000744"
+                                                        ):  # selected ion m/z
+                                                            precursor_mz = float(
+                                                                cv_param.get("value")
+                                                            )
+                                                        elif (
+                                                            cv_param.tag.endswith(
+                                                                "cvParam"
+                                                            )
+                                                            and cv_param.get(
+                                                                "accession"
+                                                            )
+                                                            == "MS:1000042"
+                                                        ):  # peak intensity
+                                                            try:
+                                                                precursor_intensity = (
+                                                                    float(
+                                                                        cv_param.get(
+                                                                            "value"
+                                                                        )
+                                                                    )
+                                                                )
+                                                            except:
+                                                                precursor_intensity = 0
+
+                    spectrum_data = {
+                        "scan_time": spectrum.scan_time_in_minutes(),
+                        "mz": spectrum.mz,
+                        "intensity": spectrum.i,
+                        "polarity": self._get_spectrum_polarity(spectrum),
+                        "precursor_mz": precursor_mz,
+                        "precursor_intensity": precursor_intensity,
+                        "scan_id": spec_id
+                        if spec_id is not None
+                        else f"RT_{spectrum.scan_time_in_minutes():.2f}",
+                        "filter_string": self._get_filter_string(spectrum),
+                    }
+                    ms2_spectra_data.append(spectrum_data)
+                except Exception as e:
+                    print(f"Error processing MS2 spectrum: {e}")
+                    continue
+
+        reader.close()
+        data = {"ms1": ms1_spectra_data, "ms2": ms2_spectra_data}
+        self._save_to_cache(filepath, data)
+        return data
 
     def _load_all_files_to_memory(self):
         """Load all mzML files into memory cache (for use without progress dialog)"""
@@ -111,118 +270,7 @@ class FileManager:
         for _, row in self.files_data.iterrows():
             filepath = row["Filepath"]
             try:
-                # Try disk cache first
-                cached = self._load_from_cache(filepath)
-                if cached is not None:
-                    print(f"Loaded {os.path.basename(filepath)} from cache.")
-                    self.cached_data[filepath] = cached
-                    continue
-
-                print(f"Loading {os.path.basename(filepath)}...")
-                # Read all spectra into memory
-                reader = pymzml.run.Reader(filepath)
-                ms1_spectra_data = []
-                ms2_spectra_data = []
-
-                for spectrum in reader:
-                    if spectrum.ms_level == 1:  # MS1 spectra
-                        spectrum_data = {
-                            "scan_time": spectrum.scan_time_in_minutes(),
-                            "mz": spectrum.mz,
-                            "intensity": spectrum.i,
-                            "polarity": self._get_spectrum_polarity(spectrum),
-                        }
-                        ms1_spectra_data.append(spectrum_data)
-                    elif spectrum.ms_level == 2:  # MS2/MSMS spectra
-                        try:
-                            # Get precursor information
-                            precursor_mz = None
-                            precursor_intensity = 0
-                            if (
-                                hasattr(spectrum, "selected_precursors")
-                                and spectrum.selected_precursors
-                            ):
-                                precursor_info = spectrum.selected_precursors[0]
-                                if "mz" in precursor_info:
-                                    precursor_mz = float(precursor_info["mz"])
-                                if "intensity" in precursor_info:
-                                    try:
-                                        precursor_intensity = float(
-                                            precursor_info["intensity"]
-                                        )
-                                    except:
-                                        precursor_intensity = 0
-
-                            # Alternative method to get precursor m/z
-                            if precursor_mz is None and hasattr(spectrum, "element"):
-                                for elem in spectrum.element.iter():
-                                    if elem.tag.endswith("precursorList"):
-                                        for precursor in elem:
-                                            if precursor.tag.endswith("precursor"):
-                                                for selected_ion in precursor:
-                                                    if selected_ion.tag.endswith(
-                                                        "selectedIonList"
-                                                    ):
-                                                        for ion in selected_ion:
-                                                            for cv_param in ion:
-                                                                if (
-                                                                    cv_param.tag.endswith(
-                                                                        "cvParam"
-                                                                    )
-                                                                    and cv_param.get(
-                                                                        "accession"
-                                                                    )
-                                                                    == "MS:1000744"
-                                                                ):  # selected ion m/z
-                                                                    precursor_mz = float(
-                                                                        cv_param.get(
-                                                                            "value"
-                                                                        )
-                                                                    )
-                                                                elif (
-                                                                    cv_param.tag.endswith(
-                                                                        "cvParam"
-                                                                    )
-                                                                    and cv_param.get(
-                                                                        "accession"
-                                                                    )
-                                                                    == "MS:1000042"
-                                                                ):  # peak intensity
-                                                                    try:
-                                                                        precursor_intensity = float(
-                                                                            cv_param.get(
-                                                                                "value"
-                                                                            )
-                                                                        )
-                                                                    except:
-                                                                        precursor_intensity = 0
-
-                            spectrum_data = {
-                                "scan_time": spectrum.scan_time_in_minutes(),
-                                "mz": spectrum.mz,
-                                "intensity": spectrum.i,
-                                "polarity": self._get_spectrum_polarity(spectrum),
-                                "precursor_mz": precursor_mz,
-                                "precursor_intensity": precursor_intensity,
-                                "scan_id": spectrum.ID
-                                if hasattr(spectrum, "ID")
-                                else f"RT_{spectrum.scan_time_in_minutes():.2f}",
-                            }
-                            ms2_spectra_data.append(spectrum_data)
-                        except Exception as e:
-                            print(f"Error processing MS2 spectrum: {e}")
-                            continue
-
-                # Store both MS1 and MS2 data
-                self.cached_data[filepath] = {
-                    "ms1": ms1_spectra_data,
-                    "ms2": ms2_spectra_data,
-                }
-                reader.close()
-
-                # Persist to disk cache for future runs
-                self._save_to_cache(filepath, self.cached_data[filepath])
-
+                self.cached_data[filepath] = self.load_single_file(filepath)
             except Exception as e:
                 print(f"Error loading {filepath} to memory: {str(e)}")
 
@@ -489,8 +537,6 @@ class FileManager:
         sorted_data = display_data[existing_columns].copy()
         if sort_keys:
             # Use natsorted index for natural ordering
-            from natsort import natsort_keygen
-
             nk = natsort_keygen()
             sorted_data = sorted_data.iloc[
                 index_natsorted(zip(*(sorted_data[k].astype(str) for k in sort_keys)))
@@ -820,8 +866,6 @@ class FileManager:
         Returns:
             Tuple of (abundance, unit) if found, None otherwise
         """
-        import json
-
         file_row = self.files_data[self.files_data["Filepath"] == filepath]
         if file_row.empty:
             return None

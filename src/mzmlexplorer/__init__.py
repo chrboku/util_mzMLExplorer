@@ -9,7 +9,7 @@ __description__ = "GUI application for mzML LC-HRMS file visualization"
 from .main import main, MzMLExplorerMainWindow
 from .file_manager import FileManager
 from .compound_manager import CompoundManager
-from .eic_window import EICWindow
+from .windows import EICWindow
 from .utils import calculate_mz_from_formula, calculate_molecular_mass
 
 __all__ = [

@@ -50,7 +50,7 @@ import pymzml
 import numpy as np
 from .compound_manager import CompoundManager
 from .file_manager import FileManager
-from .eic_window import EICWindow
+from .windows import EICWindow
 from .compound_import_dialog import (
     CompoundImportDialog,
     validate_formula_smiles_agreement,

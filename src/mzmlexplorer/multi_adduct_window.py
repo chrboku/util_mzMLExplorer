@@ -451,7 +451,7 @@ class InteractiveEICWidget(QWidget):
         """Open the individual EIC viewer for this adduct"""
         try:
             # Import here to avoid circular imports
-            from .eic_window import EICWindow
+            from .windows import EICWindow
 
             # Ensure the standalone EIC window starts with the same visual baseline
             # as the multi-adduct view (no group time shifting by default).

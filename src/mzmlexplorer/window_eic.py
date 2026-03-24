@@ -40,6 +40,7 @@ from PyQt6.QtWidgets import (
     QTabWidget,
     QApplication,
     QSizePolicy,
+    QSlider,
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QPointF, QMargins
 from PyQt6.QtCharts import QChart, QChartView, QLineSeries, QValueAxis
@@ -104,9 +105,7 @@ class InteractiveChartView(QChartView):
             }
         """)
         self.hover_label.hide()
-        self.hover_label.setAttribute(
-            Qt.WidgetAttribute.WA_TransparentForMouseEvents
-        )  # Don't interfere with mouse events
+        self.hover_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)  # Don't interfere with mouse events
 
         # Disable default rubber band
         self.setRubberBand(QChartView.RubberBand.NoRubberBand)
@@ -162,12 +161,8 @@ class InteractiveChartView(QChartView):
             rel_y = max(0.0, min(1.0, rel_y))
 
             # Convert to data coordinates
-            x_range = (
-                self.interaction_start_x_range[1] - self.interaction_start_x_range[0]
-            )
-            y_range = (
-                self.interaction_start_y_range[1] - self.interaction_start_y_range[0]
-            )
+            x_range = self.interaction_start_x_range[1] - self.interaction_start_x_range[0]
+            y_range = self.interaction_start_y_range[1] - self.interaction_start_y_range[0]
 
             self.zoom_anchor_x = self.interaction_start_x_range[0] + rel_x * x_range
             self.zoom_anchor_y = self.interaction_start_y_range[1] - rel_y * y_range
@@ -179,16 +174,9 @@ class InteractiveChartView(QChartView):
     def mouseMoveEvent(self, event: QMouseEvent):
         """Handle mouse move events"""
         # Check if we're tracking a potential right-click for context menu
-        if (
-            self.right_click_pending
-            and self.mouse_press_pos is not None
-            and event.buttons() & Qt.MouseButton.RightButton
-        ):
+        if self.right_click_pending and self.mouse_press_pos is not None and event.buttons() & Qt.MouseButton.RightButton:
             current_pos = event.position().toPoint()
-            distance = (
-                (current_pos.x() - self.mouse_press_pos.x()) ** 2
-                + (current_pos.y() - self.mouse_press_pos.y()) ** 2
-            ) ** 0.5
+            distance = ((current_pos.x() - self.mouse_press_pos.x()) ** 2 + (current_pos.y() - self.mouse_press_pos.y()) ** 2) ** 0.5
 
             # If movement exceeds threshold, it's a drag - cancel context menu and start zooming
             if distance > self.drag_threshold:
@@ -212,14 +200,8 @@ class InteractiveChartView(QChartView):
                 rel_x = max(0.0, min(1.0, rel_x))
                 rel_y = max(0.0, min(1.0, rel_y))
 
-                x_range = (
-                    self.interaction_start_x_range[1]
-                    - self.interaction_start_x_range[0]
-                )
-                y_range = (
-                    self.interaction_start_y_range[1]
-                    - self.interaction_start_y_range[0]
-                )
+                x_range = self.interaction_start_x_range[1] - self.interaction_start_x_range[0]
+                y_range = self.interaction_start_y_range[1] - self.interaction_start_y_range[0]
                 self.zoom_anchor_x = self.interaction_start_x_range[0] + rel_x * x_range
                 self.zoom_anchor_y = self.interaction_start_y_range[1] - rel_y * y_range
 
@@ -268,9 +250,7 @@ class InteractiveChartView(QChartView):
                 sample_name = series_data.get("name", "Unknown")
 
                 # Find closest point on this series
-                min_distance = self._find_closest_distance_to_series(
-                    mouse_x, mouse_y, points
-                )
+                min_distance = self._find_closest_distance_to_series(mouse_x, mouse_y, points)
 
                 if min_distance < closest_distance:
                     closest_distance = min_distance
@@ -301,9 +281,7 @@ class InteractiveChartView(QChartView):
 
                 # Position the label near the mouse cursor
                 label_pos = event.position().toPoint()
-                label_pos.setX(
-                    label_pos.x() + 10
-                )  # Offset to avoid covering the cursor
+                label_pos.setX(label_pos.x() + 10)  # Offset to avoid covering the cursor
                 label_pos.setY(label_pos.y() - 10)
 
                 # Ensure label stays within widget bounds
@@ -350,16 +328,8 @@ class InteractiveChartView(QChartView):
             return float("inf")
 
         # Get axes to normalize distances
-        x_axis = (
-            self.chart().axes(Qt.Orientation.Horizontal)[0]
-            if self.chart().axes(Qt.Orientation.Horizontal)
-            else None
-        )
-        y_axis = (
-            self.chart().axes(Qt.Orientation.Vertical)[0]
-            if self.chart().axes(Qt.Orientation.Vertical)
-            else None
-        )
+        x_axis = self.chart().axes(Qt.Orientation.Horizontal)[0] if self.chart().axes(Qt.Orientation.Horizontal) else None
+        y_axis = self.chart().axes(Qt.Orientation.Vertical)[0] if self.chart().axes(Qt.Orientation.Vertical) else None
 
         if not x_axis or not y_axis:
             return float("inf")
@@ -390,9 +360,7 @@ class InteractiveChartView(QChartView):
             norm_y2 = (y2 - y_axis.min()) / y_range
 
             # Calculate distance from point to line segment
-            distance = self._point_to_line_segment_distance(
-                norm_mouse_x, norm_mouse_y, norm_x1, norm_y1, norm_x2, norm_y2
-            )
+            distance = self._point_to_line_segment_distance(norm_mouse_x, norm_mouse_y, norm_x1, norm_y1, norm_x2, norm_y2)
             min_distance = min(min_distance, distance)
 
         return min_distance
@@ -445,10 +413,7 @@ class InteractiveChartView(QChartView):
                 time_diff = current_time - self.mouse_press_time
 
                 release_pos = event.position().toPoint()
-                distance = (
-                    (release_pos.x() - self.mouse_press_pos.x()) ** 2
-                    + (release_pos.y() - self.mouse_press_pos.y()) ** 2
-                ) ** 0.5
+                distance = ((release_pos.x() - self.mouse_press_pos.x()) ** 2 + (release_pos.y() - self.mouse_press_pos.y()) ** 2) ** 0.5
 
                 # Show context menu only if:
                 # 1. Time between press and release is less than timeout
@@ -457,9 +422,7 @@ class InteractiveChartView(QChartView):
                     plot_area = self.chart().plotArea()
                     if plot_area.contains(event.position()):
                         # Convert mouse position to data coordinates
-                        rel_x = (
-                            event.position().x() - plot_area.left()
-                        ) / plot_area.width()
+                        rel_x = (event.position().x() - plot_area.left()) / plot_area.width()
 
                         # Get X-axis range and calculate RT value
                         x_axis = self.chart().axes(Qt.Orientation.Horizontal)[0]
@@ -504,9 +467,7 @@ class InteractiveChartView(QChartView):
 
         # Calculate new ranges (negative because we want to move the data, not the view)
         x_offset = -delta_x * x_per_pixel
-        y_offset = (
-            delta_y * y_per_pixel
-        )  # Positive because Y axis is inverted in screen coordinates
+        y_offset = delta_y * y_per_pixel  # Positive because Y axis is inverted in screen coordinates
 
         new_x_min = self.interaction_start_x_range[0] + x_offset
         new_x_max = self.interaction_start_x_range[1] + x_offset
@@ -531,21 +492,15 @@ class InteractiveChartView(QChartView):
         zoom_sensitivity = 0.005  # Adjust this to change zoom sensitivity
 
         x_zoom_factor = 1.0 - (delta_x * zoom_sensitivity)
-        y_zoom_factor = 1.0 + (
-            delta_y * zoom_sensitivity
-        )  # Inverted for intuitive behavior
+        y_zoom_factor = 1.0 + (delta_y * zoom_sensitivity)  # Inverted for intuitive behavior
 
         # Clamp zoom factors to reasonable limits
         x_zoom_factor = max(0.1, min(10.0, x_zoom_factor))
         y_zoom_factor = max(0.1, min(10.0, y_zoom_factor))
 
         # Calculate new ranges anchored at the mouse click position
-        original_x_range = (
-            self.interaction_start_x_range[1] - self.interaction_start_x_range[0]
-        )
-        original_y_range = (
-            self.interaction_start_y_range[1] - self.interaction_start_y_range[0]
-        )
+        original_x_range = self.interaction_start_x_range[1] - self.interaction_start_x_range[0]
+        original_y_range = self.interaction_start_y_range[1] - self.interaction_start_y_range[0]
 
         new_x_range = original_x_range * x_zoom_factor
         new_y_range = original_y_range * y_zoom_factor
@@ -672,12 +627,7 @@ class EICWindow(QWidget):
         super().__init__(parent)
 
         # Configure as independent window
-        self.setWindowFlags(
-            Qt.WindowType.Window
-            | Qt.WindowType.WindowCloseButtonHint
-            | Qt.WindowType.WindowMinimizeButtonHint
-            | Qt.WindowType.WindowMaximizeButtonHint
-        )
+        self.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.WindowCloseButtonHint | Qt.WindowType.WindowMinimizeButtonHint | Qt.WindowType.WindowMaximizeButtonHint)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
 
         self.compound_data = compound_data
@@ -717,9 +667,7 @@ class EICWindow(QWidget):
                 temp_compound_data = pd.DataFrame([compound_data])
                 temp_manager.compounds_data = temp_compound_data
 
-                self.target_mz = temp_manager.calculate_compound_mz(
-                    compound_data["Name"], adduct
-                )
+                self.target_mz = temp_manager.calculate_compound_mz(compound_data["Name"], adduct)
 
                 if self.target_mz is None:
                     raise ValueError("Could not calculate m/z value")
@@ -727,9 +675,7 @@ class EICWindow(QWidget):
                 self.polarity = None  # Polarity not available in fallback mode
 
             except Exception as e:
-                QMessageBox.critical(
-                    self, "Error", f"Failed to calculate m/z: {str(e)}"
-                )
+                QMessageBox.critical(self, "Error", f"Failed to calculate m/z: {str(e)}")
                 self.target_mz = 0.0
                 self.polarity = None
 
@@ -811,6 +757,18 @@ class EICWindow(QWidget):
         self.reset_view_btn.setEnabled(False)  # Disabled until data is loaded
         layout.addWidget(self.reset_view_btn)
 
+        # Individual axis reset buttons
+        axis_reset_layout = QHBoxLayout()
+        self.reset_x_btn = QPushButton("Reset X-axis")
+        self.reset_x_btn.clicked.connect(self.reset_x_axis)
+        self.reset_x_btn.setEnabled(False)
+        axis_reset_layout.addWidget(self.reset_x_btn)
+        self.reset_y_btn = QPushButton("Reset Y-axis")
+        self.reset_y_btn.clicked.connect(self.reset_y_axis)
+        self.reset_y_btn.setEnabled(False)
+        axis_reset_layout.addWidget(self.reset_y_btn)
+        layout.addLayout(axis_reset_layout)
+
         # Optional scatter plot button (lazy-loads scatter data when first shown)
         self.scatter_toggle_btn = QPushButton("Show 2D Scatter Plot")
         self.scatter_toggle_btn.clicked.connect(self.toggle_scatter_plot)
@@ -835,9 +793,7 @@ class EICWindow(QWidget):
 
         # Create a vertical splitter for EIC chart and boxplot
         self.eic_boxplot_splitter = QSplitter(Qt.Orientation.Vertical)
-        self.eic_boxplot_splitter.setChildrenCollapsible(
-            False
-        )  # Prevent complete collapse
+        self.eic_boxplot_splitter.setChildrenCollapsible(False)  # Prevent complete collapse
 
         # Main chart (EIC)
         self.chart_view = self.create_chart()
@@ -850,9 +806,7 @@ class EICWindow(QWidget):
         # Set initial sizes (75% EIC, 25% boxplot)
         self.eic_boxplot_splitter.setSizes([750, 250])
         self.eic_boxplot_splitter.setStretchFactor(0, 1)  # EIC chart is stretchable
-        self.eic_boxplot_splitter.setStretchFactor(
-            1, 1
-        )  # Boxplot adapts with available space
+        self.eic_boxplot_splitter.setStretchFactor(1, 1)  # Boxplot adapts with available space
 
         # Add the splitter to the main layout
         layout.addWidget(self.eic_boxplot_splitter)
@@ -866,30 +820,18 @@ class EICWindow(QWidget):
 
         # Determine compound info display
         formula_info = ""
-        if (
-            "ChemicalFormula" in self.compound_data
-            and self.compound_data["ChemicalFormula"]
-        ):
-            formula_info = (
-                f"<b>Formula:</b> {self.compound_data['ChemicalFormula']}<br>"
-            )
+        if "ChemicalFormula" in self.compound_data and self.compound_data["ChemicalFormula"]:
+            formula_info = f"<b>Formula:</b> {self.compound_data['ChemicalFormula']}<br>"
         elif "Mass" in self.compound_data and self.compound_data["Mass"]:
             formula_info = f"<b>Mass:</b> {self.compound_data['Mass']} Da<br>"
 
         # Compound info
-        compound_info = QLabel(
-            f"<b>Compound:</b> {self.compound_data['Name']}<br>"
-            f"{formula_info}"
-            f"<b>Adduct:</b> {self.adduct}<br>"
-            f"<b>m/z:</b> {format_mz(self.target_mz)}"
-        )
+        compound_info = QLabel(f"<b>Compound:</b> {self.compound_data['Name']}<br>{formula_info}<b>Adduct:</b> {self.adduct}<br><b>m/z:</b> {format_mz(self.target_mz)}")
         layout.addWidget(compound_info)
 
         # RT info
         rt_info = QLabel(
-            f"<b>RT:</b> {format_retention_time(self.compound_data['RT_min'])}<br>"
-            f"<b>RT Window:</b> {format_retention_time(self.compound_data['RT_start_min'])} - "
-            f"{format_retention_time(self.compound_data['RT_end_min'])}"
+            f"<b>RT:</b> {format_retention_time(self.compound_data['RT_min'])}<br><b>RT Window:</b> {format_retention_time(self.compound_data['RT_start_min'])} - {format_retention_time(self.compound_data['RT_end_min'])}"
         )
         layout.addWidget(rt_info)
 
@@ -951,10 +893,13 @@ class EICWindow(QWidget):
 
         return container
 
-    def create_control_panel(self) -> QGroupBox:
+    def create_control_panel(self) -> CollapsibleBox:
         """Create the control panel"""
-        group = QGroupBox("Extraction Parameters")
-        layout = QFormLayout(group)
+        group = CollapsibleBox("Extraction Parameters")
+        inner = QWidget()
+        layout = QFormLayout(inner)
+        group.add_widget(inner)
+        group.set_expanded(True)
 
         # EIC calculation method
         self.eic_method_combo = QComboBox()
@@ -963,24 +908,18 @@ class EICWindow(QWidget):
         idx = self.eic_method_combo.findText(default_eic_method)
         self.eic_method_combo.setCurrentIndex(idx if idx >= 0 else 0)
         self.eic_method_combo.currentTextChanged.connect(self.update_plot)
-        self.eic_method_combo.currentTextChanged.connect(
-            lambda v: self._notify_setting("eic_method", v)
-        )
+        self.eic_method_combo.currentTextChanged.connect(lambda v: self._notify_setting("eic_method", v))
         layout.addRow("EIC Method:", self.eic_method_combo)
 
         # m/z tolerance in ppm (primary)
         self.mz_tolerance_ppm_spin = QDoubleSpinBox()
         self.mz_tolerance_ppm_spin.setRange(0.1, 10000.0)
-        self.mz_tolerance_ppm_spin.setValue(
-            self.defaults["mz_tolerance_ppm"]
-        )  # Use default
+        self.mz_tolerance_ppm_spin.setValue(self.defaults["mz_tolerance_ppm"])  # Use default
         self.mz_tolerance_ppm_spin.setSuffix(" ppm")
         self.mz_tolerance_ppm_spin.setDecimals(1)
         self.mz_tolerance_ppm_spin.setSingleStep(1.0)
         self.mz_tolerance_ppm_spin.valueChanged.connect(self.update_mz_tolerance_da)
-        self.mz_tolerance_ppm_spin.valueChanged.connect(
-            lambda v: self._notify_setting("mz_tolerance_ppm", v)
-        )
+        self.mz_tolerance_ppm_spin.valueChanged.connect(lambda v: self._notify_setting("mz_tolerance_ppm", v))
         layout.addRow("m/z Tolerance (ppm):", self.mz_tolerance_ppm_spin)
 
         # m/z tolerance in Da (linked to ppm)
@@ -998,9 +937,7 @@ class EICWindow(QWidget):
         # Grouping column selector
         self.grouping_column_combo = QComboBox()
         self._populate_grouping_columns()
-        self.grouping_column_combo.currentTextChanged.connect(
-            self.on_grouping_column_changed
-        )
+        self.grouping_column_combo.currentTextChanged.connect(self.on_grouping_column_changed)
         layout.addRow("Group by Column:", self.grouping_column_combo)
 
         # Separation mode
@@ -1015,10 +952,7 @@ class EICWindow(QWidget):
         )
         default_mode = self.defaults.get("separation_mode", "By group")
         # Back-compat: translate old boolean defaults if present
-        if (
-            "separate_groups" in self.defaults
-            and "separation_mode" not in self.defaults
-        ):
+        if "separate_groups" in self.defaults and "separation_mode" not in self.defaults:
             default_mode = "By group" if self.defaults["separate_groups"] else "None"
         idx = self.separation_mode_combo.findText(default_mode)
         if idx >= 0:
@@ -1034,9 +968,7 @@ class EICWindow(QWidget):
         self.rt_shift_spin.setDecimals(1)
         self.rt_shift_spin.setEnabled(True)  # Always enabled
         self.rt_shift_spin.valueChanged.connect(self.update_plot)
-        self.rt_shift_spin.valueChanged.connect(
-            lambda v: self._notify_setting("rt_shift_min", v)
-        )
+        self.rt_shift_spin.valueChanged.connect(lambda v: self._notify_setting("rt_shift_min", v))
         layout.addRow("Group RT Shift:", self.rt_shift_spin)
 
         # RT cropping option
@@ -1058,10 +990,36 @@ class EICWindow(QWidget):
         idx = self.legend_position_combo.findText(default_legend)
         self.legend_position_combo.setCurrentIndex(idx if idx >= 0 else 0)
         self.legend_position_combo.currentTextChanged.connect(self.update_plot)
-        self.legend_position_combo.currentTextChanged.connect(
-            lambda v: self._notify_setting("legend_position", v)
-        )
+        self.legend_position_combo.currentTextChanged.connect(lambda v: self._notify_setting("legend_position", v))
         layout.addRow("Legend:", self.legend_position_combo)
+
+        # Logarithmic Y-axis option
+        self.log_y_cb = QCheckBox("Log\u2081\u2080 Y-axis")
+        self.log_y_cb.setChecked(False)
+        self.log_y_cb.stateChanged.connect(self.update_plot)
+        layout.addRow(self.log_y_cb)
+
+        # Ridge plot option
+        self.ridge_plot_cb = QCheckBox("Ridge plot")
+        self.ridge_plot_cb.setChecked(False)
+        self.ridge_plot_cb.stateChanged.connect(self._on_ridge_plot_toggled)
+        layout.addRow(self.ridge_plot_cb)
+
+        # Ridge increment slider (hidden until ridge plot is enabled)
+        self._ridge_increment_max = 1.0
+        self.ridge_increment_widget = QWidget()
+        ridge_layout = QHBoxLayout(self.ridge_increment_widget)
+        ridge_layout.setContentsMargins(0, 0, 0, 0)
+        self.ridge_increment_slider = QSlider(Qt.Orientation.Horizontal)
+        self.ridge_increment_slider.setRange(0, 10000)
+        self.ridge_increment_slider.setValue(1000)  # 10% default; updated when data loads
+        self.ridge_increment_slider.valueChanged.connect(self._on_ridge_slider_changed)
+        ridge_layout.addWidget(self.ridge_increment_slider)
+        self.ridge_increment_label = QLabel("0.00e+00")
+        self.ridge_increment_label.setMinimumWidth(72)
+        ridge_layout.addWidget(self.ridge_increment_label)
+        self.ridge_increment_widget.setVisible(False)
+        layout.addRow("Increment:", self.ridge_increment_widget)
 
         return group
 
@@ -1073,15 +1031,11 @@ class EICWindow(QWidget):
         # Create the table
         self.group_settings_table = QTableWidget()
         self.group_settings_table.setColumnCount(4)
-        self.group_settings_table.setHorizontalHeaderLabels(
-            ["Scaling", "Plot", "Neg.", "Line Width"]
-        )
+        self.group_settings_table.setHorizontalHeaderLabels(["Scaling", "Plot", "Neg.", "Line Width"])
 
         # Configure table appearance
         self.group_settings_table.setAlternatingRowColors(True)
-        self.group_settings_table.horizontalHeader().setSectionResizeMode(
-            QHeaderView.ResizeMode.Interactive
-        )
+        self.group_settings_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         self.group_settings_table.horizontalHeader().setStretchLastSection(False)
         self.group_settings_table.verticalHeader().setVisible(True)
         self.group_settings_table.setMaximumHeight(800)
@@ -1110,15 +1064,10 @@ class EICWindow(QWidget):
         # Get unique groups from the entire sample matrix (files_data)
         groups = set()
 
-        if (
-            hasattr(self.file_manager, "files_data")
-            and self.file_manager.files_data is not None
-        ):
+        if hasattr(self.file_manager, "files_data") and self.file_manager.files_data is not None:
             # Get all possible group values from the entire sample matrix
             if self.grouping_column in self.file_manager.files_data.columns:
-                group_values = (
-                    self.file_manager.files_data[self.grouping_column].dropna().unique()
-                )
+                group_values = self.file_manager.files_data[self.grouping_column].dropna().unique()
                 for value in group_values:
                     groups.add(str(value))
 
@@ -1164,21 +1113,13 @@ class EICWindow(QWidget):
             scaling_spin.setValue(self.group_settings[group]["scaling"])
             scaling_spin.setDecimals(5)
             scaling_spin.setSingleStep(0.1)
-            scaling_spin.valueChanged.connect(
-                lambda value, g=group: self.on_group_setting_changed(
-                    g, "scaling", value
-                )
-            )
+            scaling_spin.valueChanged.connect(lambda value, g=group: self.on_group_setting_changed(g, "scaling", value))
             table.setCellWidget(row, 0, scaling_spin)
 
             # Column 1: Plot checkbox
             plot_checkbox = QCheckBox()
             plot_checkbox.setChecked(self.group_settings[group]["plot"])
-            plot_checkbox.stateChanged.connect(
-                lambda state, g=group: self.on_group_setting_changed(
-                    g, "plot", state == Qt.CheckState.Checked.value
-                )
-            )
+            plot_checkbox.stateChanged.connect(lambda state, g=group: self.on_group_setting_changed(g, "plot", state == Qt.CheckState.Checked.value))
             # Center the checkbox
             checkbox_widget = QWidget()
             checkbox_layout = QHBoxLayout(checkbox_widget)
@@ -1190,11 +1131,7 @@ class EICWindow(QWidget):
             # Column 2: Negative intensities checkbox
             negative_checkbox = QCheckBox()
             negative_checkbox.setChecked(self.group_settings[group]["negative"])
-            negative_checkbox.stateChanged.connect(
-                lambda state, g=group: self.on_group_setting_changed(
-                    g, "negative", state == Qt.CheckState.Checked.value
-                )
-            )
+            negative_checkbox.stateChanged.connect(lambda state, g=group: self.on_group_setting_changed(g, "negative", state == Qt.CheckState.Checked.value))
             # Center the checkbox
             neg_checkbox_widget = QWidget()
             neg_checkbox_layout = QHBoxLayout(neg_checkbox_widget)
@@ -1209,11 +1146,7 @@ class EICWindow(QWidget):
             width_spin.setValue(self.group_settings[group]["line_width"])
             width_spin.setDecimals(1)
             width_spin.setSingleStep(0.5)
-            width_spin.valueChanged.connect(
-                lambda value, g=group: self.on_group_setting_changed(
-                    g, "line_width", value
-                )
-            )
+            width_spin.valueChanged.connect(lambda value, g=group: self.on_group_setting_changed(g, "line_width", value))
             table.setCellWidget(row, 3, width_spin)
 
     def _populate_grouping_columns(self):
@@ -1225,9 +1158,7 @@ class EICWindow(QWidget):
         if not files_data.empty:
             # Exclude system columns that shouldn't be used for grouping
             exclude_columns = {"Filepath", "filename"}
-            available_columns = [
-                col for col in files_data.columns if col not in exclude_columns
-            ]
+            available_columns = [col for col in files_data.columns if col not in exclude_columns]
 
             # Sort columns with 'group' and 'color' first if they exist
             priority_columns = []
@@ -1273,15 +1204,11 @@ class EICWindow(QWidget):
         # Tab 1: Boxplot
         self.boxplot_figure = Figure(figsize=(10, 3))
         self.boxplot_canvas = FigureCanvas(self.boxplot_figure)
-        self.boxplot_canvas.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
-        )
+        self.boxplot_canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.boxplot_canvas.setMinimumSize(0, 0)
         self.boxplot_widget.addTab(self.boxplot_canvas, "Boxplot peak areas")
 
-        self.boxplot_widget.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
-        )
+        self.boxplot_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
         # Tab 2: Peak Area Table
         peak_area_tab = QWidget()
@@ -1304,20 +1231,14 @@ class EICWindow(QWidget):
         # Peak area table
         self.peak_area_table = QTableWidget()
         self.peak_area_table.setColumnCount(3)
-        self.peak_area_table.setHorizontalHeaderLabels(
-            ["Group", "Sample Name", "Peak Area"]
-        )
+        self.peak_area_table.setHorizontalHeaderLabels(["Group", "Sample Name", "Peak Area"])
 
         # Configure table appearance
         self.peak_area_table.setAlternatingRowColors(True)
         self.peak_area_table.setSortingEnabled(True)
         self.peak_area_table.horizontalHeader().setStretchLastSection(False)
-        self.peak_area_table.horizontalHeader().setSectionResizeMode(
-            QHeaderView.ResizeMode.Interactive
-        )
-        self.peak_area_table.setSelectionBehavior(
-            QAbstractItemView.SelectionBehavior.SelectRows
-        )
+        self.peak_area_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        self.peak_area_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
 
         peak_area_layout.addWidget(self.peak_area_table)
 
@@ -1338,9 +1259,7 @@ class EICWindow(QWidget):
         summary_buttons_layout = QHBoxLayout()
 
         self.copy_summary_excel_btn = QPushButton("Copy as Excel Tab-delimited")
-        self.copy_summary_excel_btn.clicked.connect(
-            self._copy_summary_stats_table_excel
-        )
+        self.copy_summary_excel_btn.clicked.connect(self._copy_summary_stats_table_excel)
         summary_buttons_layout.addWidget(self.copy_summary_excel_btn)
 
         self.copy_summary_r_btn = QPushButton("Copy as R dataframe")
@@ -1373,12 +1292,8 @@ class EICWindow(QWidget):
         self.summary_stats_table.setAlternatingRowColors(True)
         self.summary_stats_table.setSortingEnabled(True)
         self.summary_stats_table.horizontalHeader().setStretchLastSection(False)
-        self.summary_stats_table.horizontalHeader().setSectionResizeMode(
-            QHeaderView.ResizeMode.Interactive
-        )
-        self.summary_stats_table.setSelectionBehavior(
-            QAbstractItemView.SelectionBehavior.SelectRows
-        )
+        self.summary_stats_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        self.summary_stats_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
 
         summary_stats_layout.addWidget(self.summary_stats_table)
 
@@ -1418,18 +1333,12 @@ class EICWindow(QWidget):
 
         self.mz_sample_table = QTableWidget()
         self.mz_sample_table.setColumnCount(6)
-        self.mz_sample_table.setHorizontalHeaderLabels(
-            ["Group", "Sample Name", "Mean m/z", "m/z P10", "m/z P90", "EIC Width (Da)"]
-        )
+        self.mz_sample_table.setHorizontalHeaderLabels(["Group", "Sample Name", "Mean m/z", "m/z P10", "m/z P90", "EIC Width (Da)"])
         self.mz_sample_table.setAlternatingRowColors(True)
         self.mz_sample_table.setSortingEnabled(True)
         self.mz_sample_table.horizontalHeader().setStretchLastSection(False)
-        self.mz_sample_table.horizontalHeader().setSectionResizeMode(
-            QHeaderView.ResizeMode.Interactive
-        )
-        self.mz_sample_table.setSelectionBehavior(
-            QAbstractItemView.SelectionBehavior.SelectRows
-        )
+        self.mz_sample_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        self.mz_sample_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
 
         # Compact appearance — stylesheet forces pixel font on every cell
         self.mz_sample_table.verticalHeader().setDefaultSectionSize(20)
@@ -1439,9 +1348,7 @@ class EICWindow(QWidget):
         # Centred bar delegate for ppm deviation visualisation (always shown)
         self._mz_ppm_bar_delegate_sample = CenteredBarDelegate(self.mz_sample_table)
         for _col in (2, 3, 4):
-            self.mz_sample_table.setItemDelegateForColumn(
-                _col, self._mz_ppm_bar_delegate_sample
-            )
+            self.mz_sample_table.setItemDelegateForColumn(_col, self._mz_ppm_bar_delegate_sample)
         self.boxplot_widget.addTab(mz_sample_tab, "m/z statistics per sample")
 
         # Tab 5: m/z statistics per group
@@ -1477,12 +1384,8 @@ class EICWindow(QWidget):
         self.mz_group_table.setAlternatingRowColors(True)
         self.mz_group_table.setSortingEnabled(True)
         self.mz_group_table.horizontalHeader().setStretchLastSection(False)
-        self.mz_group_table.horizontalHeader().setSectionResizeMode(
-            QHeaderView.ResizeMode.Interactive
-        )
-        self.mz_group_table.setSelectionBehavior(
-            QAbstractItemView.SelectionBehavior.SelectRows
-        )
+        self.mz_group_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        self.mz_group_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
 
         # Compact appearance — stylesheet forces pixel font on every cell
         self.mz_group_table.verticalHeader().setDefaultSectionSize(20)
@@ -1492,9 +1395,7 @@ class EICWindow(QWidget):
         # Centred bar delegate for ppm deviation visualisation (always shown)
         self._mz_ppm_bar_delegate_group = CenteredBarDelegate(self.mz_group_table)
         for _col in (1, 2, 3, 5, 6):
-            self.mz_group_table.setItemDelegateForColumn(
-                _col, self._mz_ppm_bar_delegate_group
-            )
+            self.mz_group_table.setItemDelegateForColumn(_col, self._mz_ppm_bar_delegate_group)
         self.boxplot_widget.addTab(mz_group_tab, "m/z statistics per group")
 
         # RT statistics per sample
@@ -1529,12 +1430,8 @@ class EICWindow(QWidget):
         self.rt_sample_table.setAlternatingRowColors(True)
         self.rt_sample_table.setSortingEnabled(True)
         self.rt_sample_table.horizontalHeader().setStretchLastSection(False)
-        self.rt_sample_table.horizontalHeader().setSectionResizeMode(
-            QHeaderView.ResizeMode.Interactive
-        )
-        self.rt_sample_table.setSelectionBehavior(
-            QAbstractItemView.SelectionBehavior.SelectRows
-        )
+        self.rt_sample_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        self.rt_sample_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.rt_sample_table.verticalHeader().setDefaultSectionSize(20)
         self.rt_sample_table.verticalHeader().setMinimumSectionSize(16)
         rt_sample_layout.addWidget(self.rt_sample_table)
@@ -1542,9 +1439,7 @@ class EICWindow(QWidget):
         # CenteredBarDelegate for RT-position columns (apex, left, right); BarDelegate for width
         self._rt_sample_centered_delegate = CenteredBarDelegate(self.rt_sample_table)
         for _col in (2, 3, 4):
-            self.rt_sample_table.setItemDelegateForColumn(
-                _col, self._rt_sample_centered_delegate
-            )
+            self.rt_sample_table.setItemDelegateForColumn(_col, self._rt_sample_centered_delegate)
         self._rt_sample_width_delegate = BarDelegate(self.rt_sample_table)
         self.rt_sample_table.setItemDelegateForColumn(5, self._rt_sample_width_delegate)
 
@@ -1580,21 +1475,15 @@ class EICWindow(QWidget):
         self.rt_group_table.setAlternatingRowColors(True)
         self.rt_group_table.setSortingEnabled(True)
         self.rt_group_table.horizontalHeader().setStretchLastSection(False)
-        self.rt_group_table.horizontalHeader().setSectionResizeMode(
-            QHeaderView.ResizeMode.Interactive
-        )
-        self.rt_group_table.setSelectionBehavior(
-            QAbstractItemView.SelectionBehavior.SelectRows
-        )
+        self.rt_group_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        self.rt_group_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.rt_group_table.verticalHeader().setDefaultSectionSize(20)
         self.rt_group_table.verticalHeader().setMinimumSectionSize(16)
         rt_group_layout.addWidget(self.rt_group_table)
 
         # CenteredBarDelegate for Mean Apex RT (col 1); BarDelegate for the rest (cols 2–6)
         self._rt_group_centered_delegate = CenteredBarDelegate(self.rt_group_table)
-        self.rt_group_table.setItemDelegateForColumn(
-            1, self._rt_group_centered_delegate
-        )
+        self.rt_group_table.setItemDelegateForColumn(1, self._rt_group_centered_delegate)
         self._rt_group_bar_delegates = []
         for _col in range(2, 7):
             _d = BarDelegate(self.rt_group_table)
@@ -1611,9 +1500,7 @@ class EICWindow(QWidget):
         similarity_buttons_layout = QHBoxLayout()
 
         self.copy_similarity_excel_btn = QPushButton("Copy as Excel Tab-delimited")
-        self.copy_similarity_excel_btn.clicked.connect(
-            self._copy_similarity_table_excel
-        )
+        self.copy_similarity_excel_btn.clicked.connect(self._copy_similarity_table_excel)
         similarity_buttons_layout.addWidget(self.copy_similarity_excel_btn)
 
         self.copy_similarity_r_btn = QPushButton("Copy as R matrix")
@@ -1626,15 +1513,9 @@ class EICWindow(QWidget):
         # Peak shape similarity table (as matrix)
         self.similarity_table = QTableWidget()
         self.similarity_table.setAlternatingRowColors(True)
-        self.similarity_table.setSortingEnabled(
-            False
-        )  # Disable sorting for matrix view
-        self.similarity_table.horizontalHeader().setSectionResizeMode(
-            QHeaderView.ResizeMode.Interactive
-        )
-        self.similarity_table.setSelectionBehavior(
-            QAbstractItemView.SelectionBehavior.SelectRows
-        )
+        self.similarity_table.setSortingEnabled(False)  # Disable sorting for matrix view
+        self.similarity_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        self.similarity_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
 
         # Compact appearance — stylesheet forces pixel font on every cell
         self.similarity_table.verticalHeader().setDefaultSectionSize(20)
@@ -1650,9 +1531,7 @@ class EICWindow(QWidget):
         # PCA plot
         self.pca_figure = Figure(figsize=(8, 6))
         self.pca_canvas = FigureCanvas(self.pca_figure)
-        self.pca_canvas.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
-        )
+        self.pca_canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.pca_canvas.setMinimumSize(0, 0)
 
         # Add navigation toolbar for zoom and pan
@@ -1673,34 +1552,23 @@ class EICWindow(QWidget):
         calibration_controls.addWidget(QLabel("Regression Model:"))
         self.regression_model_combo = QComboBox()
         self.regression_model_combo.addItems(["Linear", "Quadratic"])
-        self.regression_model_combo.currentTextChanged.connect(
-            self._update_calibration_plot
-        )
+        self.regression_model_combo.currentTextChanged.connect(self._update_calibration_plot)
         calibration_controls.addWidget(self.regression_model_combo)
 
         # Axis transformation selection
         calibration_controls.addWidget(QLabel("Axis Scale:"))
         self.axis_transform_combo = QComboBox()
         self.axis_transform_combo.addItems(["Linear", "Log2/Log2", "Log10/Log10"])
-        self.axis_transform_combo.currentTextChanged.connect(
-            self._update_calibration_plot
-        )
+        self.axis_transform_combo.currentTextChanged.connect(self._update_calibration_plot)
         calibration_controls.addWidget(self.axis_transform_combo)
 
         # Injection volume / dilution normalization
-        self.normalize_peak_area_checkbox = QCheckBox(
-            "Normalize peak areas by injection volume × dilution"
-        )
+        self.normalize_peak_area_checkbox = QCheckBox("Normalize peak areas by injection volume × dilution")
         self.normalize_peak_area_checkbox.setChecked(False)
         self.normalize_peak_area_checkbox.setToolTip(
-            "When checked, each peak area is multiplied by the sample's injection volume "
-            "and dilution factor before being used in regression fitting and prediction."
+            "When checked, each peak area is multiplied by the sample's injection volume and dilution factor before being used in regression fitting and prediction."
         )
-        self.normalize_peak_area_checkbox.stateChanged.connect(
-            lambda _: self._update_calibration_table(self._all_peak_data)
-            if hasattr(self, "_all_peak_data")
-            else None
-        )
+        self.normalize_peak_area_checkbox.stateChanged.connect(lambda _: self._update_calibration_table(self._all_peak_data) if hasattr(self, "_all_peak_data") else None)
         calibration_controls.addWidget(self.normalize_peak_area_checkbox)
 
         calibration_controls.addStretch()
@@ -1726,12 +1594,8 @@ class EICWindow(QWidget):
         )
         self.calibration_table.setAlternatingRowColors(True)
         self.calibration_table.horizontalHeader().setStretchLastSection(False)
-        self.calibration_table.horizontalHeader().setSectionResizeMode(
-            QHeaderView.ResizeMode.Interactive
-        )
-        self.calibration_table.setSelectionBehavior(
-            QAbstractItemView.SelectionBehavior.SelectRows
-        )
+        self.calibration_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        self.calibration_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.calibration_table.verticalHeader().setDefaultSectionSize(20)
         self.calibration_table.verticalHeader().setMinimumSectionSize(16)
         self.calibration_table.itemChanged.connect(self._on_calibration_table_changed)
@@ -1740,12 +1604,8 @@ class EICWindow(QWidget):
         # Calibration plot
         self.calibration_figure = Figure(figsize=(8, 6))
         self.calibration_canvas = FigureCanvas(self.calibration_figure)
-        self.calibration_canvas.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
-        )
-        self.calibration_toolbar = NavigationToolbar(
-            self.calibration_canvas, calibration_tab
-        )
+        self.calibration_canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.calibration_toolbar = NavigationToolbar(self.calibration_canvas, calibration_tab)
 
         calibration_plot_widget = QWidget()
         calibration_plot_layout = QVBoxLayout(calibration_plot_widget)
@@ -1763,9 +1623,7 @@ class EICWindow(QWidget):
         # Buttons for calculated abundances
         abundances_buttons_layout = QHBoxLayout()
         self.copy_abundances_excel_btn = QPushButton("Copy as Excel Tab-delimited")
-        self.copy_abundances_excel_btn.clicked.connect(
-            self._copy_abundances_table_excel
-        )
+        self.copy_abundances_excel_btn.clicked.connect(self._copy_abundances_table_excel)
         abundances_buttons_layout.addWidget(self.copy_abundances_excel_btn)
 
         self.copy_abundances_r_btn = QPushButton("Copy as R dataframe")
@@ -1795,12 +1653,8 @@ class EICWindow(QWidget):
         self.calculated_abundances_table.setAlternatingRowColors(True)
         self.calculated_abundances_table.setSortingEnabled(True)
         self.calculated_abundances_table.horizontalHeader().setStretchLastSection(False)
-        self.calculated_abundances_table.horizontalHeader().setSectionResizeMode(
-            QHeaderView.ResizeMode.Interactive
-        )
-        self.calculated_abundances_table.setSelectionBehavior(
-            QAbstractItemView.SelectionBehavior.SelectRows
-        )
+        self.calculated_abundances_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        self.calculated_abundances_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.calculated_abundances_table.verticalHeader().setDefaultSectionSize(20)
         self.calculated_abundances_table.verticalHeader().setMinimumSectionSize(16)
         calculated_abundances_layout.addWidget(self.calculated_abundances_table)
@@ -1812,9 +1666,7 @@ class EICWindow(QWidget):
 
         quant_summary_buttons = QHBoxLayout()
         self.copy_quant_summary_excel_btn = QPushButton("Copy as Excel Tab-delimited")
-        self.copy_quant_summary_excel_btn.clicked.connect(
-            self._copy_quant_summary_table_excel
-        )
+        self.copy_quant_summary_excel_btn.clicked.connect(self._copy_quant_summary_table_excel)
         quant_summary_buttons.addWidget(self.copy_quant_summary_excel_btn)
         self.copy_quant_summary_r_btn = QPushButton("Copy as R dataframe")
         self.copy_quant_summary_r_btn.clicked.connect(self._copy_quant_summary_table_r)
@@ -1824,18 +1676,12 @@ class EICWindow(QWidget):
 
         self.quant_summary_table = QTableWidget()
         self.quant_summary_table.setColumnCount(7)
-        self.quant_summary_table.setHorizontalHeaderLabels(
-            ["Group", "Min", "Perc_10", "Median", "Mean", "Perc_90", "Max"]
-        )
+        self.quant_summary_table.setHorizontalHeaderLabels(["Group", "Min", "Perc_10", "Median", "Mean", "Perc_90", "Max"])
         self.quant_summary_table.setAlternatingRowColors(True)
         self.quant_summary_table.setSortingEnabled(True)
         self.quant_summary_table.horizontalHeader().setStretchLastSection(False)
-        self.quant_summary_table.horizontalHeader().setSectionResizeMode(
-            QHeaderView.ResizeMode.Interactive
-        )
-        self.quant_summary_table.setSelectionBehavior(
-            QAbstractItemView.SelectionBehavior.SelectRows
-        )
+        self.quant_summary_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        self.quant_summary_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.quant_summary_table.verticalHeader().setDefaultSectionSize(20)
         self.quant_summary_table.verticalHeader().setMinimumSectionSize(16)
         quant_summary_layout.addWidget(self.quant_summary_table)
@@ -1870,6 +1716,7 @@ class EICWindow(QWidget):
         # Create vertical line
         line_series = QLineSeries()
         line_series.setName("")  # No legend entry
+        line_series.setProperty("is_decoration", True)
         line_series.append(line_x, y_min)
         line_series.append(line_x, y_max)
 
@@ -1903,9 +1750,7 @@ class EICWindow(QWidget):
             self.update_boundary_info()
             self.update_boxplot()
         elif hasattr(self, "boundary_info_label"):
-            self.boundary_info_label.setText(
-                f"Peak boundary: {line_x:.2f} min (add second boundary)"
-            )
+            self.boundary_info_label.setText(f"Peak boundary: {line_x:.2f} min (add second boundary)")
 
     def remove_peak_boundaries(self):
         """Remove all peak boundary lines"""
@@ -1958,16 +1803,8 @@ class EICWindow(QWidget):
             return
 
         # Calculate integrated areas for each sample
-        start_rt = (
-            min(self.peak_start_rt, self.peak_end_rt)
-            if self.peak_start_rt and self.peak_end_rt
-            else 0
-        )
-        end_rt = (
-            max(self.peak_start_rt, self.peak_end_rt)
-            if self.peak_start_rt and self.peak_end_rt
-            else 0
-        )
+        start_rt = min(self.peak_start_rt, self.peak_end_rt) if self.peak_start_rt and self.peak_end_rt else 0
+        end_rt = max(self.peak_start_rt, self.peak_end_rt) if self.peak_start_rt and self.peak_end_rt else 0
 
         if start_rt >= end_rt:
             return
@@ -2004,9 +1841,7 @@ class EICWindow(QWidget):
             original_rt = rt.copy()
 
             # Calculate integrated area with proper boundary handling
-            integrated_area = self._calculate_peak_area_with_boundaries(
-                original_rt, intensity, start_rt, end_rt
-            )
+            integrated_area = self._calculate_peak_area_with_boundaries(original_rt, intensity, start_rt, end_rt)
 
             # Per-sample apex and FWHM computation within the integration window
             sample_apex_rt = None
@@ -2045,9 +1880,7 @@ class EICWindow(QWidget):
                         # Linear interpolation between point i and i+1
                         dI = win_int[i + 1] - win_int[i]
                         if dI != 0:
-                            fwhm_left = win_rt[i] + (half_max - win_int[i]) / dI * (
-                                win_rt[i + 1] - win_rt[i]
-                            )
+                            fwhm_left = win_rt[i] + (half_max - win_int[i]) / dI * (win_rt[i + 1] - win_rt[i])
                         else:
                             fwhm_left = win_rt[i]
                         break
@@ -2061,9 +1894,7 @@ class EICWindow(QWidget):
                         # Linear interpolation between point i-1 and i
                         dI = win_int[i] - win_int[i - 1]
                         if dI != 0:
-                            fwhm_right = win_rt[i - 1] + (
-                                half_max - win_int[i - 1]
-                            ) / dI * (win_rt[i] - win_rt[i - 1])
+                            fwhm_right = win_rt[i - 1] + (half_max - win_int[i - 1]) / dI * (win_rt[i] - win_rt[i - 1])
                         else:
                             fwhm_right = win_rt[i]
                         break
@@ -2121,9 +1952,7 @@ class EICWindow(QWidget):
             group_color = self._get_group_color(group)
             if group_color:
                 color = QColor(group_color)
-                patch.set_facecolor(
-                    (color.red() / 255, color.green() / 255, color.blue() / 255, 0.7)
-                )
+                patch.set_facecolor((color.red() / 255, color.green() / 255, color.blue() / 255, 0.7))
 
         # Add jitter points
         for i, (group, values) in enumerate(zip(groups, data_lists)):
@@ -2151,9 +1980,7 @@ class EICWindow(QWidget):
         ax.set_xlabel("Integrated Peak Area")
         ax.set_ylabel("Group")
         if apex_rt is not None:
-            ax.set_title(
-                f"Peak Integration ({start_rt:.2f} - {end_rt:.2f} min, apex {apex_rt:.2f} min)"
-            )
+            ax.set_title(f"Peak Integration ({start_rt:.2f} - {end_rt:.2f} min, apex {apex_rt:.2f} min)")
         else:
             ax.set_title(f"Peak Integration ({start_rt:.2f} - {end_rt:.2f} min)")
         ax.grid(True, alpha=0.3)
@@ -2236,9 +2063,7 @@ class EICWindow(QWidget):
                 )
 
                 # Update with all sample data
-                self.integration_callback.__self__.update_peak_integration_samples(
-                    compound_name, ion_name, sample_data_list
-                )
+                self.integration_callback.__self__.update_peak_integration_samples(compound_name, ion_name, sample_data_list)
 
         except Exception as e:
             print(f"Error recording integration data: {e}")
@@ -2345,10 +2170,7 @@ class EICWindow(QWidget):
 
         # Per-column max for bar scaling (cols 1-8: min,p10,p25,median,mean,p75,p90,max)
         stat_keys_for_bar = ["min", "p10", "p25", "median", "mean", "p75", "p90", "max"]
-        col_maxima = {
-            key: max((s[key] for s in stats_data), default=0)
-            for key in stat_keys_for_bar
-        }
+        col_maxima = {key: max((s[key] for s in stats_data), default=0) for key in stat_keys_for_bar}
 
         # Set number of rows
         self.summary_stats_table.setSortingEnabled(False)
@@ -2424,9 +2246,7 @@ class EICWindow(QWidget):
             if "." in sample_name:
                 sample_name = sample_name.rsplit(".", 1)[0]
 
-            stats = self.file_manager.get_mz_stats_in_rt_window(
-                filepath, self.target_mz, mz_tolerance, start_rt, end_rt, polarity
-            )
+            stats = self.file_manager.get_mz_stats_in_rt_window(filepath, self.target_mz, mz_tolerance, start_rt, end_rt, polarity)
             if stats is None:
                 continue
 
@@ -2502,10 +2322,7 @@ class EICWindow(QWidget):
         tbl = self.mz_sample_table
         if tbl.rowCount() == 0:
             return
-        headers = [
-            tbl.horizontalHeaderItem(c).text().replace(" ", "_").replace("/", "_")
-            for c in range(tbl.columnCount())
-        ]
+        headers = [tbl.horizontalHeaderItem(c).text().replace(" ", "_").replace("/", "_") for c in range(tbl.columnCount())]
         lines = [
             f"df <- data.frame(",
             "  " + ",\n  ".join(f"{h} = c()" for h in headers),
@@ -2513,17 +2330,11 @@ class EICWindow(QWidget):
         ]
         rows_data = []
         for r in range(tbl.rowCount()):
-            row_vals = [
-                tbl.item(r, c).text() if tbl.item(r, c) else ""
-                for c in range(tbl.columnCount())
-            ]
+            row_vals = [tbl.item(r, c).text() if tbl.item(r, c) else "" for c in range(tbl.columnCount())]
             rows_data.append(row_vals)
         col_lines = []
         for ci, h in enumerate(headers):
-            vals = [
-                f'"{rows_data[ri][ci]}"' if ci < 2 else rows_data[ri][ci]
-                for ri in range(len(rows_data))
-            ]
+            vals = [f'"{rows_data[ri][ci]}"' if ci < 2 else rows_data[ri][ci] for ri in range(len(rows_data))]
             col_lines.append(f"  {h} = c({', '.join(vals)})")
         r_code = "df <- data.frame(\n" + ",\n".join(col_lines) + "\n)"
         QApplication.clipboard().setText(r_code)
@@ -2548,24 +2359,13 @@ class EICWindow(QWidget):
         tbl = self.mz_group_table
         if tbl.rowCount() == 0:
             return
-        headers = [
-            tbl.horizontalHeaderItem(c).text().replace(" ", "_").replace("/", "_")
-            for c in range(tbl.columnCount())
-        ]
+        headers = [tbl.horizontalHeaderItem(c).text().replace(" ", "_").replace("/", "_") for c in range(tbl.columnCount())]
         rows_data = []
         for r in range(tbl.rowCount()):
-            rows_data.append(
-                [
-                    tbl.item(r, c).text() if tbl.item(r, c) else ""
-                    for c in range(tbl.columnCount())
-                ]
-            )
+            rows_data.append([tbl.item(r, c).text() if tbl.item(r, c) else "" for c in range(tbl.columnCount())])
         col_lines = []
         for ci, h in enumerate(headers):
-            vals = [
-                f'"{rows_data[ri][ci]}"' if ci == 0 else rows_data[ri][ci]
-                for ri in range(len(rows_data))
-            ]
+            vals = [f'"{rows_data[ri][ci]}"' if ci == 0 else rows_data[ri][ci] for ri in range(len(rows_data))]
             col_lines.append(f"  {h} = c({', '.join(vals)})")
         r_code = "df <- data.frame(\n" + ",\n".join(col_lines) + "\n)"
         QApplication.clipboard().setText(r_code)
@@ -2591,9 +2391,7 @@ class EICWindow(QWidget):
 
         # Sort by group then sample name
         natsort_key = natsort_keygen()
-        sample_rows = sorted(
-            rt_data, key=lambda x: (natsort_key(x[0]), natsort_key(x[1]))
-        )
+        sample_rows = sorted(rt_data, key=lambda x: (natsort_key(x[0]), natsort_key(x[1])))
 
         # Store for potential later refresh
         self._rt_stats_sample_rows = sample_rows
@@ -2680,13 +2478,9 @@ class EICWindow(QWidget):
                 {
                     "group": grp,
                     "mean_apex": float(np.mean(a)) if len(a) > 0 else None,
-                    "std_apex": float(np.std(a, ddof=1))
-                    if len(a) > 1
-                    else (0.0 if len(a) == 1 else None),
+                    "std_apex": float(np.std(a, ddof=1)) if len(a) > 1 else (0.0 if len(a) == 1 else None),
                     "mean_fwhm": float(np.mean(f)) if len(f) > 0 else None,
-                    "std_fwhm": float(np.std(f, ddof=1))
-                    if len(f) > 1
-                    else (0.0 if len(f) == 1 else None),
+                    "std_fwhm": float(np.std(f, ddof=1)) if len(f) > 1 else (0.0 if len(f) == 1 else None),
                     "min_fwhm": float(np.min(f)) if len(f) > 0 else None,
                     "max_fwhm": float(np.max(f)) if len(f) > 0 else None,
                 }
@@ -2728,9 +2522,7 @@ class EICWindow(QWidget):
                     item.setData(Qt.ItemDataRole.UserRole, val)
                     if key == "mean_apex":
                         # Centred bar: offset from reference RT
-                        item.setData(
-                            CenteredBarDelegate.PPM_DEVIATION_ROLE, val - ref_rt
-                        )
+                        item.setData(CenteredBarDelegate.PPM_DEVIATION_ROLE, val - ref_rt)
                         item.setData(CenteredBarDelegate.PPM_RANGE_ROLE, rt_range)
                     else:
                         col_max = grp_col_maxima.get(key, 1.0)
@@ -2758,10 +2550,7 @@ class EICWindow(QWidget):
         headers = [tbl.horizontalHeaderItem(c).text() for c in range(tbl.columnCount())]
         lines = ["\t".join(headers)]
         for r in range(tbl.rowCount()):
-            row_vals = [
-                tbl.item(r, c).text() if tbl.item(r, c) else ""
-                for c in range(tbl.columnCount())
-            ]
+            row_vals = [tbl.item(r, c).text() if tbl.item(r, c) else "" for c in range(tbl.columnCount())]
             lines.append("\t".join(row_vals))
         QApplication.clipboard().setText("\n".join(lines))
 
@@ -2770,24 +2559,12 @@ class EICWindow(QWidget):
         tbl = self.rt_sample_table
         if tbl.rowCount() == 0:
             return
-        headers = [
-            tbl.horizontalHeaderItem(c).text().replace(" ", "_").replace("/", "_")
-            for c in range(tbl.columnCount())
-        ]
-        rows_data = [
-            [
-                tbl.item(r, c).text() if tbl.item(r, c) else ""
-                for c in range(tbl.columnCount())
-            ]
-            for r in range(tbl.rowCount())
-        ]
+        headers = [tbl.horizontalHeaderItem(c).text().replace(" ", "_").replace("/", "_") for c in range(tbl.columnCount())]
+        rows_data = [[tbl.item(r, c).text() if tbl.item(r, c) else "" for c in range(tbl.columnCount())] for r in range(tbl.rowCount())]
         text_cols = {0, 1}
         col_lines = []
         for ci, h in enumerate(headers):
-            vals = [
-                f'"{rows_data[ri][ci]}"' if ci in text_cols else rows_data[ri][ci]
-                for ri in range(len(rows_data))
-            ]
+            vals = [f'"{rows_data[ri][ci]}"' if ci in text_cols else rows_data[ri][ci] for ri in range(len(rows_data))]
             col_lines.append(f"  {h} = c({', '.join(vals)})")
         r_code = "df <- data.frame(\n" + ",\n".join(col_lines) + "\n)"
         QApplication.clipboard().setText(r_code)
@@ -2800,10 +2577,7 @@ class EICWindow(QWidget):
         headers = [tbl.horizontalHeaderItem(c).text() for c in range(tbl.columnCount())]
         lines = ["\t".join(headers)]
         for r in range(tbl.rowCount()):
-            row_vals = [
-                tbl.item(r, c).text() if tbl.item(r, c) else ""
-                for c in range(tbl.columnCount())
-            ]
+            row_vals = [tbl.item(r, c).text() if tbl.item(r, c) else "" for c in range(tbl.columnCount())]
             lines.append("\t".join(row_vals))
         QApplication.clipboard().setText("\n".join(lines))
 
@@ -2812,23 +2586,11 @@ class EICWindow(QWidget):
         tbl = self.rt_group_table
         if tbl.rowCount() == 0:
             return
-        headers = [
-            tbl.horizontalHeaderItem(c).text().replace(" ", "_").replace("/", "_")
-            for c in range(tbl.columnCount())
-        ]
-        rows_data = [
-            [
-                tbl.item(r, c).text() if tbl.item(r, c) else ""
-                for c in range(tbl.columnCount())
-            ]
-            for r in range(tbl.rowCount())
-        ]
+        headers = [tbl.horizontalHeaderItem(c).text().replace(" ", "_").replace("/", "_") for c in range(tbl.columnCount())]
+        rows_data = [[tbl.item(r, c).text() if tbl.item(r, c) else "" for c in range(tbl.columnCount())] for r in range(tbl.rowCount())]
         col_lines = []
         for ci, h in enumerate(headers):
-            vals = [
-                f'"{rows_data[ri][ci]}"' if ci == 0 else rows_data[ri][ci]
-                for ri in range(len(rows_data))
-            ]
+            vals = [f'"{rows_data[ri][ci]}"' if ci == 0 else rows_data[ri][ci] for ri in range(len(rows_data))]
             col_lines.append(f"  {h} = c({', '.join(vals)})")
         r_code = "df <- data.frame(\n" + ",\n".join(col_lines) + "\n)"
         QApplication.clipboard().setText(r_code)
@@ -2911,9 +2673,7 @@ class EICWindow(QWidget):
         self.mz_sample_table.setSortingEnabled(False)
         self.mz_sample_table.verticalHeader().setDefaultSectionSize(20)
         self.mz_sample_table.setRowCount(len(self._mz_stats_sample_rows))
-        for row_idx, (group, sample_name, mean_mz, p10, p90, eic_w) in enumerate(
-            self._mz_stats_sample_rows
-        ):
+        for row_idx, (group, sample_name, mean_mz, p10, p90, eic_w) in enumerate(self._mz_stats_sample_rows):
             grp_color = self._get_group_color(group)
 
             def _colored_item(text, color=grp_color):
@@ -2936,9 +2696,7 @@ class EICWindow(QWidget):
                 item.setData(CenteredBarDelegate.PPM_DEVIATION_ROLE, _ppm_dev)
                 item.setData(CenteredBarDelegate.PPM_RANGE_ROLE, _ppm_range)
                 if grp_color:
-                    item.setData(
-                        CenteredBarDelegate.PPM_BAR_COLOR_ROLE, QColor(grp_color)
-                    )
+                    item.setData(CenteredBarDelegate.PPM_BAR_COLOR_ROLE, QColor(grp_color))
                 self.mz_sample_table.setItem(row_idx, col_idx, item)
             eic_item = QTableWidgetItem(f"{eic_w:.6f}")
             eic_item.setData(Qt.ItemDataRole.UserRole, eic_w)
@@ -2976,9 +2734,7 @@ class EICWindow(QWidget):
                     item.setData(CenteredBarDelegate.PPM_DEVIATION_ROLE, _ppm_dev_g)
                     item.setData(CenteredBarDelegate.PPM_RANGE_ROLE, _ppm_range_g)
                     if _grp_color_g:
-                        item.setData(
-                            CenteredBarDelegate.PPM_BAR_COLOR_ROLE, QColor(_grp_color_g)
-                        )
+                        item.setData(CenteredBarDelegate.PPM_BAR_COLOR_ROLE, QColor(_grp_color_g))
                 self.mz_group_table.setItem(row_idx, col_idx, item)
         self.mz_group_table.setSortingEnabled(True)
         self.mz_group_table.resizeColumnsToContents()
@@ -3023,12 +2779,7 @@ class EICWindow(QWidget):
         for col in range(self.peak_area_table.columnCount()):
             header = self.peak_area_table.horizontalHeaderItem(col).text()
             # Replace spaces and special characters for R compatibility
-            r_header = (
-                header.replace(" ", "_")
-                .replace("(", "")
-                .replace(")", "")
-                .replace("%", "pct")
-            )
+            r_header = header.replace(" ", "_").replace("(", "").replace(")", "").replace("%", "pct")
             headers.append(r_header)
 
         # Collect data by columns
@@ -3103,12 +2854,7 @@ class EICWindow(QWidget):
         for col in range(self.summary_stats_table.columnCount()):
             header = self.summary_stats_table.horizontalHeaderItem(col).text()
             # Replace spaces and special characters for R compatibility
-            r_header = (
-                header.replace(" ", "_")
-                .replace("(", "")
-                .replace(")", "")
-                .replace("%", "pct")
-            )
+            r_header = header.replace(" ", "_").replace("(", "").replace(")", "").replace("%", "pct")
             headers.append(r_header)
 
         # Collect data by columns
@@ -3228,12 +2974,8 @@ class EICWindow(QWidget):
 
         # Add row and column names
         sample_names_r = [f'"{name}"' for name in sample_names]
-        r_code_lines.append(
-            f"rownames(similarity_matrix) <- c({', '.join(sample_names_r)})"
-        )
-        r_code_lines.append(
-            f"colnames(similarity_matrix) <- c({', '.join(sample_names_r)})"
-        )
+        r_code_lines.append(f"rownames(similarity_matrix) <- c({', '.join(sample_names_r)})")
+        r_code_lines.append(f"colnames(similarity_matrix) <- c({', '.join(sample_names_r)})")
 
         # Copy to clipboard
         clipboard_text = "\n".join(r_code_lines)
@@ -3285,11 +3027,7 @@ class EICWindow(QWidget):
         clean_intensity2 = interp_intensity2[valid_mask]
 
         # Calculate correlation
-        if (
-            len(clean_intensity1) < 2
-            or np.std(clean_intensity1) == 0
-            or np.std(clean_intensity2) == 0
-        ):
+        if len(clean_intensity1) < 2 or np.std(clean_intensity1) == 0 or np.std(clean_intensity2) == 0:
             return np.nan
 
         correlation = np.corrcoef(clean_intensity1, clean_intensity2)[0, 1]
@@ -3370,9 +3108,7 @@ class EICWindow(QWidget):
 
             # Track group for header colouring
             group_value = metadata.get(self.grouping_column, "Unknown")
-            sample_group[sample_name] = (
-                str(group_value) if group_value is not None else "Unknown"
-            )
+            sample_group[sample_name] = str(group_value) if group_value is not None else "Unknown"
 
             # Extract peak region
             mask = (rt >= start_rt) & (rt <= end_rt)
@@ -3392,9 +3128,7 @@ class EICWindow(QWidget):
         n_samples = len(sample_names)
 
         # Create correlation matrix (n x n)
-        corr_matrix = np.ones(
-            (n_samples, n_samples)
-        )  # Diagonal is 1.0 (self-correlation)
+        corr_matrix = np.ones((n_samples, n_samples))  # Diagonal is 1.0 (self-correlation)
 
         for i in range(n_samples):
             for j in range(i + 1, n_samples):
@@ -3456,9 +3190,7 @@ class EICWindow(QWidget):
         # Compact column/row sizes — vertical header (sample names) auto-fits;
         # data columns use the same fixed width as the MSMS inter-file table (70 px)
         self.similarity_table.horizontalHeader().setDefaultSectionSize(70)
-        self.similarity_table.horizontalHeader().setSectionResizeMode(
-            QHeaderView.ResizeMode.Interactive
-        )
+        self.similarity_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
 
         # Disable sorting for matrix view
         self.similarity_table.setSortingEnabled(False)
@@ -3487,15 +3219,11 @@ class EICWindow(QWidget):
 
         # Fix all column widths to 70 px (same as MSMS inter-file table);
         # leave the vertical header (sample name column) to auto-size
-        self.similarity_table.horizontalHeader().setSectionResizeMode(
-            QHeaderView.ResizeMode.Fixed
-        )
+        self.similarity_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
         for col in range(n_samples):
             self.similarity_table.setColumnWidth(col, 70)
         # Restore Interactive so user can still resize manually afterwards
-        self.similarity_table.horizontalHeader().setSectionResizeMode(
-            QHeaderView.ResizeMode.Interactive
-        )
+        self.similarity_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
 
     def _update_pca_plot(self, start_rt, end_rt):
         """
@@ -3632,9 +3360,7 @@ class EICWindow(QWidget):
                     x, y = pca_scores[i, 0], 0
 
                 # Plot the point
-                scatter = ax.scatter(
-                    x, y, c=[color], s=100, alpha=0.7, edgecolors="black", linewidth=1.5
-                )
+                scatter = ax.scatter(x, y, c=[color], s=100, alpha=0.7, edgecolors="black", linewidth=1.5)
 
                 # Add sample name as annotation (initially invisible, shown on hover)
                 # Position will be adjusted dynamically in hover handler
@@ -3704,9 +3430,7 @@ class EICWindow(QWidget):
                 # Calculate distance from mouse to point
                 try:
                     if event.xdata is not None and event.ydata is not None:
-                        distance = np.sqrt(
-                            (event.xdata - x) ** 2 + (event.ydata - y) ** 2
-                        )
+                        distance = np.sqrt((event.xdata - x) ** 2 + (event.ydata - y) ** 2)
 
                         # Get axis ranges to determine relative distance
                         ax = event.inaxes
@@ -3745,9 +3469,7 @@ class EICWindow(QWidget):
         if hasattr(self, "_pca_hover_cid"):
             self.pca_canvas.mpl_disconnect(self._pca_hover_cid)
 
-        self._pca_hover_cid = self.pca_canvas.mpl_connect(
-            "motion_notify_event", on_hover
-        )
+        self._pca_hover_cid = self.pca_canvas.mpl_connect("motion_notify_event", on_hover)
 
     def _update_calibration_table(self, table_data):
         """Update the calibration table with samples that have quantification data.
@@ -3770,9 +3492,7 @@ class EICWindow(QWidget):
 
             if not matching_files.empty:
                 filepath = matching_files.iloc[0]["Filepath"]
-                quant_data = self.file_manager.get_quantification_data(
-                    filepath, compound_name
-                )
+                quant_data = self.file_manager.get_quantification_data(filepath, compound_name)
 
                 if quant_data is not None:
                     true_abundance, unit = quant_data
@@ -3783,11 +3503,7 @@ class EICWindow(QWidget):
                     # The actual sample concentration = vial_abundance * dilution.
                     vial_abundance = true_abundance
                     # Optionally normalize peak area by injection volume and dilution
-                    corrected_area = (
-                        peak_area * correction_factor
-                        if self.normalize_peak_area_checkbox.isChecked()
-                        else peak_area
-                    )
+                    corrected_area = peak_area * correction_factor if self.normalize_peak_area_checkbox.isChecked() else peak_area
                     calibration_rows.append(
                         {
                             "sample_name": sample_name,
@@ -3805,9 +3521,7 @@ class EICWindow(QWidget):
         for i, row in enumerate(calibration_rows):
             # "Use" checkbox
             checkbox_item = QTableWidgetItem()
-            checkbox_item.setFlags(
-                Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled
-            )
+            checkbox_item.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled)
             checkbox_item.setCheckState(Qt.CheckState.Checked)
             self.calibration_table.setItem(i, 0, checkbox_item)
 
@@ -3925,9 +3639,7 @@ class EICWindow(QWidget):
                     _sfn = f"{sample_name}.mzML"
                     _mf = files_data_plot[files_data_plot["filename"] == _sfn]
                     if _mf.empty:
-                        _mf = files_data_plot[
-                            files_data_plot["filename"] == sample_name
-                        ]
+                        _mf = files_data_plot[files_data_plot["filename"] == sample_name]
                     if not _mf.empty:
                         _fp = _mf.iloc[0]["Filepath"]
                         _iv = self.file_manager.get_injection_volume(_fp)
@@ -3953,25 +3665,19 @@ class EICWindow(QWidget):
         if poly_degree == 1:
             equation = f"y = {coeffs[0]:.4g}x + {coeffs[1]:.4g}"
         else:
-            equation = (
-                f"y = {coeffs[0]:.4g}x\u00b2 + {coeffs[1]:.4g}x + {coeffs[2]:.4g}"
-            )
+            equation = f"y = {coeffs[0]:.4g}x\u00b2 + {coeffs[1]:.4g}x + {coeffs[2]:.4g}"
 
         # Store calibration info
         self.calibration_info = {
             "coeffs": coeffs,
             "model_type": model_type,
             "transform": transform,
-            "unit": self.calibration_table.item(0, 4).text()
-            if self.calibration_table.rowCount() > 0
-            else "",
+            "unit": self.calibration_table.item(0, 4).text() if self.calibration_table.rowCount() > 0 else "",
         }
 
         # Regression line spanning ALL samples (calibration + unknown)
         all_x_raw = calib_checked_x + calib_excl_x + unknown_x_raw
-        all_x_t = (
-            [apply_transform(v) for v in all_x_raw] if all_x_raw else list(x_fit_pts)
-        )
+        all_x_t = [apply_transform(v) for v in all_x_raw] if all_x_raw else list(x_fit_pts)
         x_line = np.linspace(min(all_x_t), max(all_x_t), 300)
         y_line = poly(x_line)
 
@@ -4119,17 +3825,11 @@ class EICWindow(QWidget):
                 filepath = matching_files.iloc[0]["Filepath"]
                 dilution = self.file_manager.get_dilution_factor(filepath)
                 inj_vol = self.file_manager.get_injection_volume(filepath)
-                quant_data = self.file_manager.get_quantification_data(
-                    filepath, compound_name
-                )
+                quant_data = self.file_manager.get_quantification_data(filepath, compound_name)
 
             correction_factor = inj_vol * dilution
             # Optionally correct peak area by injection volume and dilution before prediction
-            corrected_pa = (
-                peak_area * correction_factor
-                if self.normalize_peak_area_checkbox.isChecked()
-                else peak_area
-            )
+            corrected_pa = peak_area * correction_factor if self.normalize_peak_area_checkbox.isChecked() else peak_area
             # Regression Y-axis = vial concentration (= stored abundance).
             # Actual sample concentration = predicted_vial_conc * dilution.
             pa_t = apply_transform(corrected_pa)
@@ -4164,9 +3864,7 @@ class EICWindow(QWidget):
         for i, data in enumerate(rows):
             # Type column — colour by sample class
             type_item = QTableWidgetItem(data["type"])
-            type_item.setBackground(
-                CALIB_BG if data["type"] == "Calibration standard" else UNKNOWN_BG
-            )
+            type_item.setBackground(CALIB_BG if data["type"] == "Calibration standard" else UNKNOWN_BG)
             self.calculated_abundances_table.setItem(i, 0, type_item)
 
             # Group column — colour by group
@@ -4186,27 +3884,13 @@ class EICWindow(QWidget):
                 name_item.setBackground(gc)
             self.calculated_abundances_table.setItem(i, 2, name_item)
 
-            self.calculated_abundances_table.setItem(
-                i, 3, QTableWidgetItem(f"{data['peak_area']:.2e}")
-            )
-            self.calculated_abundances_table.setItem(
-                i, 4, QTableWidgetItem(data["actual_abundance"])
-            )
-            self.calculated_abundances_table.setItem(
-                i, 5, QTableWidgetItem(f"{data['predicted_abundance']:.4g}")
-            )
-            self.calculated_abundances_table.setItem(
-                i, 6, QTableWidgetItem(data["unit"])
-            )
-            self.calculated_abundances_table.setItem(
-                i, 7, QTableWidgetItem(f"{data['dilution']:.4g}")
-            )
-            self.calculated_abundances_table.setItem(
-                i, 8, QTableWidgetItem(f"{data['inj_vol']:.4g}")
-            )
-            self.calculated_abundances_table.setItem(
-                i, 9, QTableWidgetItem(f"{data['correction_factor']:.4g}")
-            )
+            self.calculated_abundances_table.setItem(i, 3, QTableWidgetItem(f"{data['peak_area']:.2e}"))
+            self.calculated_abundances_table.setItem(i, 4, QTableWidgetItem(data["actual_abundance"]))
+            self.calculated_abundances_table.setItem(i, 5, QTableWidgetItem(f"{data['predicted_abundance']:.4g}"))
+            self.calculated_abundances_table.setItem(i, 6, QTableWidgetItem(data["unit"]))
+            self.calculated_abundances_table.setItem(i, 7, QTableWidgetItem(f"{data['dilution']:.4g}"))
+            self.calculated_abundances_table.setItem(i, 8, QTableWidgetItem(f"{data['inj_vol']:.4g}"))
+            self.calculated_abundances_table.setItem(i, 9, QTableWidgetItem(f"{data['correction_factor']:.4g}"))
 
         # Refresh the group summary table
         self._update_quant_summary_table(rows)
@@ -4222,9 +3906,7 @@ class EICWindow(QWidget):
         # Header
         header = []
         for col in range(self.calculated_abundances_table.columnCount()):
-            header.append(
-                self.calculated_abundances_table.horizontalHeaderItem(col).text()
-            )
+            header.append(self.calculated_abundances_table.horizontalHeaderItem(col).text())
         lines.append("\t".join(header))
 
         # Data rows
@@ -4316,9 +3998,7 @@ class EICWindow(QWidget):
         stats_data.sort(key=lambda x: natsort_key(x["group"]))
 
         stat_keys = ["min", "p10", "median", "mean", "p90", "max"]
-        col_maxima = {
-            k: max((abs(s[k]) for s in stats_data), default=0) for k in stat_keys
-        }
+        col_maxima = {k: max((abs(s[k]) for s in stats_data), default=0) for k in stat_keys}
 
         self.quant_summary_table.setSortingEnabled(False)
         self.quant_summary_table.setRowCount(len(stats_data))
@@ -4356,10 +4036,7 @@ class EICWindow(QWidget):
         if self.quant_summary_table.rowCount() == 0:
             return
         lines = []
-        header = [
-            self.quant_summary_table.horizontalHeaderItem(c).text()
-            for c in range(self.quant_summary_table.columnCount())
-        ]
+        header = [self.quant_summary_table.horizontalHeaderItem(c).text() for c in range(self.quant_summary_table.columnCount())]
         lines.append("\t".join(header))
         for row in range(self.quant_summary_table.rowCount()):
             row_data = []
@@ -4375,11 +4052,7 @@ class EICWindow(QWidget):
             return
         lines = []
         for col in range(self.quant_summary_table.columnCount()):
-            col_name = (
-                self.quant_summary_table.horizontalHeaderItem(col)
-                .text()
-                .replace(" ", "_")
-            )
+            col_name = self.quant_summary_table.horizontalHeaderItem(col).text().replace(" ", "_")
             values = []
             for row in range(self.quant_summary_table.rowCount()):
                 item = self.quant_summary_table.item(row, col)
@@ -4388,9 +4061,7 @@ class EICWindow(QWidget):
             lines.append(f"{col_name} = c({', '.join(values)})")
         QApplication.clipboard().setText(f"data.frame(\n  {',\n  '.join(lines)}\n)")
 
-    def _calculate_peak_area_with_boundaries(
-        self, rt_array, intensity_array, start_rt, end_rt
-    ):
+    def _calculate_peak_area_with_boundaries(self, rt_array, intensity_array, start_rt, end_rt):
         """
         Calculate peak area using proper numerical integration with boundary handling.
 
@@ -4552,6 +4223,7 @@ class EICWindow(QWidget):
             # Create new boundary line
             line_series = QLineSeries()
             line_series.setName("")  # No legend entry
+            line_series.setProperty("is_decoration", True)
             line_series.append(rt_pos, y_min)
             line_series.append(rt_pos, y_max)
 
@@ -4630,6 +4302,62 @@ class EICWindow(QWidget):
 
         return chart_view
 
+    def reset_x_axis(self):
+        """Reset the X-axis to show the full extent of all plotted data."""
+        if not self.chart.series():
+            return
+        min_x = float("inf")
+        max_x = float("-inf")
+        for series in self.chart.series():
+            if series.property("is_decoration"):
+                continue
+            for i in range(series.count()):
+                pt = series.at(i)
+                min_x = min(min_x, pt.x())
+                max_x = max(max_x, pt.x())
+        if min_x == float("inf"):
+            return
+        x_padding = (max_x - min_x) * 0.02
+        self.chart.axes(Qt.Orientation.Horizontal)[0].setRange(min_x - x_padding, max_x + x_padding)
+
+    def reset_y_axis(self):
+        """Reset the Y-axis to show the full extent of all plotted data,
+        accounting for log transform, ridge offsets, normalization, and
+        group separation (all already baked into the plotted series points).
+        """
+        if not self.chart.series():
+            return
+        min_y = float("inf")
+        max_y = float("-inf")
+        for series in self.chart.series():
+            if series.property("is_decoration"):
+                continue
+            for i in range(series.count()):
+                pt = series.at(i)
+                y = pt.y()
+                if y == y:  # NaN check
+                    min_y = min(min_y, y)
+                    max_y = max(max_y, y)
+        if min_y == float("inf"):
+            return
+
+        log_y_active = hasattr(self, "log_y_cb") and self.log_y_cb.isChecked()
+        ridge_active = hasattr(self, "ridge_plot_cb") and self.ridge_plot_cb.isChecked()
+        normalize = self.normalize_cb.isChecked()
+
+        if normalize and not log_y_active and not ridge_active:
+            # Pure normalization: fixed 0-1 range
+            self.chart.axes(Qt.Orientation.Vertical)[0].setRange(-0.05, 1.05)
+            return
+
+        y_range = max_y - min_y
+        padding = y_range * 0.05 if y_range > 0 else abs(max_y) * 0.05
+        if log_y_active or ridge_active:
+            y_min = min_y - padding
+        else:
+            y_min = max(0.0, min_y - padding)
+        self.chart.axes(Qt.Orientation.Vertical)[0].setRange(y_min, max_y + padding)
+
     def reset_view(self):
         """Reset the chart view to show all data"""
         if self.chart.series():
@@ -4640,6 +4368,8 @@ class EICWindow(QWidget):
             max_y = float("-inf")
 
             for series in self.chart.series():
+                if series.property("is_decoration"):
+                    continue
                 if series.count() > 0:
                     for i in range(series.count()):
                         point = series.at(i)
@@ -4658,10 +4388,16 @@ class EICWindow(QWidget):
 
                 # Only adjust Y-axis if normalization is not enabled
                 # (normalization sets its own Y-axis range)
-                if not self.normalize_cb.isChecked():
+                log_y_active = hasattr(self, "log_y_cb") and self.log_y_cb.isChecked()
+                ridge_active = hasattr(self, "ridge_plot_cb") and self.ridge_plot_cb.isChecked()
+                normalize_only = self.normalize_cb.isChecked() and not log_y_active and not ridge_active
+                if not normalize_only:
                     y_padding = (max_y - min_y) * 0.05
                     y_axis = self.chart.axes(Qt.Orientation.Vertical)[0]
-                    y_axis.setRange(max(0, min_y - y_padding), max_y + y_padding)
+                    if log_y_active or ridge_active:
+                        y_axis.setRange(min_y - y_padding, max_y + y_padding)
+                    else:
+                        y_axis.setRange(max(0, min_y - y_padding), max_y + y_padding)
 
     def extract_eic_data(self):
         """Extract EIC data in a separate thread"""
@@ -4728,15 +4464,10 @@ class EICWindow(QWidget):
         # Get unique groups from the entire sample matrix (files_data)
         groups = set()
 
-        if (
-            hasattr(self.file_manager, "files_data")
-            and self.file_manager.files_data is not None
-        ):
+        if hasattr(self.file_manager, "files_data") and self.file_manager.files_data is not None:
             # Get all possible group values from the entire sample matrix
             if self.grouping_column in self.file_manager.files_data.columns:
-                group_values = (
-                    self.file_manager.files_data[self.grouping_column].dropna().unique()
-                )
+                group_values = self.file_manager.files_data[self.grouping_column].dropna().unique()
                 for value in group_values:
                     groups.add(str(value))
 
@@ -4745,9 +4476,7 @@ class EICWindow(QWidget):
             for data in self.eic_data.values():
                 if self.grouping_column in data["metadata"]:
                     group_value = data["metadata"][self.grouping_column]
-                    groups.add(
-                        str(group_value) if group_value is not None else "Unknown"
-                    )
+                    groups.add(str(group_value) if group_value is not None else "Unknown")
 
         # Sort groups and assign shifts (using natural sort)
         sorted_groups = natsorted(groups)
@@ -4800,9 +4529,7 @@ class EICWindow(QWidget):
 
         if mode == "By group, then injection order":
             # Sort by group (natural sort key), then by injection_order within group
-            group_col = (
-                self.grouping_column if self.grouping_column in df.columns else "group"
-            )
+            group_col = self.grouping_column if self.grouping_column in df.columns else "group"
             if group_col not in df.columns:
                 group_col = None
 
@@ -4812,9 +4539,7 @@ class EICWindow(QWidget):
                 all_groups = natsorted(group_vals.unique())
                 group_rank = group_vals.map({g: i for i, g in enumerate(all_groups)})
                 work_df = work_df.assign(_group_rank=group_rank)
-                sorted_df = work_df.sort_values(
-                    ["_group_rank", "_inj_order"], na_position="last"
-                )
+                sorted_df = work_df.sort_values(["_group_rank", "_inj_order"], na_position="last")
             else:
                 sorted_df = work_df.sort_values("_inj_order", na_position="last")
 
@@ -4822,9 +4547,7 @@ class EICWindow(QWidget):
                 self.file_shifts[row["Filepath"]] = rank * shift_amount
         else:
             # "By injection order": sort globally by injection_order
-            sorted_df = df.assign(_inj_order=inj_order).sort_values(
-                "_inj_order", na_position="last"
-            )
+            sorted_df = df.assign(_inj_order=inj_order).sort_values("_inj_order", na_position="last")
             for rank, (_, row) in enumerate(sorted_df.iterrows()):
                 self.file_shifts[row["Filepath"]] = rank * shift_amount
 
@@ -4867,6 +4590,51 @@ class EICWindow(QWidget):
 
         return None
 
+    # ------------------------------------------------------------------
+    # Ridge plot & log Y-axis helpers
+    # ------------------------------------------------------------------
+
+    def _on_ridge_plot_toggled(self, state):
+        """Show/hide ridge increment controls and refresh the plot."""
+        enabled = bool(state == Qt.CheckState.Checked.value or state is True or state == 2)
+        self.ridge_increment_widget.setVisible(enabled)
+        self.update_plot()
+
+    def _on_ridge_slider_changed(self, value):
+        """Update the increment label and refresh the plot when slider moves."""
+        float_val = self._get_ridge_increment()
+        self.ridge_increment_label.setText(f"{float_val:.2e}")
+        self.update_plot(preserve_view=True)
+
+    def _get_ridge_increment(self) -> float:
+        """Return the current ridge increment in plot-space units."""
+        return self.ridge_increment_slider.value() / 10000.0 * self._ridge_increment_max
+
+    def _set_ridge_slider_max(self, max_val: float):
+        """Update the ridge slider's scale without resetting its fractional position."""
+        if max_val <= 0:
+            max_val = 1.0
+        old_max = self._ridge_increment_max
+        old_frac = self.ridge_increment_slider.value() / 10000.0
+        self._ridge_increment_max = max_val
+        # If max changed significantly, keep the same fraction (proportional scaling)
+        new_val = int(old_frac * 10000.0)
+        # Temporarily block signals to avoid a recursive update_plot call
+        self.ridge_increment_slider.blockSignals(True)
+        self.ridge_increment_slider.setValue(new_val)
+        self.ridge_increment_slider.blockSignals(False)
+        self.ridge_increment_label.setText(f"{self._get_ridge_increment():.2e}")
+
+    def _apply_log_transform(self, intensity: np.ndarray) -> np.ndarray:
+        """Apply a signed log10 transform to an intensity array.
+
+        Values > 0 → log10(max(v, 1.0))
+        Values ≤ 0 → -log10(max(|v|, 1.0))  (for the "negative" group setting)
+        """
+        sign = np.sign(intensity)
+        sign[sign == 0] = 1  # Treat 0 as positive
+        return sign * np.log10(np.maximum(np.abs(intensity), 1.0))
+
     def update_plot(self, preserve_view=False):
         """Update the EIC plot
 
@@ -4894,6 +4662,8 @@ class EICWindow(QWidget):
 
         # Enable reset view button now that we have data
         self.reset_view_btn.setEnabled(True)
+        self.reset_x_btn.setEnabled(True)
+        self.reset_y_btn.setEnabled(True)
 
         sep_mode = self._separation_mode()
         separate_groups = sep_mode == "By group"
@@ -4956,6 +4726,35 @@ class EICWindow(QWidget):
                 }
             )
 
+        # Read display-transform flags
+        log_y = self.log_y_cb.isChecked()
+        ridge = self.ridge_plot_cb.isChecked()
+
+        # When ridge plot is active, recompute the slider scale from the data that
+        # will be plotted (after normalization & group scaling, before ridge shift).
+        if ridge:
+            max_plot_intensity = 0.0
+            for _grp in natsorted(groups_data.keys()):
+                _gs = self.group_settings.get(_grp, {"scaling": 1.0, "plot": True, "negative": False})
+                if not _gs.get("plot", True):
+                    continue
+                for _fd in groups_data.get(_grp, []):
+                    _ints = _fd["intensity"] * _gs.get("scaling", 1.0)
+                    if _gs.get("negative", False):
+                        _ints = -_ints
+                    if log_y:
+                        _ints = self._apply_log_transform(_ints)
+                    if len(_ints) > 0:
+                        max_plot_intensity = max(max_plot_intensity, float(np.max(np.abs(_ints))))
+            if max_plot_intensity > 0:
+                self._set_ridge_slider_max(max_plot_intensity)
+            ridge_increment = self._get_ridge_increment()
+        else:
+            ridge_increment = 0.0
+
+        # Ridge file counter – incremented for every file actually added to the chart
+        ridge_file_index = 0
+
         # Create separate series for each file, but group them for legend display
         # Iterate through groups in the same sorted order as group_shifts
         sorted_groups = natsorted(groups_data.keys())
@@ -5011,6 +4810,15 @@ class EICWindow(QWidget):
                 if group_settings["negative"]:
                     intensity = -intensity
 
+                # Apply log10 transform if enabled
+                if log_y:
+                    intensity = self._apply_log_transform(intensity)
+
+                # Apply ridge shift (shift this file's EIC upward by its index)
+                if ridge:
+                    intensity = intensity + ridge_file_index * ridge_increment
+                    ridge_file_index += 1
+
                 # Create individual series for each file
                 series = QLineSeries()
 
@@ -5018,11 +4826,7 @@ class EICWindow(QWidget):
                 filepath = file_data["filepath"]
                 filename = file_data["metadata"].get(
                     "filename",
-                    filepath.split("\\")[-1]
-                    if "\\" in filepath
-                    else filepath.split("/")[-1]
-                    if "/" in filepath
-                    else filepath,
+                    filepath.split("\\")[-1] if "\\" in filepath else filepath.split("/")[-1] if "/" in filepath else filepath,
                 )
 
                 # Store custom property for hover detection
@@ -5032,9 +4836,7 @@ class EICWindow(QWidget):
                 if separate_injection:
                     # Per-file legend entry showing its individual shift
                     file_shift = self.file_shifts.get(filepath, 0.0)
-                    name_without_ext = (
-                        filename.rsplit(".", 1)[0] if "." in filename else filename
-                    )
+                    name_without_ext = filename.rsplit(".", 1)[0] if "." in filename else filename
                     series.setName(f"{name_without_ext} (+ {file_shift:.1f} min)")
                 elif first_file_in_group:
                     # Add shift information to legend if groups are separated
@@ -5055,9 +4857,7 @@ class EICWindow(QWidget):
                 # Apply group color with transparency and line width
                 if group_color:
                     color = QColor(group_color)
-                    color.setAlpha(
-                        180
-                    )  # Make lines semi-transparent (0-255, 180 = ~70% opacity)
+                    color.setAlpha(180)  # Make lines semi-transparent (0-255, 180 = ~70% opacity)
                     pen = QPen(color)
                     pen.setWidthF(group_settings["line_width"])
                     series.setPen(pen)
@@ -5068,17 +4868,11 @@ class EICWindow(QWidget):
                 series.attachAxis(self.y_axis)
 
         # Add reference lines
-        self._add_reference_lines(
-            groups_data, separate_groups, separate_injection, sep_mode
-        )
+        self._add_reference_lines(groups_data, separate_groups, separate_injection, sep_mode)
 
         # Show legend with better formatting
         legend = self.chart.legend()
-        legend_pos = (
-            self.legend_position_combo.currentText()
-            if hasattr(self, "legend_position_combo")
-            else "Right"
-        )
+        legend_pos = self.legend_position_combo.currentText() if hasattr(self, "legend_position_combo") else "Right"
         if legend_pos == "Off":
             legend.setVisible(False)
         else:
@@ -5095,17 +4889,24 @@ class EICWindow(QWidget):
             if series.name() == "":
                 marker.setVisible(False)
 
-        # Update Y-axis title and range based on normalization status
-        if normalize:
+        # Update Y-axis title and range based on normalization / log / ridge status
+        if normalize and log_y:
+            self.y_axis.setTitleText("Log\u2081\u2080(Normalized Intensity)")
+        elif normalize:
             self.y_axis.setTitleText("Normalized Intensity")
-            # For normalized data, set explicit range 0-1 with some padding
+        elif log_y:
+            self.y_axis.setTitleText("Log\u2081\u2080(Intensity)")
+        else:
+            self.y_axis.setTitleText("Intensity")
+
+        if normalize and not log_y and not ridge:
+            # Pure normalization: fixed 0–1 range
             # Use a timer to ensure the range is applied after series are fully added
             from PyQt6.QtCore import QTimer
 
             QTimer.singleShot(50, lambda: self.y_axis.setRange(-0.05, 1.05))
         else:
-            self.y_axis.setTitleText("Intensity")
-            # For non-normalized data, calculate range from actual data
+            # For non-normalized data (or when log/ridge is active), calculate range from actual data
             self._set_y_axis_from_data()
 
         # Restore saved view or reset to show all data
@@ -5117,8 +4918,8 @@ class EICWindow(QWidget):
                 x_axis = self.chart.axes(Qt.Orientation.Horizontal)[0]
                 y_axis = self.chart.axes(Qt.Orientation.Vertical)[0]
                 x_axis.setRange(saved_x_range[0], saved_x_range[1])
-                # For normalized data, enforce the normalized range
-                if normalize:
+                # For pure normalization (no log/ridge), enforce the normalized range
+                if normalize and not log_y and not ridge:
                     y_axis.setRange(-0.05, 1.05)
                 else:
                     y_axis.setRange(saved_y_range[0], saved_y_range[1])
@@ -5126,9 +4927,7 @@ class EICWindow(QWidget):
             QTimer.singleShot(60, restore_ranges)
         else:
             # Automatically reset view to show all data after any changes
-            QTimer.singleShot(
-                50, self.reset_view
-            )  # Small delay to ensure chart is fully updated
+            QTimer.singleShot(50, self.reset_view)  # Small delay to ensure chart is fully updated
 
         # Update series cache for hover detection
         if hasattr(self.chart_view, "update_series_cache"):
@@ -5137,9 +4936,7 @@ class EICWindow(QWidget):
         # Re-add peak boundary lines if they exist
         self._restore_peak_boundary_lines()
 
-    def _add_reference_lines(
-        self, groups_data, separate_groups, separate_injection=False, sep_mode="None"
-    ):
+    def _add_reference_lines(self, groups_data, separate_groups, separate_injection=False, sep_mode="None"):
         """Add reference lines to the chart"""
         # Get the current axis ranges to draw lines across the full chart
         x_axis = self.chart.axes(Qt.Orientation.Horizontal)[0]
@@ -5165,6 +4962,7 @@ class EICWindow(QWidget):
         # Add horizontal baseline at intensity 0
         baseline_series = QLineSeries()
         baseline_series.setName("")  # No legend entry
+        baseline_series.setProperty("is_decoration", True)
         baseline_series.append(line_start, 0)
         baseline_series.append(line_end, 0)
 
@@ -5185,6 +4983,7 @@ class EICWindow(QWidget):
         def _add_vline(reference_rt):
             vertical_line = QLineSeries()
             vertical_line.setName("")  # No legend entry
+            vertical_line.setProperty("is_decoration", True)
             y_min = y_axis.min()
             y_max = y_axis.max()
             y_range = y_max - y_min
@@ -5203,15 +5002,9 @@ class EICWindow(QWidget):
                 # One dashed line per unique total shift across all files
                 seen_shifts = set()
                 for group_name, group_files in groups_data.items():
-                    group_shift = (
-                        self.group_shifts.get(group_name, 0.0)
-                        if separate_groups
-                        else 0.0
-                    )
+                    group_shift = self.group_shifts.get(group_name, 0.0) if separate_groups else 0.0
                     for file_data in group_files:
-                        total_shift = group_shift + self.file_shifts.get(
-                            file_data["filepath"], 0.0
-                        )
+                        total_shift = group_shift + self.file_shifts.get(file_data["filepath"], 0.0)
                         if total_shift not in seen_shifts:
                             seen_shifts.add(total_shift)
                             _add_vline(compound_rt + total_shift)
@@ -5226,10 +5019,12 @@ class EICWindow(QWidget):
         if not self.chart.series():
             return
 
-        # Find Y data range from all series
+        # Find Y data range from all series (skip decoration/reference lines)
         min_y, max_y = float("inf"), float("-inf")
 
         for series in self.chart.series():
+            if series.property("is_decoration"):
+                continue
             if hasattr(series, "pointsVector"):
                 points = series.pointsVector()
                 if points:
@@ -5241,8 +5036,14 @@ class EICWindow(QWidget):
         # Set Y range with padding if we found valid data
         if min_y != float("inf") and max_y != float("-inf"):
             y_range = max_y - min_y
-            padding = y_range * 0.05 if y_range > 0 else max_y * 0.05
-            y_min = max(0, min_y - padding)  # Don't go below 0 for intensity
+            padding = y_range * 0.05 if y_range > 0 else abs(max_y) * 0.05
+            log_y_active = hasattr(self, "log_y_cb") and self.log_y_cb.isChecked()
+            ridge_active = hasattr(self, "ridge_plot_cb") and self.ridge_plot_cb.isChecked()
+            # Don't clamp to 0 when log scale or ridge plot is active (Y values may be negative)
+            if log_y_active or ridge_active:
+                y_min = min_y - padding
+            else:
+                y_min = max(0, min_y - padding)
             y_max = max_y + padding
             self.y_axis.setRange(y_min, y_max)
 
@@ -5341,10 +5142,7 @@ class EICWindow(QWidget):
 
         for _, row in files_data.iterrows():
             filepath = row["Filepath"]
-            if not (
-                self.file_manager.keep_in_memory
-                and filepath in self.file_manager.cached_data
-            ):
+            if not (self.file_manager.keep_in_memory and filepath in self.file_manager.cached_data):
                 continue
             cached = self.file_manager.cached_data[filepath]
             if not (isinstance(cached, dict) and "ms2" in cached):
@@ -5377,16 +5175,12 @@ class EICWindow(QWidget):
         if len(self.peak_boundary_lines) == 0:
             # No boundaries set - offer to add first one
             add_boundary_action = QAction("Add peak boundary", self)
-            add_boundary_action.triggered.connect(
-                lambda: self.add_peak_boundary(rt_value)
-            )
+            add_boundary_action.triggered.connect(lambda: self.add_peak_boundary(rt_value))
             context_menu.addAction(add_boundary_action)
         elif len(self.peak_boundary_lines) == 1:
             # One boundary set - offer to add second one or remove all
             add_second_boundary_action = QAction("Add second peak boundary", self)
-            add_second_boundary_action.triggered.connect(
-                lambda: self.add_peak_boundary(rt_value)
-            )
+            add_second_boundary_action.triggered.connect(lambda: self.add_peak_boundary(rt_value))
             context_menu.addAction(add_second_boundary_action)
 
             remove_boundary_action = QAction("Remove peak boundaries", self)
@@ -5405,68 +5199,63 @@ class EICWindow(QWidget):
         ms1_action.triggered.connect(lambda: self.view_ms1_spectra(rt_value))
         context_menu.addAction(ms1_action)
 
-        context_menu.addSeparator()
+        # Determine which MSMS actions are enabled via options
+        show_msms_closest = self.defaults.get("show_msms_closest", True)
+        show_msms_3s = self.defaults.get("show_msms_3s", False)
+        show_msms_6s = self.defaults.get("show_msms_6s", False)
+        show_msms_9s = self.defaults.get("show_msms_9s", False)
+        any_msms_enabled = show_msms_closest or show_msms_3s or show_msms_6s or show_msms_9s
 
-        # Add MSMS viewing options (unfiltered)
-        msms_closest_action = QAction("View closest MSMS spectrum", self)
-        msms_closest_action.triggered.connect(
-            lambda: self.view_closest_msms_spectrum(rt_value)
-        )
-        context_menu.addAction(msms_closest_action)
-
-        msms_3s_action = QAction("View MSMS (±3 seconds)", self)
-        msms_3s_action.triggered.connect(
-            lambda: self.view_msms_spectra(rt_value, 3.0 / 60.0)
-        )
-        context_menu.addAction(msms_3s_action)
-
-        msms_6s_action = QAction("View MSMS (±6 seconds)", self)
-        msms_6s_action.triggered.connect(
-            lambda: self.view_msms_spectra(rt_value, 6.0 / 60.0)
-        )
-        context_menu.addAction(msms_6s_action)
-
-        msms_9s_action = QAction("View MSMS (±9 seconds)", self)
-        msms_9s_action.triggered.connect(
-            lambda: self.view_msms_spectra(rt_value, 9.0 / 60.0)
-        )
-        context_menu.addAction(msms_9s_action)
-
-        # Add per-type MSMS submenus when a filter regex is configured
-        filter_types = self._get_msms_filter_types_at_rt(rt_value, 9.0 / 60.0)
-        if filter_types:
+        if any_msms_enabled:
             context_menu.addSeparator()
-            type_header = QAction("— by filter-string type —", self)
-            type_header.setEnabled(False)
-            context_menu.addAction(type_header)
-            for ftype in filter_types:
-                sub = context_menu.addMenu(f"MSMS: {ftype}")
-                closest_action = sub.addAction("Closest spectrum")
-                closest_action.triggered.connect(
-                    lambda checked=False,
-                    ft=ftype: self.view_closest_msms_spectrum(rt_value, filter_type=ft)
-                )
-                for secs, secs_min in (
-                    (3, 3.0 / 60.0),
-                    (6, 6.0 / 60.0),
-                    (9, 9.0 / 60.0),
-                ):
-                    action = sub.addAction(f"±{secs} seconds")
-                    action.triggered.connect(
-                        lambda checked=False,
-                        ft=ftype,
-                        sw=secs_min: self.view_msms_spectra(
-                            rt_value, sw, filter_type=ft
-                        )
-                    )
+
+            # Add MSMS viewing options (unfiltered)
+            if show_msms_closest:
+                msms_closest_action = QAction("View closest MSMS spectrum", self)
+                msms_closest_action.triggered.connect(lambda: self.view_closest_msms_spectrum(rt_value))
+                context_menu.addAction(msms_closest_action)
+
+            if show_msms_3s:
+                msms_3s_action = QAction("View MSMS (±3 seconds)", self)
+                msms_3s_action.triggered.connect(lambda: self.view_msms_spectra(rt_value, 3.0 / 60.0))
+                context_menu.addAction(msms_3s_action)
+
+            if show_msms_6s:
+                msms_6s_action = QAction("View MSMS (±6 seconds)", self)
+                msms_6s_action.triggered.connect(lambda: self.view_msms_spectra(rt_value, 6.0 / 60.0))
+                context_menu.addAction(msms_6s_action)
+
+            if show_msms_9s:
+                msms_9s_action = QAction("View MSMS (±9 seconds)", self)
+                msms_9s_action.triggered.connect(lambda: self.view_msms_spectra(rt_value, 9.0 / 60.0))
+                context_menu.addAction(msms_9s_action)
+
+            # Add per-type MSMS submenus when a filter regex is configured
+            filter_types = self._get_msms_filter_types_at_rt(rt_value, 9.0 / 60.0)
+            if filter_types:
+                context_menu.addSeparator()
+                type_header = QAction("— by filter-string type —", self)
+                type_header.setEnabled(False)
+                context_menu.addAction(type_header)
+                for ftype in filter_types:
+                    sub = context_menu.addMenu(f"MSMS: {ftype}")
+                    if show_msms_closest:
+                        closest_action = sub.addAction("Closest spectrum")
+                        closest_action.triggered.connect(lambda checked=False, ft=ftype: self.view_closest_msms_spectrum(rt_value, filter_type=ft))
+                    for secs, secs_min, enabled in (
+                        (3, 3.0 / 60.0, show_msms_3s),
+                        (6, 6.0 / 60.0, show_msms_6s),
+                        (9, 9.0 / 60.0, show_msms_9s),
+                    ):
+                        if enabled:
+                            action = sub.addAction(f"±{secs} seconds")
+                            action.triggered.connect(lambda checked=False, ft=ftype, sw=secs_min: self.view_msms_spectra(rt_value, sw, filter_type=ft))
 
         # Show the menu at the clicked position
         global_pos = self.chart_view.mapToGlobal(position.toPoint())
         context_menu.exec(global_pos)
 
-    def view_msms_spectra(
-        self, rt_center: float, rt_window: float, filter_type: Optional[str] = None
-    ):
+    def view_msms_spectra(self, rt_center: float, rt_window: float, filter_type: Optional[str] = None):
         """View MSMS spectra within the specified RT window.
 
         If *filter_type* is given, only spectra whose filter-string matches the
@@ -5478,17 +5267,14 @@ class EICWindow(QWidget):
             rt_end = rt_center + rt_window
 
             # Find MSMS spectra (optionally restricted to one filter-string type)
-            msms_spectra = self.find_msms_spectra(
-                rt_start, rt_end, filter_type=filter_type
-            )
+            msms_spectra = self.find_msms_spectra(rt_start, rt_end, filter_type=filter_type)
 
             if not msms_spectra:
                 type_hint = f" [{filter_type}]" if filter_type else ""
                 QMessageBox.information(
                     self,
                     "No MSMS Found",
-                    f"No MSMS spectra{type_hint} found for m/z {self.target_mz:.4f} "
-                    f"in RT window {rt_center:.2f} ± {rt_window * 60:.0f} s",
+                    f"No MSMS spectra{type_hint} found for m/z {self.target_mz:.4f} in RT window {rt_center:.2f} ± {rt_window * 60:.0f} s",
                 )
                 return
 
@@ -5508,13 +5294,9 @@ class EICWindow(QWidget):
             msms_viewer.show()
 
         except Exception as e:
-            QMessageBox.critical(
-                self, "Error", f"Failed to view MSMS spectra: {str(e)}"
-            )
+            QMessageBox.critical(self, "Error", f"Failed to view MSMS spectra: {str(e)}")
 
-    def view_closest_msms_spectrum(
-        self, rt_center: float, filter_type: Optional[str] = None
-    ):
+    def view_closest_msms_spectrum(self, rt_center: float, filter_type: Optional[str] = None):
         """View the single closest MSMS spectrum (per file) to rt_center.
 
         If *filter_type* is given, only spectra whose filter-string matches the
@@ -5528,8 +5310,7 @@ class EICWindow(QWidget):
                 QMessageBox.information(
                     self,
                     "No MSMS Found",
-                    f"No MSMS spectra{type_hint} found for m/z {self.target_mz:.4f} "
-                    f"near RT {rt_center:.2f} min",
+                    f"No MSMS spectra{type_hint} found for m/z {self.target_mz:.4f} near RT {rt_center:.2f} min",
                 )
                 return
 
@@ -5555,9 +5336,7 @@ class EICWindow(QWidget):
             msms_viewer.show()
 
         except Exception as e:
-            QMessageBox.critical(
-                self, "Error", f"Failed to view closest MSMS spectrum: {str(e)}"
-            )
+            QMessageBox.critical(self, "Error", f"Failed to view closest MSMS spectrum: {str(e)}")
 
     def view_ms1_spectra(self, rt_center: float):
         """View MS1 spectra at the specified RT for all files"""
@@ -5605,10 +5384,7 @@ class EICWindow(QWidget):
                 min_rt_diff = float("inf")
 
                 # Check if we have cached data (memory mode)
-                if (
-                    self.file_manager.keep_in_memory
-                    and filepath in self.file_manager.cached_data
-                ):
+                if self.file_manager.keep_in_memory and filepath in self.file_manager.cached_data:
                     cached_file_data = self.file_manager.cached_data[filepath]
 
                     # Handle both old format (list) and new format (dict with ms1/ms2)
@@ -5624,18 +5400,8 @@ class EICWindow(QWidget):
                                 self.polarity
                                 and spectrum_polarity
                                 and not (
-                                    (
-                                        self.polarity.lower()
-                                        in ["+", "positive", "pos"]
-                                        and spectrum_polarity.lower()
-                                        in ["+", "positive", "pos"]
-                                    )
-                                    or (
-                                        self.polarity.lower()
-                                        in ["-", "negative", "neg"]
-                                        and spectrum_polarity.lower()
-                                        in ["-", "negative", "neg"]
-                                    )
+                                    (self.polarity.lower() in ["+", "positive", "pos"] and spectrum_polarity.lower() in ["+", "positive", "pos"])
+                                    or (self.polarity.lower() in ["-", "negative", "neg"] and spectrum_polarity.lower() in ["-", "negative", "neg"])
                                 )
                             ):
                                 continue
@@ -5652,9 +5418,7 @@ class EICWindow(QWidget):
                                     "filename": filename,
                                     "group": group,
                                     "scan_id": spectrum_data.get("scan_id"),
-                                    "filter_string": spectrum_data.get(
-                                        "filter_string", "NA"
-                                    ),
+                                    "filter_string": spectrum_data.get("filter_string", "NA"),
                                 }
 
                 else:
@@ -5666,25 +5430,13 @@ class EICWindow(QWidget):
                             spectrum_rt = spectrum.scan_time_in_minutes()
 
                             # Check polarity if available
-                            spectrum_polarity = (
-                                self.file_manager._get_spectrum_polarity(spectrum)
-                            )
+                            spectrum_polarity = self.file_manager._get_spectrum_polarity(spectrum)
                             if (
                                 self.polarity
                                 and spectrum_polarity
                                 and not (
-                                    (
-                                        self.polarity.lower()
-                                        in ["+", "positive", "pos"]
-                                        and spectrum_polarity.lower()
-                                        in ["+", "positive", "pos"]
-                                    )
-                                    or (
-                                        self.polarity.lower()
-                                        in ["-", "negative", "neg"]
-                                        and spectrum_polarity.lower()
-                                        in ["-", "negative", "neg"]
-                                    )
+                                    (self.polarity.lower() in ["+", "positive", "pos"] and spectrum_polarity.lower() in ["+", "positive", "pos"])
+                                    or (self.polarity.lower() in ["-", "negative", "neg"] and spectrum_polarity.lower() in ["-", "negative", "neg"])
                                 )
                             ):
                                 continue
@@ -5707,9 +5459,7 @@ class EICWindow(QWidget):
                                         "filename": filename,
                                         "group": group,
                                         "scan_id": spectrum.ID,
-                                        "filter_string": spectrum.get(
-                                            "MS:1000512", "NA"
-                                        ),
+                                        "filter_string": spectrum.get("MS:1000512", "NA"),
                                     }
 
                 # Add the closest spectrum if found
@@ -5729,10 +5479,7 @@ class EICWindow(QWidget):
     def view_2d_scatter_plot(self, rt_center: float):
         """Add/remove 2D scatter plot (RT vs m/z) underneath the EIC plot"""
         try:
-            if (
-                hasattr(self, "scatter_plot_view")
-                and self.scatter_plot_view is not None
-            ):
+            if hasattr(self, "scatter_plot_view") and self.scatter_plot_view is not None:
                 # Remove existing scatter plot
                 self.remove_scatter_plot()
             else:
@@ -5740,9 +5487,7 @@ class EICWindow(QWidget):
                 self.add_scatter_plot(rt_center)
 
         except Exception as e:
-            QMessageBox.critical(
-                self, "Error", f"Failed to toggle 2D scatter plot: {str(e)}"
-            )
+            QMessageBox.critical(self, "Error", f"Failed to toggle 2D scatter plot: {str(e)}")
 
     def get_rt_range(self):
         """Get the RT range from the current chart view"""
@@ -5776,9 +5521,7 @@ class EICWindow(QWidget):
 
         # Create a vertical splitter to hold EIC chart, boxplot, and scatter plot
         three_way_splitter = QSplitter(Qt.Orientation.Vertical)
-        three_way_splitter.setChildrenCollapsible(
-            False
-        )  # Prevent completely collapsing widgets
+        three_way_splitter.setChildrenCollapsible(False)  # Prevent completely collapsing widgets
 
         # Add the EIC chart view to the new splitter
         three_way_splitter.addWidget(self.chart_view)
@@ -5806,9 +5549,7 @@ class EICWindow(QWidget):
 
         # Remove the fixed height from scatter plot to make it resizable
         self.scatter_plot_view.setMinimumHeight(200)
-        self.scatter_plot_view.setMaximumHeight(
-            16777215
-        )  # Remove the fixed height constraint
+        self.scatter_plot_view.setMaximumHeight(16777215)  # Remove the fixed height constraint
 
         scatter_layout.addWidget(self.scatter_plot_view)
 
@@ -5819,9 +5560,7 @@ class EICWindow(QWidget):
         three_way_splitter.setSizes([500, 250, 250])
         three_way_splitter.setStretchFactor(0, 1)  # EIC chart is stretchable
         three_way_splitter.setStretchFactor(1, 0)  # Boxplot maintains its proportion
-        three_way_splitter.setStretchFactor(
-            2, 0
-        )  # Scatter plot maintains its proportion
+        three_way_splitter.setStretchFactor(2, 0)  # Scatter plot maintains its proportion
 
         # Add the new splitter to the right panel layout
         current_layout.addWidget(three_way_splitter)
@@ -5839,10 +5578,7 @@ class EICWindow(QWidget):
 
     def remove_scatter_plot(self):
         """Remove the 2D scatter plot from the EIC window and restore two-way splitter layout"""
-        if (
-            hasattr(self, "chart_scatter_splitter")
-            and self.chart_scatter_splitter is not None
-        ):
+        if hasattr(self, "chart_scatter_splitter") and self.chart_scatter_splitter is not None:
             # Get the right panel
             right_panel = self.chart_scatter_splitter.parent()
             layout = right_panel.layout()
@@ -5861,9 +5597,7 @@ class EICWindow(QWidget):
             # Set initial sizes (75% EIC, 25% boxplot)
             new_eic_boxplot_splitter.setSizes([750, 250])
             new_eic_boxplot_splitter.setStretchFactor(0, 1)  # EIC chart is stretchable
-            new_eic_boxplot_splitter.setStretchFactor(
-                1, 0
-            )  # Boxplot maintains proportion
+            new_eic_boxplot_splitter.setStretchFactor(1, 0)  # Boxplot maintains proportion
 
             # Add the new two-way splitter to the layout
             layout.addWidget(new_eic_boxplot_splitter)
@@ -5895,9 +5629,7 @@ class EICWindow(QWidget):
 
     def _get_scatter_x_axis(self):
         """Return the scatter chart x-axis if available."""
-        if self.scatter_plot_view is None or not hasattr(
-            self.scatter_plot_view, "chart"
-        ):
+        if self.scatter_plot_view is None or not hasattr(self.scatter_plot_view, "chart"):
             return None
 
         axes = self.scatter_plot_view.chart.axes(Qt.Orientation.Horizontal)
@@ -5934,10 +5666,7 @@ class EICWindow(QWidget):
         if scatter_x_axis is None:
             return
 
-        if (
-            abs(scatter_x_axis.min() - minimum) < 1e-12
-            and abs(scatter_x_axis.max() - maximum) < 1e-12
-        ):
+        if abs(scatter_x_axis.min() - minimum) < 1e-12 and abs(scatter_x_axis.max() - maximum) < 1e-12:
             return
 
         self._syncing_scatter_x_axis = True
@@ -5951,10 +5680,7 @@ class EICWindow(QWidget):
         if self._syncing_scatter_x_axis:
             return
 
-        if (
-            abs(self.x_axis.min() - minimum) < 1e-12
-            and abs(self.x_axis.max() - maximum) < 1e-12
-        ):
+        if abs(self.x_axis.min() - minimum) < 1e-12 and abs(self.x_axis.max() - maximum) < 1e-12:
             return
 
         self._syncing_scatter_x_axis = True
@@ -5979,9 +5705,7 @@ class EICWindow(QWidget):
         except Exception as e:
             print(f"Could not auto-add scatter plot: {str(e)}")
 
-    def find_msms_spectra(
-        self, rt_start: float, rt_end: float, filter_type: Optional[str] = None
-    ):
+    def find_msms_spectra(self, rt_start: float, rt_end: float, filter_type: Optional[str] = None):
         """Find MSMS spectra within RT window for the target m/z and polarity.
 
         If *filter_type* is given only spectra whose filter string, parsed by
@@ -6002,10 +5726,7 @@ class EICWindow(QWidget):
                 file_msms = []
 
                 # Check if we have cached data (memory mode)
-                if (
-                    self.file_manager.keep_in_memory
-                    and filepath in self.file_manager.cached_data
-                ):
+                if self.file_manager.keep_in_memory and filepath in self.file_manager.cached_data:
                     cached_file_data = self.file_manager.cached_data[filepath]
 
                     # Handle both old format (list) and new format (dict with ms1/ms2)
@@ -6031,16 +5752,8 @@ class EICWindow(QWidget):
 
                             # Check polarity if available
                             if not (
-                                (
-                                    self.polarity.lower() in ["+", "positive", "pos"]
-                                    and spectrum_polarity.lower()
-                                    in ["+", "positive", "pos"]
-                                )
-                                or (
-                                    self.polarity.lower() in ["-", "negative", "neg"]
-                                    and spectrum_polarity.lower()
-                                    in ["-", "negative", "neg"]
-                                )
+                                (self.polarity.lower() in ["+", "positive", "pos"] and spectrum_polarity.lower() in ["+", "positive", "pos"])
+                                or (self.polarity.lower() in ["-", "negative", "neg"] and spectrum_polarity.lower() in ["-", "negative", "neg"])
                             ):
                                 continue
 
@@ -6052,22 +5765,16 @@ class EICWindow(QWidget):
                                 msms_spectrum = {
                                     "rt": spectrum_rt,
                                     "precursor_mz": precursor_mz,
-                                    "precursor_intensity": spectrum_data.get(
-                                        "precursor_intensity", 0
-                                    ),
+                                    "precursor_intensity": spectrum_data.get("precursor_intensity", 0),
                                     "mz": mz_array,
                                     "intensity": intensity_array,
-                                    "scan_id": spectrum_data.get(
-                                        "scan_id", f"RT_{spectrum_rt:.2f}"
-                                    ),
+                                    "scan_id": spectrum_data.get("scan_id", f"RT_{spectrum_rt:.2f}"),
                                     "polarity": spectrum_polarity,
                                     "filter_string": spectrum_data.get("filter_string"),
                                 }
                                 # Apply filter-type restriction
                                 if filter_type is not None:
-                                    parsed = self._parse_filter_string_type(
-                                        msms_spectrum["filter_string"] or ""
-                                    )
+                                    parsed = self._parse_filter_string_type(msms_spectrum["filter_string"] or "")
                                     if parsed != filter_type:
                                         continue
                                 file_msms.append(msms_spectrum)
@@ -6086,30 +5793,17 @@ class EICWindow(QWidget):
 
                             # Check precursor m/z
                             try:
-                                precursor_mz = (
-                                    spectrum.selected_precursors[0]["mz"]
-                                    if spectrum.selected_precursors
-                                    else None
-                                )
+                                precursor_mz = spectrum.selected_precursors[0]["mz"] if spectrum.selected_precursors else None
                                 if precursor_mz is None:
                                     continue
 
                                 # Check if precursor matches target m/z
-                                if (
-                                    abs(precursor_mz - self.target_mz)
-                                    > precursor_tolerance
-                                ):
+                                if abs(precursor_mz - self.target_mz) > precursor_tolerance:
                                     continue
 
                                 # Check polarity if available
-                                spectrum_polarity = (
-                                    self.file_manager._get_spectrum_polarity(spectrum)
-                                )
-                                if (
-                                    self.polarity
-                                    and spectrum_polarity
-                                    and self.polarity != spectrum_polarity
-                                ):
+                                spectrum_polarity = self.file_manager._get_spectrum_polarity(spectrum)
+                                if self.polarity and spectrum_polarity and self.polarity != spectrum_polarity:
                                     continue
 
                                 # Extract spectrum data
@@ -6119,14 +5813,9 @@ class EICWindow(QWidget):
                                 # Try to get precursor intensity
                                 precursor_intensity = 0
                                 try:
-                                    if (
-                                        spectrum.selected_precursors
-                                        and len(spectrum.selected_precursors) > 0
-                                    ):
+                                    if spectrum.selected_precursors and len(spectrum.selected_precursors) > 0:
                                         precursor_info = spectrum.selected_precursors[0]
-                                        precursor_intensity = precursor_info.get(
-                                            "intensity", 0
-                                        )
+                                        precursor_intensity = precursor_info.get("intensity", 0)
                                         if precursor_intensity is None:
                                             precursor_intensity = 0
                                 except:
@@ -6141,15 +5830,11 @@ class EICWindow(QWidget):
                                         "intensity": intensity_array,
                                         "scan_id": spectrum.ID,
                                         "polarity": spectrum_polarity,
-                                        "filter_string": self.file_manager._get_filter_string(
-                                            spectrum
-                                        ),
+                                        "filter_string": self.file_manager._get_filter_string(spectrum),
                                     }
                                     # Apply filter-type restriction
                                     if filter_type is not None:
-                                        parsed = self._parse_filter_string_type(
-                                            spectrum_data["filter_string"] or ""
-                                        )
+                                        parsed = self._parse_filter_string_type(spectrum_data["filter_string"] or "")
                                         if parsed != filter_type:
                                             continue
                                     file_msms.append(spectrum_data)
@@ -6174,9 +5859,7 @@ class EICWindow(QWidget):
 
         return msms_spectra
 
-    def find_closest_msms_spectra(
-        self, rt_center: float, filter_type: Optional[str] = None
-    ):
+    def find_closest_msms_spectra(self, rt_center: float, filter_type: Optional[str] = None):
         """For each file, find the single MSMS spectrum whose RT is closest to
         rt_center and whose precursor m/z matches target_mz.
 
@@ -6196,10 +5879,7 @@ class EICWindow(QWidget):
                 closest_spectrum = None
                 min_rt_diff = float("inf")
 
-                if (
-                    self.file_manager.keep_in_memory
-                    and filepath in self.file_manager.cached_data
-                ):
+                if self.file_manager.keep_in_memory and filepath in self.file_manager.cached_data:
                     cached_file_data = self.file_manager.cached_data[filepath]
 
                     if isinstance(cached_file_data, dict) and "ms2" in cached_file_data:
@@ -6213,16 +5893,8 @@ class EICWindow(QWidget):
                             if abs(precursor_mz - self.target_mz) > precursor_tolerance:
                                 continue
                             if not (
-                                (
-                                    self.polarity.lower() in ["+", "positive", "pos"]
-                                    and spectrum_polarity.lower()
-                                    in ["+", "positive", "pos"]
-                                )
-                                or (
-                                    self.polarity.lower() in ["-", "negative", "neg"]
-                                    and spectrum_polarity.lower()
-                                    in ["-", "negative", "neg"]
-                                )
+                                (self.polarity.lower() in ["+", "positive", "pos"] and spectrum_polarity.lower() in ["+", "positive", "pos"])
+                                or (self.polarity.lower() in ["-", "negative", "neg"] and spectrum_polarity.lower() in ["-", "negative", "neg"])
                             ):
                                 continue
 
@@ -6234,21 +5906,15 @@ class EICWindow(QWidget):
                             candidate = {
                                 "rt": spectrum_rt,
                                 "precursor_mz": precursor_mz,
-                                "precursor_intensity": spectrum_data.get(
-                                    "precursor_intensity", 0
-                                ),
+                                "precursor_intensity": spectrum_data.get("precursor_intensity", 0),
                                 "mz": mz_array,
                                 "intensity": intensity_array,
-                                "scan_id": spectrum_data.get(
-                                    "scan_id", f"RT_{spectrum_rt:.2f}"
-                                ),
+                                "scan_id": spectrum_data.get("scan_id", f"RT_{spectrum_rt:.2f}"),
                                 "polarity": spectrum_polarity,
                                 "filter_string": spectrum_data.get("filter_string"),
                             }
                             if filter_type is not None:
-                                parsed = self._parse_filter_string_type(
-                                    candidate["filter_string"] or ""
-                                )
+                                parsed = self._parse_filter_string_type(candidate["filter_string"] or "")
                                 if parsed != filter_type:
                                     continue
 
@@ -6267,24 +5933,14 @@ class EICWindow(QWidget):
                         spectrum_rt = spectrum.scan_time_in_minutes()
 
                         try:
-                            precursor_mz = (
-                                spectrum.selected_precursors[0]["mz"]
-                                if spectrum.selected_precursors
-                                else None
-                            )
+                            precursor_mz = spectrum.selected_precursors[0]["mz"] if spectrum.selected_precursors else None
                             if precursor_mz is None:
                                 continue
                             if abs(precursor_mz - self.target_mz) > precursor_tolerance:
                                 continue
 
-                            spectrum_polarity = (
-                                self.file_manager._get_spectrum_polarity(spectrum)
-                            )
-                            if (
-                                self.polarity
-                                and spectrum_polarity
-                                and self.polarity != spectrum_polarity
-                            ):
+                            spectrum_polarity = self.file_manager._get_spectrum_polarity(spectrum)
+                            if self.polarity and spectrum_polarity and self.polarity != spectrum_polarity:
                                 continue
 
                             mz_array = spectrum.mz
@@ -6295,12 +5951,7 @@ class EICWindow(QWidget):
                             precursor_intensity = 0
                             try:
                                 if spectrum.selected_precursors:
-                                    precursor_intensity = (
-                                        spectrum.selected_precursors[0].get(
-                                            "intensity", 0
-                                        )
-                                        or 0
-                                    )
+                                    precursor_intensity = spectrum.selected_precursors[0].get("intensity", 0) or 0
                             except Exception:
                                 precursor_intensity = 0
 
@@ -6312,14 +5963,10 @@ class EICWindow(QWidget):
                                 "intensity": intensity_array,
                                 "scan_id": spectrum.ID,
                                 "polarity": spectrum_polarity,
-                                "filter_string": self.file_manager._get_filter_string(
-                                    spectrum
-                                ),
+                                "filter_string": self.file_manager._get_filter_string(spectrum),
                             }
                             if filter_type is not None:
-                                parsed = self._parse_filter_string_type(
-                                    candidate["filter_string"] or ""
-                                )
+                                parsed = self._parse_filter_string_type(candidate["filter_string"] or "")
                                 if parsed != filter_type:
                                     continue
 
@@ -6443,18 +6090,12 @@ class EmbeddedScatterPlotView(QWidget):
 
                 try:
                     # Use the same data access pattern as extract_eic function
-                    if (
-                        self.file_manager.keep_in_memory
-                        and filepath in self.file_manager.cached_data
-                    ):
+                    if self.file_manager.keep_in_memory and filepath in self.file_manager.cached_data:
                         # Use cached memory data
                         cached_file_data = self.file_manager.cached_data[filepath]
 
                         # Handle both old format (list) and new format (dict with ms1/ms2)
-                        if (
-                            isinstance(cached_file_data, dict)
-                            and "ms1" in cached_file_data
-                        ):
+                        if isinstance(cached_file_data, dict) and "ms1" in cached_file_data:
                             spectra_data = cached_file_data["ms1"]
                         else:
                             # Old format - assume it's MS1 data
@@ -6467,18 +6108,8 @@ class EmbeddedScatterPlotView(QWidget):
                                 self.polarity
                                 and spectrum_data.get("polarity")
                                 and not (
-                                    (
-                                        self.polarity.lower()
-                                        in ["+", "positive", "pos"]
-                                        and spectrum_data.get("polarity").lower()
-                                        in ["+", "positive", "pos"]
-                                    )
-                                    or (
-                                        self.polarity.lower()
-                                        in ["-", "negative", "neg"]
-                                        and spectrum_data.get("polarity").lower()
-                                        in ["-", "negative", "neg"]
-                                    )
+                                    (self.polarity.lower() in ["+", "positive", "pos"] and spectrum_data.get("polarity").lower() in ["+", "positive", "pos"])
+                                    or (self.polarity.lower() in ["-", "negative", "neg"] and spectrum_data.get("polarity").lower() in ["-", "negative", "neg"])
                                 )
                             ):
                                 continue
@@ -6492,9 +6123,7 @@ class EmbeddedScatterPlotView(QWidget):
 
                                 if len(mz_array) > 0:
                                     # Filter by extended m/z range
-                                    mz_mask = (mz_array >= mz_min) & (
-                                        mz_array <= mz_max
-                                    )
+                                    mz_mask = (mz_array >= mz_min) & (mz_array <= mz_max)
                                     if np.any(mz_mask):
                                         filtered_mz = mz_array[mz_mask]
                                         filtered_intensity = intensity_array[mz_mask]
@@ -6503,18 +6132,14 @@ class EmbeddedScatterPlotView(QWidget):
                                         if group not in group_signals:
                                             group_signals[group] = []
 
-                                        for mz, intensity in zip(
-                                            filtered_mz, filtered_intensity
-                                        ):
+                                        for mz, intensity in zip(filtered_mz, filtered_intensity):
                                             signal_info = {
                                                 "rt": spectrum_rt,
                                                 "mz": mz,
                                                 "intensity": intensity,
                                                 "group": group,
                                                 "filename": filename,
-                                                "in_eic_window": eic_mz_min
-                                                <= mz
-                                                <= eic_mz_max,
+                                                "in_eic_window": eic_mz_min <= mz <= eic_mz_max,
                                             }
                                             group_signals[group].append(signal_info)
                                             self.signal_data.append(signal_info)
@@ -6527,27 +6152,13 @@ class EmbeddedScatterPlotView(QWidget):
                             if spectrum.ms_level == 1:  # Only MS1 spectra
                                 # Check polarity if specified
                                 if self.polarity is not None:
-                                    spectrum_polarity = (
-                                        self.file_manager._get_spectrum_polarity(
-                                            spectrum
-                                        )
-                                    )
+                                    spectrum_polarity = self.file_manager._get_spectrum_polarity(spectrum)
                                     if (
                                         self.polarity
                                         and spectrum_polarity
                                         and not (
-                                            (
-                                                self.polarity.lower()
-                                                in ["+", "positive", "pos"]
-                                                and spectrum_polarity.lower()
-                                                in ["+", "positive", "pos"]
-                                            )
-                                            or (
-                                                self.polarity.lower()
-                                                in ["-", "negative", "neg"]
-                                                and spectrum_polarity.lower()
-                                                in ["-", "negative", "neg"]
-                                            )
+                                            (self.polarity.lower() in ["+", "positive", "pos"] and spectrum_polarity.lower() in ["+", "positive", "pos"])
+                                            or (self.polarity.lower() in ["-", "negative", "neg"] and spectrum_polarity.lower() in ["-", "negative", "neg"])
                                         )
                                     ):
                                         continue
@@ -6561,31 +6172,23 @@ class EmbeddedScatterPlotView(QWidget):
 
                                     if len(mz_array) > 0:
                                         # Filter by extended m/z range
-                                        mz_mask = (mz_array >= mz_min) & (
-                                            mz_array <= mz_max
-                                        )
+                                        mz_mask = (mz_array >= mz_min) & (mz_array <= mz_max)
                                         if np.any(mz_mask):
                                             filtered_mz = mz_array[mz_mask]
-                                            filtered_intensity = intensity_array[
-                                                mz_mask
-                                            ]
+                                            filtered_intensity = intensity_array[mz_mask]
 
                                             # Add signals to group
                                             if group not in group_signals:
                                                 group_signals[group] = []
 
-                                            for mz, intensity in zip(
-                                                filtered_mz, filtered_intensity
-                                            ):
+                                            for mz, intensity in zip(filtered_mz, filtered_intensity):
                                                 signal_info = {
                                                     "rt": spectrum_rt,
                                                     "mz": mz,
                                                     "intensity": intensity,
                                                     "group": group,
                                                     "filename": filename,
-                                                    "in_eic_window": eic_mz_min
-                                                    <= mz
-                                                    <= eic_mz_max,
+                                                    "in_eic_window": eic_mz_min <= mz <= eic_mz_max,
                                                 }
                                                 group_signals[group].append(signal_info)
                                                 self.signal_data.append(signal_info)
@@ -6663,14 +6266,10 @@ class EmbeddedScatterPlotView(QWidget):
                 # Calculate intensity range for this level
                 intensity_range = max_intensity - min_intensity
                 level_min = min_intensity + (intensity_range * level / intensity_levels)
-                level_max = min_intensity + (
-                    intensity_range * (level + 1) / intensity_levels
-                )
+                level_max = min_intensity + (intensity_range * (level + 1) / intensity_levels)
 
                 # Calculate transparency (10% for lowest, 100% for highest)
-                transparency = int(
-                    25 + (230 * level / (intensity_levels - 1))
-                )  # 25-255 range
+                transparency = int(25 + (230 * level / (intensity_levels - 1)))  # 25-255 range
 
                 # Set color with transparency
                 color = QColor(base_color)
@@ -6680,10 +6279,7 @@ class EmbeddedScatterPlotView(QWidget):
 
                 # Add points for this intensity level
                 for signal in signals:
-                    if level_min <= signal["intensity"] <= level_max or (
-                        level == intensity_levels - 1
-                        and signal["intensity"] >= level_min
-                    ):
+                    if level_min <= signal["intensity"] <= level_max or (level == intensity_levels - 1 and signal["intensity"] >= level_min):
                         series.append(signal["rt"], signal["mz"])
 
                 if series.count() > 0:
@@ -6804,18 +6400,14 @@ class EmbeddedScatterPlotView(QWidget):
 
             # Get current m/z tolerance from the EIC window
             if self.eic_window and hasattr(self.eic_window, "mz_tolerance_da_spin"):
-                current_mz_tolerance = (
-                    self.eic_window.mz_tolerance_da_spin.value() * 3
-                )  # 3x for scatter plot
+                current_mz_tolerance = self.eic_window.mz_tolerance_da_spin.value() * 3  # 3x for scatter plot
                 print(f"Using updated m/z tolerance: {current_mz_tolerance:.6f} Da")
                 self.mz_tolerance = current_mz_tolerance
 
             # Get current RT range from EIC window
             if self.eic_window and hasattr(self.eic_window, "get_rt_range"):
                 self.rt_min, self.rt_max = self.eic_window.get_rt_range()
-                print(
-                    f"Using updated RT range: {self.rt_min:.2f} - {self.rt_max:.2f} min"
-                )
+                print(f"Using updated RT range: {self.rt_min:.2f} - {self.rt_max:.2f} min")
 
             # Complete cleanup - remove all series and axes
             self.chart.removeAllSeries()
@@ -6895,17 +6487,11 @@ class Interactive2DScatterChartView(QChartView):
 
                     if x_axis and y_axis:
                         # Convert pixel position to data coordinates
-                        rel_x = (
-                            event.position().x() - plot_area.left()
-                        ) / plot_area.width()
-                        rel_y = (
-                            event.position().y() - plot_area.top()
-                        ) / plot_area.height()
+                        rel_x = (event.position().x() - plot_area.left()) / plot_area.width()
+                        rel_y = (event.position().y() - plot_area.top()) / plot_area.height()
 
                         data_rt = x_axis.min() + rel_x * (x_axis.max() - x_axis.min())
-                        data_mz = y_axis.max() - rel_y * (
-                            y_axis.max() - y_axis.min()
-                        )  # Y is inverted
+                        data_mz = y_axis.max() - rel_y * (y_axis.max() - y_axis.min())  # Y is inverted
 
                         # Find nearby signals and determine which group to highlight
                         nearby_group = self.find_nearby_group(data_rt, data_mz)
@@ -6966,14 +6552,8 @@ class Interactive2DScatterChartView(QChartView):
                 rel_x = max(0.0, min(1.0, rel_x))
                 rel_y = max(0.0, min(1.0, rel_y))
 
-                x_range = (
-                    self.interaction_start_x_range[1]
-                    - self.interaction_start_x_range[0]
-                )
-                y_range = (
-                    self.interaction_start_y_range[1]
-                    - self.interaction_start_y_range[0]
-                )
+                x_range = self.interaction_start_x_range[1] - self.interaction_start_x_range[0]
+                y_range = self.interaction_start_y_range[1] - self.interaction_start_y_range[0]
                 self.zoom_anchor_x = self.interaction_start_x_range[0] + rel_x * x_range
                 self.zoom_anchor_y = self.interaction_start_y_range[1] - rel_y * y_range
 
@@ -7051,12 +6631,8 @@ class Interactive2DScatterChartView(QChartView):
                 y_axis = axis
 
         if x_axis and y_axis:
-            x_range = (
-                self.interaction_start_x_range[1] - self.interaction_start_x_range[0]
-            )
-            y_range = (
-                self.interaction_start_y_range[1] - self.interaction_start_y_range[0]
-            )
+            x_range = self.interaction_start_x_range[1] - self.interaction_start_x_range[0]
+            y_range = self.interaction_start_y_range[1] - self.interaction_start_y_range[0]
 
             x_per_pixel = x_range / plot_area.width()
             y_per_pixel = y_range / plot_area.height()
@@ -7087,12 +6663,8 @@ class Interactive2DScatterChartView(QChartView):
         x_zoom_factor = max(0.1, min(10.0, x_zoom_factor))
         y_zoom_factor = max(0.1, min(10.0, y_zoom_factor))
 
-        original_x_range = (
-            self.interaction_start_x_range[1] - self.interaction_start_x_range[0]
-        )
-        original_y_range = (
-            self.interaction_start_y_range[1] - self.interaction_start_y_range[0]
-        )
+        original_x_range = self.interaction_start_x_range[1] - self.interaction_start_x_range[0]
+        original_y_range = self.interaction_start_y_range[1] - self.interaction_start_y_range[0]
 
         new_x_range = original_x_range * x_zoom_factor
         new_y_range = original_y_range * y_zoom_factor
@@ -7102,18 +6674,10 @@ class Interactive2DScatterChartView(QChartView):
         anchor_to_bottom = self.zoom_anchor_y - self.interaction_start_y_range[0]
         anchor_to_top = self.interaction_start_y_range[1] - self.zoom_anchor_y
 
-        new_x_min = (
-            self.zoom_anchor_x - (anchor_to_left / original_x_range) * new_x_range
-        )
-        new_x_max = (
-            self.zoom_anchor_x + (anchor_to_right / original_x_range) * new_x_range
-        )
-        new_y_min = (
-            self.zoom_anchor_y - (anchor_to_bottom / original_y_range) * new_y_range
-        )
-        new_y_max = (
-            self.zoom_anchor_y + (anchor_to_top / original_y_range) * new_y_range
-        )
+        new_x_min = self.zoom_anchor_x - (anchor_to_left / original_x_range) * new_x_range
+        new_x_max = self.zoom_anchor_x + (anchor_to_right / original_x_range) * new_x_range
+        new_y_min = self.zoom_anchor_y - (anchor_to_bottom / original_y_range) * new_y_range
+        new_y_max = self.zoom_anchor_y + (anchor_to_top / original_y_range) * new_y_range
 
         axes = self.chart().axes()
         x_axis = None
@@ -7131,10 +6695,7 @@ class Interactive2DScatterChartView(QChartView):
     def find_nearby_group(self, rt, mz):
         """Find the group of signals near the mouse position"""
         for signal in self.signal_data:
-            if (
-                abs(signal["rt"] - rt) <= self.hover_tolerance_rt
-                and abs(signal["mz"] - mz) <= self.hover_tolerance_mz
-            ):
+            if abs(signal["rt"] - rt) <= self.hover_tolerance_rt and abs(signal["mz"] - mz) <= self.hover_tolerance_mz:
                 return signal["group"]
         return None
 
@@ -7144,10 +6705,7 @@ class Interactive2DScatterChartView(QChartView):
             return
 
         # Restore original colors if we were highlighting another group
-        if (
-            self.current_hover_group
-            and self.current_hover_group in self.original_colors
-        ):
+        if self.current_hover_group and self.current_hover_group in self.original_colors:
             self.restore_group_colors(self.current_hover_group)
 
         if group_to_highlight:

@@ -123,10 +123,7 @@ def _pubchem_get(url: str) -> Optional[dict]:
 
 def _get_cid_by_identifier(identifier: str) -> Optional[int]:
     """Return the first PubChem CID matching *identifier* (name, CAS, etc.)."""
-    url = (
-        f"{PUBCHEM_BASE_URL}/compound/name/"
-        f"{urllib.parse.quote(identifier.strip())}/cids/JSON"
-    )
+    url = f"{PUBCHEM_BASE_URL}/compound/name/{urllib.parse.quote(identifier.strip())}/cids/JSON"
     data = _pubchem_get(url)
     time.sleep(REQUEST_DELAY)
     if data and "IdentifierList" in data:
@@ -164,11 +161,7 @@ def _batch_fetch_properties(cids: list) -> None:
     for i in range(0, len(cids), _BATCH_CHUNK_SIZE):
         chunk = cids[i : i + _BATCH_CHUNK_SIZE]
         cid_str = ",".join(str(c) for c in chunk)
-        url = (
-            f"{PUBCHEM_BASE_URL}/compound/cid/{cid_str}/property/"
-            "MolecularFormula,CanonicalSMILES,IUPACName,InChI,InChIKey,"
-            "XLogP,Charge,LiteratureCount,Fingerprint2D,Title/JSON"
-        )
+        url = f"{PUBCHEM_BASE_URL}/compound/cid/{cid_str}/property/MolecularFormula,CanonicalSMILES,IUPACName,InChI,InChIKey,XLogP,Charge,LiteratureCount,Fingerprint2D,Title/JSON"
         data = _http_get_raw(url)
         time.sleep(REQUEST_DELAY)
         fetched: set = set()
@@ -388,9 +381,7 @@ def fetch_pubchem_info_batch(
 
         if progress_callback is not None:
             if not progress_callback(i, len(compounds), name or ""):
-                cancelled = (
-                    True  # fill remaining cids with None; batch fetch skipped for them
-                )
+                cancelled = True  # fill remaining cids with None; batch fetch skipped for them
 
     # Step 2 — batch-fetch properties and synonyms for uncached resolved CIDs
     resolved = list(dict.fromkeys(c for c in cids if c is not None))
@@ -403,10 +394,7 @@ def fetch_pubchem_info_batch(
         _batch_fetch_synonyms(needs_syns)
 
     # Step 3 — assemble PubChem results from per-CID cache
-    results = [
-        None if cid is None else _assemble_result(cid, cas)
-        for (name, cas), cid in zip(compounds, cids)
-    ]
+    results = [None if cid is None else _assemble_result(cid, cas) for (name, cas), cid in zip(compounds, cids)]
 
     # Step 4 — enrich with CAS Common Chemistry data (only when API key present)
     if cas_api_key:
@@ -426,16 +414,12 @@ def fetch_pubchem_info_batch(
             result["cas_preferred_name"] = cas_detail.get("name") or None
             result["cas_rn_confirmed"] = cas_detail.get("rn") or None
             exp_props = cas_detail.get("experimentalProperties") or []
-            result["cas_experimental_properties"] = (
-                json.dumps(exp_props, ensure_ascii=False) if exp_props else None
-            )
+            result["cas_experimental_properties"] = json.dumps(exp_props, ensure_ascii=False) if exp_props else None
 
     return results
 
 
-def fetch_pubchem_info(
-    name: str, cas: Optional[str] = None, cas_api_key: Optional[str] = None
-) -> Optional[dict]:
+def fetch_pubchem_info(name: str, cas: Optional[str] = None, cas_api_key: Optional[str] = None) -> Optional[dict]:
     """Fetch PubChem (and optionally CAS) information for a single compound.
 
     Delegates to ``fetch_pubchem_info_batch`` for a single-element list so that
@@ -550,10 +534,7 @@ def _pubchem_get(url: str) -> Optional[dict]:
 
 def _get_cid_by_identifier(identifier: str) -> Optional[int]:
     """Return the first PubChem CID matching *identifier* (name, CAS, etc.)."""
-    url = (
-        f"{PUBCHEM_BASE_URL}/compound/name/"
-        f"{urllib.parse.quote(identifier.strip())}/cids/JSON"
-    )
+    url = f"{PUBCHEM_BASE_URL}/compound/name/{urllib.parse.quote(identifier.strip())}/cids/JSON"
     data = _pubchem_get(url)
     time.sleep(REQUEST_DELAY)
     if data and "IdentifierList" in data:
@@ -599,10 +580,7 @@ def fetch_pubchem_info(name: str, cas: Optional[str] = None) -> Optional[dict]:
         return None
 
     # Fetch properties
-    props_url = (
-        f"{PUBCHEM_BASE_URL}/compound/cid/{cid}/property/"
-        "MolecularFormula,CanonicalSMILES,IUPACName,InChI,InChIKey/JSON"
-    )
+    props_url = f"{PUBCHEM_BASE_URL}/compound/cid/{cid}/property/MolecularFormula,CanonicalSMILES,IUPACName,InChI,InChIKey/JSON"
     props_data = _pubchem_get(props_url)
     time.sleep(REQUEST_DELAY)
 
@@ -614,9 +592,7 @@ def fetch_pubchem_info(name: str, cas: Optional[str] = None) -> Optional[dict]:
 
     if props_data and "PropertyTable" in props_data:
         props = props_data["PropertyTable"].get("Properties", [{}])[0]
-        result["smiles"] = props.get(
-            "ConnectivitySMILES"
-        )  # Returned by PubChem for some compounds, but not all. Fallback to CanonicalSMILES if missing.
+        result["smiles"] = props.get("ConnectivitySMILES")  # Returned by PubChem for some compounds, but not all. Fallback to CanonicalSMILES if missing.
         if not result["smiles"]:
             result["smiles"] = props.get("CanonicalSMILES")
         result["molecular_formula"] = props.get("MolecularFormula")

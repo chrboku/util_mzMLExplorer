@@ -198,9 +198,7 @@ class InteractiveEICWidget(QWidget):
         mz_tolerance_ppm = self.defaults.get("mz_tolerance_ppm", 5.0)
         mz_tolerance_da = (self.mz_value * mz_tolerance_ppm) / 1e6
 
-        calculation_method = self.defaults.get(
-            "calculation_method", "Sum of all signals"
-        )
+        calculation_method = self.defaults.get("calculation_method", "Sum of all signals")
 
         files_data = self.file_manager.get_files_data()
         eic_results = {}
@@ -223,9 +221,7 @@ class InteractiveEICWidget(QWidget):
 
                 if len(rt_values) > 0 and len(intensity_values) > 0:
                     # Check if we have any non-zero intensities
-                    max_intensity = (
-                        intensity_values.max() if len(intensity_values) > 0 else 0
-                    )
+                    max_intensity = intensity_values.max() if len(intensity_values) > 0 else 0
                     non_zero_points = np.sum(intensity_values > 0)
 
                     # Store the data with metadata including group info
@@ -358,9 +354,7 @@ class InteractiveEICWidget(QWidget):
             window_width = 2.0  # Default 2-minute window around center
             zoom_start = max(0, rt_center - window_width)
             zoom_end = rt_center + window_width
-            rt_window_start = (
-                rt_center - 1.0
-            )  # 1 minute around center for intensity calc
+            rt_window_start = rt_center - 1.0  # 1 minute around center for intensity calc
             rt_window_end = rt_center + 1.0
 
         else:
@@ -387,17 +381,13 @@ class InteractiveEICWidget(QWidget):
         for filename, data in eic_data.items():
             if len(data["rt"]) > 0 and len(data["intensity"]) > 0:
                 # Filter data to RT window
-                rt_mask = (data["rt"] >= rt_window_start) & (
-                    data["rt"] <= rt_window_end
-                )
+                rt_mask = (data["rt"] >= rt_window_start) & (data["rt"] <= rt_window_end)
                 if np.any(rt_mask):
                     intensities_in_window = data["intensity"][rt_mask]
                     if len(intensities_in_window) > 0:
                         window_max = intensities_in_window.max()
                         window_min = intensities_in_window.min()
-                        max_intensity_in_window = max(
-                            max_intensity_in_window, window_max
-                        )
+                        max_intensity_in_window = max(max_intensity_in_window, window_max)
                         if window_min < min_intensity_in_window:
                             min_intensity_in_window = window_min
 
@@ -413,11 +403,7 @@ class InteractiveEICWidget(QWidget):
 
                 # Set y_min to 0 or slightly below minimum if there are negative values
                 if min_intensity_in_window != float("inf"):
-                    y_min = (
-                        min(0, min_intensity_in_window * 1.1)
-                        if min_intensity_in_window < 0
-                        else 0
-                    )
+                    y_min = min(0, min_intensity_in_window * 1.1) if min_intensity_in_window < 0 else 0
                 else:
                     y_min = 0
 
@@ -484,9 +470,7 @@ class InteractiveEICWidget(QWidget):
             # Show a message box if there's an error
             from PyQt6.QtWidgets import QMessageBox
 
-            QMessageBox.warning(
-                self, "Error", f"Could not open individual EIC viewer:\n{str(e)}"
-            )
+            QMessageBox.warning(self, "Error", f"Could not open individual EIC viewer:\n{str(e)}")
 
     def _set_auto_zoom(self, ax, all_rt_values):
         """Set automatic zoom to compound RT range (legacy method, replaced by _set_auto_zoom_with_y_scaling)"""
@@ -556,9 +540,7 @@ class MultiAdductWindow(QWidget):
             # Use the same tolerance conversion as the single viewer
             mz_tolerance_ppm = self.defaults.get("mz_tolerance_ppm", 5.0)
             mz_tolerance_da = (mz_value * mz_tolerance_ppm) / 1e6
-            calculation_method = self.defaults.get(
-                "calculation_method", "Sum of all signals"
-            )
+            calculation_method = self.defaults.get("calculation_method", "Sum of all signals")
 
             # Get compound RT range
             rt_start = self.compound.get("RT_start_min")
@@ -596,9 +578,7 @@ class MultiAdductWindow(QWidget):
 
                     if len(rt_values) > 0 and len(intensity_values) > 0:
                         # Filter to RT window
-                        rt_mask = (rt_values >= rt_window_start) & (
-                            rt_values <= rt_window_end
-                        )
+                        rt_mask = (rt_values >= rt_window_start) & (rt_values <= rt_window_end)
                         if np.any(rt_mask):
                             intensities_in_window = intensity_values[rt_mask]
                             if len(intensities_in_window) > 0:
@@ -607,25 +587,18 @@ class MultiAdductWindow(QWidget):
 
                     # Try without polarity filter if no data found
                     if max_intensity == 0 and polarity is not None:
-                        rt_values_no_pol, intensity_values_no_pol = (
-                            self.file_manager.extract_eic(
-                                filepath=file_path,
-                                target_mz=mz_value,
-                                mz_tolerance=mz_tolerance_da,
-                                rt_start=None,
-                                rt_end=None,
-                                calculation_method=calculation_method,
-                                polarity=None,
-                            )
+                        rt_values_no_pol, intensity_values_no_pol = self.file_manager.extract_eic(
+                            filepath=file_path,
+                            target_mz=mz_value,
+                            mz_tolerance=mz_tolerance_da,
+                            rt_start=None,
+                            rt_end=None,
+                            calculation_method=calculation_method,
+                            polarity=None,
                         )
 
-                        if (
-                            len(rt_values_no_pol) > 0
-                            and len(intensity_values_no_pol) > 0
-                        ):
-                            rt_mask = (rt_values_no_pol >= rt_window_start) & (
-                                rt_values_no_pol <= rt_window_end
-                            )
+                        if len(rt_values_no_pol) > 0 and len(intensity_values_no_pol) > 0:
+                            rt_mask = (rt_values_no_pol >= rt_window_start) & (rt_values_no_pol <= rt_window_end)
                             if np.any(rt_mask):
                                 intensities_in_window = intensity_values_no_pol[rt_mask]
                                 if len(intensities_in_window) > 0:
@@ -648,9 +621,7 @@ class MultiAdductWindow(QWidget):
         # Header with compound information
         compound_name = self.compound.get("Name", "Unknown")
         rt_min = self.compound.get("RT_min", "N/A")
-        header_text = (
-            f"<b>Compound:</b> {compound_name}<br><b>Expected RT:</b> {rt_min} min"
-        )
+        header_text = f"<b>Compound:</b> {compound_name}<br><b>Expected RT:</b> {rt_min} min"
 
         header_label = QLabel(header_text)
         header_label.setStyleSheet("""
@@ -676,12 +647,8 @@ class MultiAdductWindow(QWidget):
         adducts_with_intensity = []
         for adduct, mz_value, polarity in self.adducts_data:
             if mz_value is not None:  # Only process adducts with valid m/z
-                max_intensity = self._calculate_max_intensity_in_rt_window(
-                    adduct, mz_value, polarity
-                )
-                adducts_with_intensity.append(
-                    (adduct, mz_value, polarity, max_intensity)
-                )
+                max_intensity = self._calculate_max_intensity_in_rt_window(adduct, mz_value, polarity)
+                adducts_with_intensity.append((adduct, mz_value, polarity, max_intensity))
 
         # Sort by maximum intensity in descending order
         adducts_with_intensity.sort(key=lambda x: x[3], reverse=True)

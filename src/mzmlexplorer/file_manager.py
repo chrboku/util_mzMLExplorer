@@ -97,23 +97,15 @@ class FileManager:
             if cached_hash == file_hash and cached_version == current_version:
                 return data
             # Hash or version mismatch – invalidate and signal re-import.
-            reason = (
-                "file changed"
-                if cached_hash != file_hash
-                else f"version {cached_version} → {current_version}"
-            )
-            print(
-                f"Cache invalidated for {os.path.basename(filepath)} ({reason}); re-importing mzML file."
-            )
+            reason = "file changed" if cached_hash != file_hash else f"version {cached_version} → {current_version}"
+            print(f"Cache invalidated for {os.path.basename(filepath)} ({reason}); re-importing mzML file.")
             os.remove(cache_path)
             return None
         except Exception as e:
             # Corrupt file, wrong tuple format from an older version, or any
             # other error: delete the stale cache and return None so the caller
             # re-parses the mzML file and writes a fresh cache.
-            print(
-                f"Cache load failed for {os.path.basename(filepath)}: {e}; re-importing mzML file."
-            )
+            print(f"Cache load failed for {os.path.basename(filepath)}: {e}; re-importing mzML file.")
             try:
                 os.remove(cache_path)
             except OSError:
@@ -137,10 +129,7 @@ class FileManager:
         """Extract the filter string (MS:1000512) from a spectrum element."""
         if hasattr(spectrum, "element") and spectrum.element is not None:
             for elem in spectrum.element.iter():
-                if (
-                    elem.tag.endswith("cvParam")
-                    and elem.get("accession") == "MS:1000512"
-                ):
+                if elem.tag.endswith("cvParam") and elem.get("accession") == "MS:1000512":
                     return elem.get("value")
         return None
 
@@ -179,62 +168,33 @@ class FileManager:
             elif spectrum.ms_level == 2:  # MS2/MSMS spectra
                 try:
                     precursor_mz = None
-                    precursor_intensity = 0
-                    if (
-                        hasattr(spectrum, "selected_precursors")
-                        and spectrum.selected_precursors
-                    ):
+                    precursor_intensity = None
+                    if hasattr(spectrum, "selected_precursors") and spectrum.selected_precursors:
                         precursor_info = spectrum.selected_precursors[0]
                         if "mz" in precursor_info:
                             precursor_mz = float(precursor_info["mz"])
                         if "intensity" in precursor_info:
-                            try:
-                                precursor_intensity = float(precursor_info["intensity"])
-                            except:
-                                precursor_intensity = 0
+                            precursor_intensity = float(precursor_info["intensity"])
 
                     # Alternative method to get precursor m/z
-                    if precursor_mz is None and hasattr(spectrum, "element"):
+                    if hasattr(spectrum, "element"):
                         for elem in spectrum.element.iter():
                             if elem.tag.endswith("precursorList"):
                                 for precursor in elem:
                                     if precursor.tag.endswith("precursor"):
                                         for selected_ion in precursor:
-                                            if selected_ion.tag.endswith(
-                                                "selectedIonList"
-                                            ):
+                                            if selected_ion.tag.endswith("selectedIonList"):
                                                 for ion in selected_ion:
                                                     for cv_param in ion:
-                                                        if (
-                                                            cv_param.tag.endswith(
-                                                                "cvParam"
-                                                            )
-                                                            and cv_param.get(
-                                                                "accession"
-                                                            )
-                                                            == "MS:1000744"
-                                                        ):  # selected ion m/z
-                                                            precursor_mz = float(
-                                                                cv_param.get("value")
-                                                            )
-                                                        elif (
-                                                            cv_param.tag.endswith(
-                                                                "cvParam"
-                                                            )
-                                                            and cv_param.get(
-                                                                "accession"
-                                                            )
-                                                            == "MS:1000042"
-                                                        ):  # peak intensity
+                                                        if cv_param.tag.endswith("cvParam") and cv_param.get("accession") == "MS:1000744":  # selected ion m/z
+                                                            if precursor_mz is None:
+                                                                precursor_mz = float(cv_param.get("value"))
+                                                        elif cv_param.tag.endswith("cvParam") and cv_param.get("accession") == "MS:1000042":  # peak intensity
                                                             try:
-                                                                precursor_intensity = (
-                                                                    float(
-                                                                        cv_param.get(
-                                                                            "value"
-                                                                        )
-                                                                    )
-                                                                )
-                                                            except:
+                                                                if precursor_intensity is None:
+                                                                    precursor_intensity = float(cv_param.get("value"))
+                                                            except Exception as e:
+                                                                print(f"Error converting precursor intensity to float: {e}")
                                                                 precursor_intensity = 0
 
                     spectrum_data = {
@@ -244,9 +204,7 @@ class FileManager:
                         "polarity": self._get_spectrum_polarity(spectrum),
                         "precursor_mz": precursor_mz,
                         "precursor_intensity": precursor_intensity,
-                        "scan_id": spec_id
-                        if spec_id is not None
-                        else f"RT_{spectrum.scan_time_in_minutes():.2f}",
+                        "scan_id": spec_id if spec_id is not None else f"RT_{spectrum.scan_time_in_minutes():.2f}",
                         "filter_string": self._get_filter_string(spectrum),
                     }
                     ms2_spectra_data.append(spectrum_data)
@@ -311,9 +269,7 @@ class FileManager:
                 "error": str(e),
             }
 
-    def _resolve_filepath(
-        self, raw_path: str, excel_dir: Optional[str] = None
-    ) -> Optional[str]:
+    def _resolve_filepath(self, raw_path: str, excel_dir: Optional[str] = None) -> Optional[str]:
         """
         Resolve a filepath using three fallback strategies:
         1. Use raw_path directly (absolute or relative path as-is).
@@ -356,11 +312,7 @@ class FileManager:
 
         # Validate file paths
         valid_files = []
-        existing_paths = (
-            set(self.files_data["Filepath"].tolist())
-            if not self.files_data.empty
-            else set()
-        )
+        existing_paths = set(self.files_data["Filepath"].tolist()) if not self.files_data.empty else set()
 
         for idx, row in files_df.iterrows():
             raw_filepath = str(row["Filepath"])
@@ -370,9 +322,7 @@ class FileManager:
 
             # Skip if the resolved file already exists in the list
             if resolved_path and resolved_path in existing_paths:
-                print(
-                    f"Info: File already loaded, skipping: {os.path.basename(resolved_path)}"
-                )
+                print(f"Info: File already loaded, skipping: {os.path.basename(resolved_path)}")
                 continue
 
             if resolved_path and resolved_path.lower().endswith(".mzml"):
@@ -396,25 +346,19 @@ class FileManager:
         new_files_df = pd.DataFrame(valid_files)
 
         # Add filename column
-        new_files_df["filename"] = new_files_df["Filepath"].apply(
-            lambda x: os.path.basename(x)
-        )
+        new_files_df["filename"] = new_files_df["Filepath"].apply(lambda x: os.path.basename(x))
 
         # Add Dilution column with default value of 1 if not present
         if "Dilution" not in new_files_df.columns:
             new_files_df["Dilution"] = 1.0
         else:
-            new_files_df["Dilution"] = pd.to_numeric(
-                new_files_df["Dilution"], errors="coerce"
-            ).fillna(1.0)
+            new_files_df["Dilution"] = pd.to_numeric(new_files_df["Dilution"], errors="coerce").fillna(1.0)
 
         # Add injection_volume column with default value of 1 if not present
         if "injection_volume" not in new_files_df.columns:
             new_files_df["injection_volume"] = 1.0
         else:
-            new_files_df["injection_volume"] = pd.to_numeric(
-                new_files_df["injection_volume"], errors="coerce"
-            ).fillna(1.0)
+            new_files_df["injection_volume"] = pd.to_numeric(new_files_df["injection_volume"], errors="coerce").fillna(1.0)
 
         # Ensure Quantification column exists (empty if not provided)
         if "Quantification" not in new_files_df.columns:
@@ -424,9 +368,7 @@ class FileManager:
         if self.files_data.empty:
             self.files_data = new_files_df
         else:
-            self.files_data = pd.concat(
-                [self.files_data, new_files_df], ignore_index=True
-            )
+            self.files_data = pd.concat([self.files_data, new_files_df], ignore_index=True)
 
         # Assign colors to groups (this will update colors for new groups)
         self._assign_group_colors()
@@ -434,9 +376,7 @@ class FileManager:
         # Sort the data
         self._sort_files_data()
 
-        print(
-            f"Added {len(valid_files)} new files. Total files: {len(self.files_data)}"
-        )
+        print(f"Added {len(valid_files)} new files. Total files: {len(self.files_data)}")
 
         # Note: Memory loading is now handled by the main window with progress dialog
         # The main window will call load_files_to_memory_with_progress() if needed
@@ -454,22 +394,14 @@ class FileManager:
         df_copy = self.files_data.copy()
 
         # Add natural sort keys for both group and filename
-        df_copy["_group_sort_key"] = df_copy["group"].map(
-            lambda x: natsorted(df_copy["group"].unique()).index(x)
-        )
-        df_copy["_filename_sort_key"] = df_copy["filename"].map(
-            lambda x: index_natsorted(df_copy["filename"])[
-                df_copy["filename"].tolist().index(x)
-            ]
-        )
+        df_copy["_group_sort_key"] = df_copy["group"].map(lambda x: natsorted(df_copy["group"].unique()).index(x))
+        df_copy["_filename_sort_key"] = df_copy["filename"].map(lambda x: index_natsorted(df_copy["filename"])[df_copy["filename"].tolist().index(x)])
 
         # Sort by natural group order first, then by natural filename order
         df_copy = df_copy.sort_values(["_group_sort_key", "_filename_sort_key"])
 
         # Remove the temporary sort key columns and update the main dataframe
-        self.files_data = df_copy.drop(
-            columns=["_group_sort_key", "_filename_sort_key"]
-        ).reset_index(drop=True)
+        self.files_data = df_copy.drop(columns=["_group_sort_key", "_filename_sort_key"]).reset_index(drop=True)
 
     def _assign_group_colors(self):
         """Assign colors to groups based on the group column or color column"""
@@ -510,9 +442,7 @@ class FileManager:
         display_data = self.files_data.copy()
 
         # Derive sample name from path (filename without extension)
-        display_data["Sample Name"] = display_data["Filepath"].apply(
-            lambda p: os.path.splitext(os.path.basename(p))[0]
-        )
+        display_data["Sample Name"] = display_data["Filepath"].apply(lambda p: os.path.splitext(os.path.basename(p))[0])
 
         # Reorder columns: group, Sample Name, color, then remaining columns, filepath last
         columns = list(display_data.columns)
@@ -538,9 +468,7 @@ class FileManager:
         if sort_keys:
             # Use natsorted index for natural ordering
             nk = natsort_keygen()
-            sorted_data = sorted_data.iloc[
-                index_natsorted(zip(*(sorted_data[k].astype(str) for k in sort_keys)))
-            ].reset_index(drop=True)
+            sorted_data = sorted_data.iloc[index_natsorted(zip(*(sorted_data[k].astype(str) for k in sort_keys)))].reset_index(drop=True)
 
         return sorted_data
 
@@ -853,9 +781,7 @@ class FileManager:
             return file_row.iloc[0].to_dict()
         return {}
 
-    def get_quantification_data(
-        self, filepath: str, compound_name: str
-    ) -> Optional[Tuple[float, str]]:
+    def get_quantification_data(self, filepath: str, compound_name: str) -> Optional[Tuple[float, str]]:
         """
         Get quantification data (abundance, unit) for a specific file and compound.
 
@@ -884,9 +810,7 @@ class FileManager:
                     unit = str(data[1])
                     return (abundance, unit)
         except (json.JSONDecodeError, ValueError, KeyError, TypeError) as e:
-            print(
-                f"Error parsing quantification data '{quant_str}' for {filepath}: {e}"
-            )
+            print(f"Error parsing quantification data '{quant_str}' for {filepath}: {e}")
             return None
 
         return None
@@ -1018,11 +942,7 @@ class FileManager:
             return float(np.interp(perc / 100.0, cumw, d_sorted))
 
         total_w = w_arr.sum()
-        mean_mz = (
-            float(np.dot(mz_arr, w_arr) / total_w)
-            if total_w > 0
-            else float(np.mean(mz_arr))
-        )
+        mean_mz = float(np.dot(mz_arr, w_arr) / total_w) if total_w > 0 else float(np.mean(mz_arr))
         p10_mz = weighted_percentile(mz_arr, w_arr, 10)
         p90_mz = weighted_percentile(mz_arr, w_arr, 90)
 

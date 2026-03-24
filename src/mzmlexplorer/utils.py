@@ -97,9 +97,7 @@ def calculate_mz_from_formula(formula: str, adduct: str, adducts_data) -> float:
     return mz
 
 
-def get_mass_tolerance_window(
-    mz: float, tolerance_ppm: float = 5.0
-) -> tuple[float, float]:
+def get_mass_tolerance_window(mz: float, tolerance_ppm: float = 5.0) -> tuple[float, float]:
     """
     Calculate the mass tolerance window for a given m/z value.
 
@@ -153,9 +151,7 @@ def generate_color_palette(n_colors: int) -> list[str]:
         for i in range(len(colors), n_colors):
             hue = (i * 0.618033988749895) % 1  # Golden ratio conjugate
             rgb = colorsys.hsv_to_rgb(hue, 0.7, 0.9)
-            hex_color = "#{:02x}{:02x}{:02x}".format(
-                int(rgb[0] * 255), int(rgb[1] * 255), int(rgb[2] * 255)
-            )
+            hex_color = "#{:02x}{:02x}{:02x}".format(int(rgb[0] * 255), int(rgb[1] * 255), int(rgb[2] * 255))
             colors.append(hex_color)
 
     return colors[:n_colors]

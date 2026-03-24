@@ -138,9 +138,7 @@ class CompoundImportDialog(QDialog):
 
         # File path display
         file_info_label = QLabel(f"Importing from: {self.file_path}")
-        file_info_label.setStyleSheet(
-            "QLabel { font-weight: bold; padding: 5px; background-color: #f0f0f0; border: 1px solid #ccc; }"
-        )
+        file_info_label.setStyleSheet("QLabel { font-weight: bold; padding: 5px; background-color: #f0f0f0; border: 1px solid #ccc; }")
         file_info_label.setWordWrap(True)
         layout.addWidget(file_info_label)
 
@@ -224,9 +222,7 @@ class CompoundImportDialog(QDialog):
         # Global polarity selection
         self.global_polarity_combo = QComboBox()
         self.global_polarity_combo.addItems(["+", "-"])
-        self.global_polarity_combo.currentTextChanged.connect(
-            self.on_global_polarity_changed
-        )
+        self.global_polarity_combo.currentTextChanged.connect(self.on_global_polarity_changed)
         self.global_polarity_label = QLabel("Global Polarity:")
         layout.addRow(self.global_polarity_label, self.global_polarity_combo)
 
@@ -484,9 +480,7 @@ class CompoundImportDialog(QDialog):
 
             # Polarity settings
             use_polarity_column = self.polarity_combo.currentText() == "Use Column"
-            polarity_col = (
-                self.polarity_column_combo.currentText() if use_polarity_column else ""
-            )
+            polarity_col = self.polarity_column_combo.currentText() if use_polarity_column else ""
             global_polarity = self.global_polarity_combo.currentText()
 
         except Exception as e:
@@ -506,9 +500,7 @@ class CompoundImportDialog(QDialog):
 
         if required_missing:
             self.preview_table.setRowCount(0)
-            self.info_label.setText(
-                f"Please select all required columns: {', '.join(required_missing)}"
-            )
+            self.info_label.setText(f"Please select all required columns: {', '.join(required_missing)}")
             self.import_btn.setEnabled(False)
             return
 
@@ -575,9 +567,7 @@ class CompoundImportDialog(QDialog):
             self.populate_preview_table()
 
             # Update info label
-            self.info_label.setText(
-                f"Preview: {len(self.preview_df)} compounds will be imported"
-            )
+            self.info_label.setText(f"Preview: {len(self.preview_df)} compounds will be imported")
 
             # Enable import button if we have data
             self.import_btn.setEnabled(len(self.preview_df) > 0)
@@ -606,11 +596,7 @@ class CompoundImportDialog(QDialog):
         # Populate data
         for row_idx, (_, row) in enumerate(preview_df.iterrows()):
             for col_idx, value in enumerate(row):
-                display_text = (
-                    ""
-                    if (value is None or (isinstance(value, float) and pd.isna(value)))
-                    else str(value)
-                )
+                display_text = "" if (value is None or (isinstance(value, float) and pd.isna(value))) else str(value)
                 item = QTableWidgetItem(display_text)
                 self.preview_table.setItem(row_idx, col_idx, item)
 
@@ -628,11 +614,7 @@ class CompoundImportDialog(QDialog):
             problematic = self._validate_formula_smiles(formula_col, smiles_col)
             if problematic:
                 names_text = "\n".join(f"  \u2022 {name}" for name in problematic)
-                msg_text = (
-                    f"{len(problematic)} compound(s) have a mismatch between "
-                    f"sum formula and SMILES:\n\n{names_text}\n\n"
-                    f"Do you want to continue the import anyway?"
-                )
+                msg_text = f"{len(problematic)} compound(s) have a mismatch between sum formula and SMILES:\n\n{names_text}\n\nDo you want to continue the import anyway?"
                 result = QMessageBox.question(
                     self,
                     "Formula/SMILES Mismatch",

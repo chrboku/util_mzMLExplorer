@@ -50,12 +50,7 @@ class MS1ViewerWindow(QWidget):
         super().__init__(parent)
 
         # Configure as independent window
-        self.setWindowFlags(
-            Qt.WindowType.Window
-            | Qt.WindowType.WindowCloseButtonHint
-            | Qt.WindowType.WindowMinimizeButtonHint
-            | Qt.WindowType.WindowMaximizeButtonHint
-        )
+        self.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.WindowCloseButtonHint | Qt.WindowType.WindowMinimizeButtonHint | Qt.WindowType.WindowMaximizeButtonHint)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
 
         self.ms1_spectra = ms1_spectra
@@ -71,10 +66,7 @@ class MS1ViewerWindow(QWidget):
 
     def init_ui(self):
         """Initialize the MS1 viewer UI"""
-        self.setWindowTitle(
-            f"MS1 Spectra: {self.compound_name} - {self.adduct} "
-            f"(RT: {self.rt_center:.2f} min)"
-        )
+        self.setWindowTitle(f"MS1 Spectra: {self.compound_name} - {self.adduct} (RT: {self.rt_center:.2f} min)")
         self.setGeometry(100, 100, 1600, 1000)
 
         layout = QVBoxLayout(self)
@@ -83,20 +75,13 @@ class MS1ViewerWindow(QWidget):
 
         # Header with information
         total_spectra = len(self.ms1_spectra)
-        header_text = (
-            f"<b>{self.compound_name} ({self.adduct})</b> | "
-            f"m/z: {self.target_mz:.4f} | "
-            f"RT: {self.rt_center:.2f} min | "
-            f"Files: {total_spectra}"
-        )
+        header_text = f"<b>{self.compound_name} ({self.adduct})</b> | m/z: {self.target_mz:.4f} | RT: {self.rt_center:.2f} min | Files: {total_spectra}"
 
         if self.formula:
             header_text += f" | Formula: {self.formula}"
 
         header_label = QLabel(header_text)
-        header_label.setStyleSheet(
-            "QLabel { margin: 2px; padding: 5px; font-size: 12px; }"
-        )
+        header_label.setStyleSheet("QLabel { margin: 2px; padding: 5px; font-size: 12px; }")
         header_label.setFixedHeight(30)
         layout.addWidget(header_label)
 
@@ -117,9 +102,7 @@ class MS1ViewerWindow(QWidget):
             self.isotope_tolerance_ppm_spin.setSuffix(" ppm")
             self.isotope_tolerance_ppm_spin.setDecimals(1)
             self.isotope_tolerance_ppm_spin.setSingleStep(0.5)
-            self.isotope_tolerance_ppm_spin.valueChanged.connect(
-                self.on_isotope_tolerance_changed
-            )
+            self.isotope_tolerance_ppm_spin.valueChanged.connect(self.on_isotope_tolerance_changed)
             controls_layout.addWidget(self.isotope_tolerance_ppm_spin)
 
         # Number of annotated signals spinner
@@ -159,10 +142,7 @@ class MS1ViewerWindow(QWidget):
             display_name = filename.split(".")[0] if "." in filename else filename
             scan_id = spectrum.get("scan_id", "")
             filter_str = spectrum.get("filter_string", "")
-            file_header_text = (
-                f"<b>{display_name}</b> | Group: {group} | RT: {spectrum['rt']:.4f} min"
-                " ·  <i>click to open single view</i>"
-            )
+            file_header_text = f"<b>{display_name}</b> | Group: {group} | RT: {spectrum['rt']:.4f} min ·  <i>click to open single view</i>"
             if scan_id:
                 file_header_text += f" | Scan: {scan_id}"
             if filter_str:
@@ -366,9 +346,7 @@ class MS1ViewerWindow(QWidget):
 
                 # Remove existing isotope series
                 for series in chart.series():
-                    if hasattr(series, "objectName") and series.objectName().startswith(
-                        "isotope_"
-                    ):
+                    if hasattr(series, "objectName") and series.objectName().startswith("isotope_"):
                         chart.removeSeries(series)
 
                 # Add new isotope pattern
@@ -379,16 +357,10 @@ class MS1ViewerWindow(QWidget):
                     intensity_array = np.array(spectrum["intensity"])
 
                     # Get isotope tolerance in Daltons
-                    tolerance_ppm = (
-                        self.isotope_tolerance_ppm_spin.value()
-                        if hasattr(self, "isotope_tolerance_ppm_spin")
-                        else 5.0
-                    )
+                    tolerance_ppm = self.isotope_tolerance_ppm_spin.value() if hasattr(self, "isotope_tolerance_ppm_spin") else 5.0
 
                     # Find monoisotopic peak to determine scaling
-                    monoisotopic_mz = isotope_pattern[0][
-                        0
-                    ]  # First isotope is monoisotopic
+                    monoisotopic_mz = isotope_pattern[0][0]  # First isotope is monoisotopic
                     tolerance_da = (tolerance_ppm / 1e6) * monoisotopic_mz
 
                     mono_mask = np.abs(mz_array - monoisotopic_mz) <= tolerance_da
@@ -411,9 +383,7 @@ class MS1ViewerWindow(QWidget):
 
                         # Check if this isotope is actually present in the spectrum
                         tolerance_da_isotope = (tolerance_ppm / 1e6) * theo_mz
-                        isotope_mask = (
-                            np.abs(mz_array - theo_mz) <= tolerance_da_isotope
-                        )
+                        isotope_mask = np.abs(mz_array - theo_mz) <= tolerance_da_isotope
 
                         if np.any(isotope_mask) or not has_monoisotopic:
                             # Isotope found or no monoisotopic reference - draw full rectangle
@@ -421,9 +391,7 @@ class MS1ViewerWindow(QWidget):
                             if has_monoisotopic and np.any(isotope_mask):
                                 # If isotope is found, use actual intensity for rectangle height
                                 actual_intensity = np.max(intensity_array[isotope_mask])
-                                rect_height = max(
-                                    theo_intensity, actual_intensity * 0.8
-                                )  # At least 80% of actual
+                                rect_height = max(theo_intensity, actual_intensity * 0.8)  # At least 80% of actual
                         else:
                             # Isotope not found - draw thin line at theoretical position
                             rect_height = theo_intensity
@@ -434,9 +402,7 @@ class MS1ViewerWindow(QWidget):
 
                         # Rectangle centered at theoretical m/z and intensity
                         center_mz = theo_mz
-                        center_intensity = (
-                            theo_intensity / 2
-                        )  # Center of rectangle height
+                        center_intensity = theo_intensity / 2  # Center of rectangle height
 
                         # Define rectangle corners
                         left = center_mz - rect_width
@@ -496,9 +462,7 @@ class MS1ViewerWindow(QWidget):
             # Create a list of series to remove to avoid modifying while iterating
             series_to_remove = []
             for series in chart.series():
-                if hasattr(series, "objectName") and series.objectName().startswith(
-                    "isotope_"
-                ):
+                if hasattr(series, "objectName") and series.objectName().startswith("isotope_"):
                     series_to_remove.append(series)
 
             # Remove the isotope series
@@ -630,9 +594,7 @@ class InteractiveMS1ChartView(QChartView):
                 y_axis.setRange(0, y_max)
         else:
             # Fallback if no data in visible range
-            max_intensity = (
-                np.max(self.intensity_array) if len(self.intensity_array) > 0 else 100
-            )
+            max_intensity = np.max(self.intensity_array) if len(self.intensity_array) > 0 else 100
             y_axis.setRange(0, max_intensity * 1.1)
 
         # Update top signal labels after Y-axis change
@@ -671,12 +633,8 @@ class InteractiveMS1ChartView(QChartView):
             rel_x = max(0.0, min(1.0, rel_x))
             rel_y = max(0.0, min(1.0, rel_y))
 
-            x_range = (
-                self.interaction_start_x_range[1] - self.interaction_start_x_range[0]
-            )
-            y_range = (
-                self.interaction_start_y_range[1] - self.interaction_start_y_range[0]
-            )
+            x_range = self.interaction_start_x_range[1] - self.interaction_start_x_range[0]
+            y_range = self.interaction_start_y_range[1] - self.interaction_start_y_range[0]
             self.zoom_anchor_x = self.interaction_start_x_range[0] + rel_x * x_range
             self.zoom_anchor_y = self.interaction_start_y_range[1] - rel_y * y_range
 
@@ -801,12 +759,8 @@ class InteractiveMS1ChartView(QChartView):
         x_zoom_factor = max(0.1, min(10.0, x_zoom_factor))
         y_zoom_factor = max(0.1, min(10.0, y_zoom_factor))
 
-        original_x_range = (
-            self.interaction_start_x_range[1] - self.interaction_start_x_range[0]
-        )
-        original_y_range = (
-            self.interaction_start_y_range[1] - self.interaction_start_y_range[0]
-        )
+        original_x_range = self.interaction_start_x_range[1] - self.interaction_start_x_range[0]
+        original_y_range = self.interaction_start_y_range[1] - self.interaction_start_y_range[0]
 
         new_x_range = original_x_range * x_zoom_factor
         new_y_range = original_y_range * y_zoom_factor
@@ -816,18 +770,10 @@ class InteractiveMS1ChartView(QChartView):
         anchor_to_bottom = self.zoom_anchor_y - self.interaction_start_y_range[0]
         anchor_to_top = self.interaction_start_y_range[1] - self.zoom_anchor_y
 
-        new_x_min = (
-            self.zoom_anchor_x - (anchor_to_left / original_x_range) * new_x_range
-        )
-        new_x_max = (
-            self.zoom_anchor_x + (anchor_to_right / original_x_range) * new_x_range
-        )
-        new_y_min = (
-            self.zoom_anchor_y - (anchor_to_bottom / original_y_range) * new_y_range
-        )
-        new_y_max = (
-            self.zoom_anchor_y + (anchor_to_top / original_y_range) * new_y_range
-        )
+        new_x_min = self.zoom_anchor_x - (anchor_to_left / original_x_range) * new_x_range
+        new_x_max = self.zoom_anchor_x + (anchor_to_right / original_x_range) * new_x_range
+        new_y_min = self.zoom_anchor_y - (anchor_to_bottom / original_y_range) * new_y_range
+        new_y_max = self.zoom_anchor_y + (anchor_to_top / original_y_range) * new_y_range
 
         # Apply constraints
         new_x_min = max(self.full_min, new_x_min)
@@ -871,11 +817,7 @@ class InteractiveMS1ChartView(QChartView):
             tx, ty, bx, by = tip.x(), tip.y(), base.x(), base.y()
             dx, dy = bx - tx, by - ty
             seg_len_sq = dx * dx + dy * dy
-            t = (
-                max(0.0, min(1.0, ((mx - tx) * dx + (my - ty) * dy) / seg_len_sq))
-                if seg_len_sq > 0
-                else 0.0
-            )
+            t = max(0.0, min(1.0, ((mx - tx) * dx + (my - ty) * dy) / seg_len_sq)) if seg_len_sq > 0 else 0.0
             dist = ((mx - tx - t * dx) ** 2 + (my - ty - t * dy) ** 2) ** 0.5
             if dist < best_dist:
                 best_dist = dist
@@ -919,9 +861,7 @@ class InteractiveMS1ChartView(QChartView):
                             font-size: 11px;
                         }
                     """)
-                    self.tooltip_label.setAttribute(
-                        Qt.WidgetAttribute.WA_TransparentForMouseEvents
-                    )
+                    self.tooltip_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
                 self.tooltip_label.setText(f"m/z: {best_mz:.4f}")
                 self.tooltip_label.adjustSize()
 
@@ -973,9 +913,7 @@ class InteractiveMS1ChartView(QChartView):
                     padding: 4px;
                 }
             """)
-            self.tooltip_label.setAttribute(
-                Qt.WidgetAttribute.WA_TransparentForMouseEvents
-            )
+            self.tooltip_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
 
         self.tooltip_label.setText(text)
         self.tooltip_label.adjustSize()
@@ -1036,18 +974,14 @@ class InteractiveMS1ChartView(QChartView):
         # Find top-N most abundant signals
         if len(visible_intensities) > 0:
             n = min(self.top_n, len(visible_intensities))
-            top_indices = np.argsort(visible_intensities)[-n:][
-                ::-1
-            ]  # Top N, highest first
+            top_indices = np.argsort(visible_intensities)[-n:][::-1]  # Top N, highest first
 
             for idx in top_indices:
                 mz = visible_mz[idx]
                 intensity = visible_intensities[idx]
 
                 # Use mapToPosition for accurate pixel position (consistent with hover)
-                tip_pos = self.chart().mapToPosition(
-                    QPointF(float(mz), float(intensity))
-                )
+                tip_pos = self.chart().mapToPosition(QPointF(float(mz), float(intensity)))
                 widget_x = tip_pos.x()
                 widget_y = tip_pos.y()
 
@@ -1155,11 +1089,7 @@ class InteractiveMS1SingleChartView(InteractiveMS1ChartView):
             tx, ty, bx, by = tip.x(), tip.y(), base.x(), base.y()
             dx, dy = bx - tx, by - ty
             seg_len_sq = dx * dx + dy * dy
-            t = (
-                max(0.0, min(1.0, ((mx - tx) * dx + (my - ty) * dy) / seg_len_sq))
-                if seg_len_sq > 0
-                else 0.0
-            )
+            t = max(0.0, min(1.0, ((mx - tx) * dx + (my - ty) * dy) / seg_len_sq)) if seg_len_sq > 0 else 0.0
             dist = ((mx - tx - t * dx) ** 2 + (my - ty - t * dy) ** 2) ** 0.5
             if dist < best_dist:
                 best_dist = dist
@@ -1203,22 +1133,14 @@ class InteractiveMS1SingleChartView(InteractiveMS1ChartView):
                             font-size: 11px;
                         }
                     """)
-                    self.tooltip_label.setAttribute(
-                        Qt.WidgetAttribute.WA_TransparentForMouseEvents
-                    )
+                    self.tooltip_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
 
                 # Tooltip text
                 if self.relative_mode:
                     raw_mz = float(self.raw_mz_array[best_idx])
-                    tooltip_text = (
-                        f"Δm/z: {best_plot_mz:+.4f} Da  |  "
-                        f"m/z: {raw_mz:.4f}  |  "
-                        f"Int: {best_intensity:.4g}"
-                    )
+                    tooltip_text = f"Δm/z: {best_plot_mz:+.4f} Da  |  m/z: {raw_mz:.4f}  |  Int: {best_intensity:.4g}"
                 else:
-                    tooltip_text = (
-                        f"m/z: {best_plot_mz:.4f}  |  Int: {best_intensity:.4g}"
-                    )
+                    tooltip_text = f"m/z: {best_plot_mz:.4f}  |  Int: {best_intensity:.4g}"
                 self.tooltip_label.setText(tooltip_text)
                 self.tooltip_label.adjustSize()
 
@@ -1326,12 +1248,7 @@ class MS1SingleSpectrumWindow(QWidget):
         parent=None,
     ):
         super().__init__(parent)
-        self.setWindowFlags(
-            Qt.WindowType.Window
-            | Qt.WindowType.WindowCloseButtonHint
-            | Qt.WindowType.WindowMinimizeButtonHint
-            | Qt.WindowType.WindowMaximizeButtonHint
-        )
+        self.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.WindowCloseButtonHint | Qt.WindowType.WindowMinimizeButtonHint | Qt.WindowType.WindowMaximizeButtonHint)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
 
         self.spectrum_data = spectrum_data
@@ -1361,16 +1278,12 @@ class MS1SingleSpectrumWindow(QWidget):
     # UI construction
     # ------------------------------------------------------------------
     def _build_ui(self):
-        display_name = (
-            self.filename.split(".")[0] if "." in self.filename else self.filename
-        )
+        display_name = self.filename.split(".")[0] if "." in self.filename else self.filename
         scan_id = self.spectrum_data.get("scan_id", "")
         filter_str = self.spectrum_data.get("filter_string", "")
         rt_val = self.spectrum_data.get("rt", 0.0)
 
-        self.setWindowTitle(
-            f"MS1 Detail – {self.compound_name} ({self.adduct}) | {display_name}"
-        )
+        self.setWindowTitle(f"MS1 Detail – {self.compound_name} ({self.adduct}) | {display_name}")
         self.setGeometry(150, 150, 1400, 850)
 
         root = QVBoxLayout(self)
@@ -1393,10 +1306,7 @@ class MS1SingleSpectrumWindow(QWidget):
         if filter_str:
             header_parts.append(f"Filter: {filter_str}")
         header_label = QLabel("  |  ".join(header_parts))
-        header_label.setStyleSheet(
-            "QLabel { margin: 2px; padding: 5px; font-size: 12px; "
-            "background: #f0f4f8; border: 1px solid #c0ccd8; border-radius: 3px; }"
-        )
+        header_label.setStyleSheet("QLabel { margin: 2px; padding: 5px; font-size: 12px; background: #f0f4f8; border: 1px solid #c0ccd8; border-radius: 3px; }")
         header_label.setFixedHeight(32)
         root.addWidget(header_label)
 
@@ -1407,9 +1317,7 @@ class MS1SingleSpectrumWindow(QWidget):
         # Isotope pattern
         if self.formula:
             self.isotope_chk = QCheckBox("Isotope pattern")
-            self.isotope_chk.setToolTip(
-                "Overlay theoretical isotope pattern (rectangle markers)"
-            )
+            self.isotope_chk.setToolTip("Overlay theoretical isotope pattern (rectangle markers)")
             self.isotope_chk.toggled.connect(self._on_isotope_toggled)
             ctrl.addWidget(self.isotope_chk)
 
@@ -1439,9 +1347,7 @@ class MS1SingleSpectrumWindow(QWidget):
 
         # Relative m/z mode
         self.rel_chk = QCheckBox("Relative m/z")
-        self.rel_chk.setToolTip(
-            "Show Δm/z = observed − reference m/z on the x-axis (in Da)"
-        )
+        self.rel_chk.setToolTip("Show Δm/z = observed − reference m/z on the x-axis (in Da)")
         self.rel_chk.toggled.connect(self._on_relative_toggled)
         ctrl.addWidget(self.rel_chk)
 
@@ -1452,9 +1358,7 @@ class MS1SingleSpectrumWindow(QWidget):
         self.ref_mz_spin.setSingleStep(0.0001)
         self.ref_mz_spin.setFixedWidth(120)
         self.ref_mz_spin.setValue(self.target_mz)
-        self.ref_mz_spin.setToolTip(
-            "Reference m/z for relative mode (defaults to theoretical ion m/z)"
-        )
+        self.ref_mz_spin.setToolTip("Reference m/z for relative mode (defaults to theoretical ion m/z)")
         self.ref_mz_spin.valueChanged.connect(self._on_ref_mz_changed)
         ctrl.addWidget(self.ref_mz_spin)
 
@@ -1570,9 +1474,7 @@ class MS1SingleSpectrumWindow(QWidget):
     def _create_qchart(self, plot_mz, zoom_min, zoom_max):
         """Build a QChart with stick-spectrum series."""
         chart = QChart()
-        display_name = (
-            self.filename.split(".")[0] if "." in self.filename else self.filename
-        )
+        display_name = self.filename.split(".")[0] if "." in self.filename else self.filename
         chart.setTitle(f"MS1 – {display_name}  |  {self.compound_name} ({self.adduct})")
         chart.legend().hide()
 
@@ -1610,9 +1512,7 @@ class MS1SingleSpectrumWindow(QWidget):
         x_axis.setTitleText("Δm/z (Da)" if self.relative_mode else "m/z")
         y_axis.setTitleText("Intensity")
         x_axis.setRange(zoom_min, zoom_max)
-        max_int = (
-            float(self.intensity_arr.max()) if len(self.intensity_arr) > 0 else 100.0
-        )
+        max_int = float(self.intensity_arr.max()) if len(self.intensity_arr) > 0 else 100.0
         y_axis.setRange(0.0, max_int * 1.1)
         chart.addAxis(x_axis, Qt.AlignmentFlag.AlignBottom)
         chart.addAxis(y_axis, Qt.AlignmentFlag.AlignLeft)
@@ -1694,11 +1594,7 @@ class MS1SingleSpectrumWindow(QWidget):
         if np.any(mono_mask):
             mono_intensity = float(np.max(self.intensity_arr[mono_mask]))
         else:
-            mono_intensity = (
-                float(np.max(self.intensity_arr)) * 0.1
-                if len(self.intensity_arr) > 0
-                else 1.0
-            )
+            mono_intensity = float(np.max(self.intensity_arr)) * 0.1 if len(self.intensity_arr) > 0 else 1.0
 
         for i, (theo_mz, rel_abund) in enumerate(isotope_pattern):
             theo_intensity = mono_intensity * rel_abund
@@ -1708,9 +1604,7 @@ class MS1SingleSpectrumWindow(QWidget):
             found = np.any(isotope_mask)
 
             # Plot coordinate for center of the rectangle
-            plot_center = (
-                (theo_mz - self.reference_mz) if self.relative_mode else theo_mz
-            )
+            plot_center = (theo_mz - self.reference_mz) if self.relative_mode else theo_mz
             rect_half_w = tol_da * 0.5
 
             # Rectangle spans the theoretical intensity
@@ -1742,10 +1636,6 @@ class MS1SingleSpectrumWindow(QWidget):
         if self.chart_view is None:
             return
         chart = self.chart_view.chart()
-        to_remove = [
-            s
-            for s in chart.series()
-            if hasattr(s, "objectName") and s.objectName().startswith("isotope_")
-        ]
+        to_remove = [s for s in chart.series() if hasattr(s, "objectName") and s.objectName().startswith("isotope_")]
         for s in to_remove:
             chart.removeSeries(s)

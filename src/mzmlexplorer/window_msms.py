@@ -64,19 +64,11 @@ class MSMSPopupWindow(QWidget):
 
         # Header with spectrum information
         precursor_intensity = self.spectrum_data.get("precursor_intensity", 0)
-        intensity_text = (
-            f"{precursor_intensity:.1e}" if precursor_intensity > 0 else "N/A"
-        )
+        intensity_text = f"{precursor_intensity:.1e}" if precursor_intensity > 0 else "N/A"
 
         scan_id = self.spectrum_data.get("scan_id", "")
         filter_str = self.spectrum_data.get("filter_string", "")
-        header_text = (
-            f"<b>File:</b> {self.filename}<br>"
-            f"<b>Group:</b> {self.group}<br>"
-            f"<b>RT:</b> {self.spectrum_data['rt']:.4f} min<br>"
-            f"<b>Precursor m/z:</b> {self.spectrum_data['precursor_mz']:.4f}<br>"
-            f"<b>Precursor Intensity:</b> {intensity_text}"
-        )
+        header_text = f"<b>File:</b> {self.filename}<br><b>Group:</b> {self.group}<br><b>RT:</b> {self.spectrum_data['rt']:.4f} min<br><b>Precursor m/z:</b> {self.spectrum_data['precursor_mz']:.4f}<br><b>Precursor Intensity:</b> {intensity_text}"
         if scan_id:
             header_text += f"<br><b>Scan:</b> {scan_id}"
         if filter_str:
@@ -92,9 +84,7 @@ class MSMSPopupWindow(QWidget):
                 border-radius: 3px;
             }
         """)
-        header_label.setMaximumHeight(
-            100
-        )  # enough room for scan_id + filter_string lines
+        header_label.setMaximumHeight(100)  # enough room for scan_id + filter_string lines
         layout.addWidget(header_label)
 
         # Create splitter for table and chart (horizontal layout)
@@ -134,35 +124,23 @@ class MSMSPopupWindow(QWidget):
 
         # Calculate relative abundance (% of base peak)
         max_intensity = np.max(intensity_array) if len(intensity_array) > 0 else 1
-        relative_abundance = (
-            (intensity_array / max_intensity * 100)
-            if max_intensity > 0
-            else np.zeros_like(intensity_array)
-        )
+        relative_abundance = (intensity_array / max_intensity * 100) if max_intensity > 0 else np.zeros_like(intensity_array)
 
         # Setup table
         num_rows = len(mz_array)
         self.table_widget.setRowCount(num_rows)
         self.table_widget.setColumnCount(3)
-        self.table_widget.setHorizontalHeaderLabels(
-            ["m/z", "Intensity", "Rel. Abundance (%)"]
-        )
+        self.table_widget.setHorizontalHeaderLabels(["m/z", "Intensity", "Rel. Abundance (%)"])
 
         # Disable sorting during population to prevent data loss
         self.table_widget.setSortingEnabled(False)
 
         # Set selection behavior
-        self.table_widget.setSelectionBehavior(
-            QAbstractItemView.SelectionBehavior.SelectRows
-        )
-        self.table_widget.setSelectionMode(
-            QAbstractItemView.SelectionMode.SingleSelection
-        )
+        self.table_widget.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table_widget.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
 
         # Create custom table items that sort numerically
-        for i, (mz, intensity, rel_abund) in enumerate(
-            zip(mz_array, intensity_array, relative_abundance)
-        ):
+        for i, (mz, intensity, rel_abund) in enumerate(zip(mz_array, intensity_array, relative_abundance)):
             # Convert numpy types to Python native types explicitly
             mz_val = float(mz)
             intensity_val = float(intensity)
@@ -176,16 +154,10 @@ class MSMSPopupWindow(QWidget):
             # Create intensity item
             intensity_item = NumericTableWidgetItem()
             if intensity_val >= 1000:
-                intensity_item.setData(
-                    Qt.ItemDataRole.DisplayRole, f"{intensity_val:.2e}"
-                )
+                intensity_item.setData(Qt.ItemDataRole.DisplayRole, f"{intensity_val:.2e}")
             else:
-                intensity_item.setData(
-                    Qt.ItemDataRole.DisplayRole, f"{intensity_val:.2f}"
-                )
-            intensity_item.setData(
-                Qt.ItemDataRole.UserRole, intensity_val
-            )  # Store for selection
+                intensity_item.setData(Qt.ItemDataRole.DisplayRole, f"{intensity_val:.2f}")
+            intensity_item.setData(Qt.ItemDataRole.UserRole, intensity_val)  # Store for selection
 
             # Create relative abundance item
             rel_abund_item = NumericTableWidgetItem()
@@ -225,11 +197,7 @@ class MSMSPopupWindow(QWidget):
         selected_items = self.table_widget.selectedItems()
         if selected_items:
             # Get the m/z value from the first column of the selected row
-            mz_item = (
-                selected_items[0]
-                if selected_items[0].column() == 0
-                else selected_items[1]
-            )
+            mz_item = selected_items[0] if selected_items[0].column() == 0 else selected_items[1]
             if mz_item.column() != 0:
                 # Find the m/z item in the same row
                 row = mz_item.row()
@@ -281,9 +249,7 @@ class MSMSPopupWindow(QWidget):
 
         for mz, intensity in zip(mz_array, normalized_intensity):
             # Check if this peak should be highlighted
-            is_highlighted = (
-                self.selected_mz is not None and abs(mz - self.selected_mz) < tolerance
-            )
+            is_highlighted = self.selected_mz is not None and abs(mz - self.selected_mz) < tolerance
 
             if is_highlighted:
                 # Add to highlight series
@@ -302,16 +268,8 @@ class MSMSPopupWindow(QWidget):
             chart.addSeries(highlight_series)
 
         # Reattach axes
-        x_axis = (
-            chart.axes(Qt.Orientation.Horizontal)[0]
-            if chart.axes(Qt.Orientation.Horizontal)
-            else None
-        )
-        y_axis = (
-            chart.axes(Qt.Orientation.Vertical)[0]
-            if chart.axes(Qt.Orientation.Vertical)
-            else None
-        )
+        x_axis = chart.axes(Qt.Orientation.Horizontal)[0] if chart.axes(Qt.Orientation.Horizontal) else None
+        y_axis = chart.axes(Qt.Orientation.Vertical)[0] if chart.axes(Qt.Orientation.Vertical) else None
 
         if x_axis and y_axis:
             main_series.attachAxis(x_axis)
@@ -326,25 +284,12 @@ class MSMSPopupWindow(QWidget):
 
         # Get precursor intensity for display
         precursor_intensity = self.spectrum_data.get("precursor_intensity", 0)
-        intensity_text = (
-            f"{precursor_intensity:.1e}" if precursor_intensity > 0 else "N/A"
-        )
+        intensity_text = f"{precursor_intensity:.1e}" if precursor_intensity > 0 else "N/A"
 
         chart.setTitle(
-            f"MSMS Spectrum\n"
-            f"RT: {self.spectrum_data['rt']:.4f} min, "
-            f"Precursor: {self.spectrum_data['precursor_mz']:.4f}, "
-            f"Intensity: {intensity_text}"
-            + (
-                f"\nScan: {self.spectrum_data['scan_id']}"
-                if self.spectrum_data.get("scan_id")
-                else ""
-            )
-            + (
-                f" | Filter: {self.spectrum_data['filter_string']}"
-                if self.spectrum_data.get("filter_string")
-                else ""
-            )
+            f"MSMS Spectrum\nRT: {self.spectrum_data['rt']:.4f} min, Precursor: {self.spectrum_data['precursor_mz']:.4f}, Intensity: {intensity_text}"
+            + (f"\nScan: {self.spectrum_data['scan_id']}" if self.spectrum_data.get("scan_id") else "")
+            + (f" | Filter: {self.spectrum_data['filter_string']}" if self.spectrum_data.get("filter_string") else "")
         )
 
         # Create series for the spectrum
@@ -496,12 +441,8 @@ class InteractiveMSMSChartView(QChartView):
             rel_x = max(0.0, min(1.0, rel_x))
             rel_y = max(0.0, min(1.0, rel_y))
 
-            x_range = (
-                self.interaction_start_x_range[1] - self.interaction_start_x_range[0]
-            )
-            y_range = (
-                self.interaction_start_y_range[1] - self.interaction_start_y_range[0]
-            )
+            x_range = self.interaction_start_x_range[1] - self.interaction_start_x_range[0]
+            y_range = self.interaction_start_y_range[1] - self.interaction_start_y_range[0]
             self.zoom_anchor_x = self.interaction_start_x_range[0] + rel_x * x_range
             self.zoom_anchor_y = self.interaction_start_y_range[0] + rel_y * y_range
 
@@ -562,11 +503,7 @@ class InteractiveMSMSChartView(QChartView):
             tx, ty, bx, by = tip.x(), tip.y(), base.x(), base.y()
             dx, dy = bx - tx, by - ty
             seg_len_sq = dx * dx + dy * dy
-            t = (
-                max(0.0, min(1.0, ((mx - tx) * dx + (my - ty) * dy) / seg_len_sq))
-                if seg_len_sq > 0
-                else 0.0
-            )
+            t = max(0.0, min(1.0, ((mx - tx) * dx + (my - ty) * dy) / seg_len_sq)) if seg_len_sq > 0 else 0.0
             dist = ((mx - tx - t * dx) ** 2 + (my - ty - t * dy) ** 2) ** 0.5
             if dist < best_dist:
                 best_dist = dist
@@ -721,12 +658,8 @@ class InteractiveMSMSChartView(QChartView):
         y_zoom_factor = max(0.1, min(10.0, y_zoom_factor))
 
         # Calculate new ranges anchored at the zoom point
-        original_x_range = (
-            self.interaction_start_x_range[1] - self.interaction_start_x_range[0]
-        )
-        original_y_range = (
-            self.interaction_start_y_range[1] - self.interaction_start_y_range[0]
-        )
+        original_x_range = self.interaction_start_x_range[1] - self.interaction_start_x_range[0]
+        original_y_range = self.interaction_start_y_range[1] - self.interaction_start_y_range[0]
 
         new_x_range = original_x_range * x_zoom_factor
         new_y_range = original_y_range * y_zoom_factor
@@ -759,9 +692,7 @@ class InteractiveMSMSChartView(QChartView):
         if event.button() == Qt.MouseButton.LeftButton:
             if self.spectrum_data and self.filename and self.group:
                 # Create and show popup window
-                popup = MSMSPopupWindow(
-                    self.spectrum_data, self.filename, self.group, self
-                )
+                popup = MSMSPopupWindow(self.spectrum_data, self.filename, self.group, self)
                 popup.show()
         super().mouseDoubleClickEvent(event)
 
@@ -785,12 +716,7 @@ class MSMSViewerWindow(QWidget):
         super().__init__(parent)
 
         # Configure as independent window
-        self.setWindowFlags(
-            Qt.WindowType.Window
-            | Qt.WindowType.WindowMinimizeButtonHint
-            | Qt.WindowType.WindowMaximizeButtonHint
-            | Qt.WindowType.WindowCloseButtonHint
-        )
+        self.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.WindowMinimizeButtonHint | Qt.WindowType.WindowMaximizeButtonHint | Qt.WindowType.WindowCloseButtonHint)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
 
         self.msms_spectra = msms_spectra
@@ -819,11 +745,7 @@ class MSMSViewerWindow(QWidget):
         total_spectra = sum(len(data["spectra"]) for data in self.msms_spectra.values())
         type_tag = f" | Filter: {self.filter_type}" if self.filter_type else ""
         self.setWindowTitle(
-            f"MSMS: {self.compound_name} ({self.adduct}) | "
-            f"m/z {self.target_mz:.4f} | "
-            f"RT {self.rt_center:.2f}\u00b1{self.rt_window * 60:.0f} s"
-            f"{type_tag} | "
-            f"{len(self.msms_spectra)} files | {total_spectra} spectra"
+            f"MSMS: {self.compound_name} ({self.adduct}) | m/z {self.target_mz:.4f} | RT {self.rt_center:.2f}\u00b1{self.rt_window * 60:.0f} s{type_tag} | {len(self.msms_spectra)} files | {total_spectra} spectra"
         )
         self.setGeometry(100, 100, 1800, 1000)
 
@@ -863,11 +785,7 @@ class MSMSViewerWindow(QWidget):
             similarity_info = ""
             if filename in self.intra_file_similarities:
                 stats = self.intra_file_similarities[filename]
-                similarity_info = (
-                    f" | Sim: "
-                    f"Med:{stats['median']:.3f} "
-                    f"90%:{stats['percentile_90']:.3f}"
-                )
+                similarity_info = f" | Sim: Med:{stats['median']:.3f} 90%:{stats['percentile_90']:.3f}"
 
             display_name = filename.split(".")[0] if "." in filename else filename
             file_header_text = f"<b>{display_name}</b> | {group} | {len(spectra)} spectra{similarity_info}"
@@ -970,10 +888,7 @@ class MSMSViewerWindow(QWidget):
         """
         defaults = self.defaults
         default_tol = defaults.get("msms_similarity_default_tolerance", 0.1)
-        group_tols = {
-            entry["filter_type"]: float(entry["mz_tolerance"])
-            for entry in defaults.get("msms_similarity_group_tolerances", [])
-        }
+        group_tols = {entry["filter_type"]: float(entry["mz_tolerance"]) for entry in defaults.get("msms_similarity_group_tolerances", [])}
         if not group_tols:
             return default_tol
 
@@ -1021,14 +936,10 @@ class MSMSViewerWindow(QWidget):
                 for i in range(len(spectra)):
                     for j in range(i + 1, len(spectra)):
                         tol = self._get_pair_mz_tolerance(spectra[i], spectra[j])
-                        sim = calculate_cosine_similarity(
-                            spectra[i], spectra[j], mz_tolerance=tol, method=method
-                        )
+                        sim = calculate_cosine_similarity(spectra[i], spectra[j], mz_tolerance=tol, method=method)
                         similarities.append(sim)
 
-            self.intra_file_similarities[filename] = calculate_similarity_statistics(
-                similarities
-            )
+            self.intra_file_similarities[filename] = calculate_similarity_statistics(similarities)
 
         # Calculate inter-file similarities (between all pairs of files)
         files_list = list(self.processed_data)
@@ -1046,15 +957,11 @@ class MSMSViewerWindow(QWidget):
                 for spec1 in spectra1:
                     for spec2 in spectra2:
                         tol = self._get_pair_mz_tolerance(spec1, spec2)
-                        sim = calculate_cosine_similarity(
-                            spec1, spec2, mz_tolerance=tol, method=method
-                        )
+                        sim = calculate_cosine_similarity(spec1, spec2, mz_tolerance=tol, method=method)
                         similarities.append(sim)
 
                 key = (filename1, filename2)
-                self.inter_file_similarities[key] = (
-                    similarities  # Store all similarities, not just stats
-                )
+                self.inter_file_similarities[key] = similarities  # Store all similarities, not just stats
 
     def _create_similarity_overview_widget(self):
         """Create a widget displaying cosine similarity overview"""
@@ -1071,10 +978,7 @@ class MSMSViewerWindow(QWidget):
 
         # Create table for inter-file similarities
         files = [data[1]["filename"] for data in self.processed_data]
-        file_group = {
-            data[1]["filename"]: data[1].get("group", "Unknown")
-            for data in self.processed_data
-        }
+        file_group = {data[1]["filename"]: data[1].get("group", "Unknown") for data in self.processed_data}
         if len(files) > 1:
             inter_table = QTableWidget(len(files), len(files))
 
@@ -1099,22 +1003,16 @@ class MSMSViewerWindow(QWidget):
                         inter_table.setVerticalHeaderItem(idx, hi)
 
             inter_table.setMinimumHeight(min(120, 24 + len(files) * 20))
-            inter_table.setSizePolicy(
-                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
-            )
+            inter_table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
             # Set table properties for better display
-            inter_table.horizontalHeader().setSectionResizeMode(
-                QHeaderView.ResizeMode.Interactive
-            )
+            inter_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
             inter_table.horizontalHeader().setDefaultSectionSize(70)
             inter_table.verticalHeader().setDefaultSectionSize(18)
 
             # Enable context menu
             inter_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-            inter_table.customContextMenuRequested.connect(
-                lambda pos: self._show_similarity_context_menu(inter_table, pos)
-            )
+            inter_table.customContextMenuRequested.connect(lambda pos: self._show_similarity_context_menu(inter_table, pos))
 
             # Single click opens the two spectra in individual viewer windows
             inter_table.cellClicked.connect(self._on_similarity_cell_clicked)
@@ -1136,26 +1034,16 @@ class MSMSViewerWindow(QWidget):
                             item = QTableWidgetItem(text)
                             # Use lighter colors for diagonal to distinguish from inter-file
                             if median_sim >= 0.8:
-                                item.setBackground(
-                                    QColor(76, 175, 80, 100)
-                                )  # Light Green
+                                item.setBackground(QColor(76, 175, 80, 100))  # Light Green
                             elif median_sim >= 0.6:
-                                item.setBackground(
-                                    QColor(255, 193, 7, 100)
-                                )  # Light Amber
+                                item.setBackground(QColor(255, 193, 7, 100))  # Light Amber
                             elif median_sim >= 0.4:
-                                item.setBackground(
-                                    QColor(255, 152, 0, 100)
-                                )  # Light Orange
+                                item.setBackground(QColor(255, 152, 0, 100))  # Light Orange
                             else:
-                                item.setBackground(
-                                    QColor(244, 67, 54, 100)
-                                )  # Light Red
+                                item.setBackground(QColor(244, 67, 54, 100))  # Light Red
                         else:
                             item = QTableWidgetItem("N/A")
-                            item.setBackground(
-                                QColor(240, 240, 240)
-                            )  # Light gray background
+                            item.setBackground(QColor(240, 240, 240))  # Light gray background
                     else:
                         # Off-diagonal - show inter-file median similarity with color coding
                         key1 = (file1, file2)
@@ -1183,9 +1071,7 @@ class MSMSViewerWindow(QWidget):
                         elif median_sim >= 0.6:
                             item.setBackground(QColor(255, 193, 7, 200))  # Strong Amber
                         elif median_sim >= 0.4:
-                            item.setBackground(
-                                QColor(255, 152, 0, 200)
-                            )  # Strong Orange
+                            item.setBackground(QColor(255, 152, 0, 200))  # Strong Orange
                         else:
                             item.setBackground(QColor(244, 67, 54, 200))  # Strong Red
 
@@ -1215,16 +1101,13 @@ class MSMSViewerWindow(QWidget):
 
             # Add compact legend
             legend_label = QLabel(
-                "<small><b>Legend:</b> Values show median cosine similarity | "
-                "Diagonal = Intra-file (lighter colors) | Off-diagonal = Inter-file (darker colors)</small>"
+                "<small><b>Legend:</b> Values show median cosine similarity | Diagonal = Intra-file (lighter colors) | Off-diagonal = Inter-file (darker colors)</small>"
             )
             legend_label.setFixedHeight(15)
             legend_label.setStyleSheet("QLabel { font-size: 10px; }")
             layout.addWidget(legend_label)
         else:
-            no_comparison_label = QLabel(
-                "<i>At least 2 files needed for inter-file comparison</i>"
-            )
+            no_comparison_label = QLabel("<i>At least 2 files needed for inter-file comparison</i>")
             layout.addWidget(no_comparison_label)
 
         return overview_widget
@@ -1236,24 +1119,12 @@ class MSMSViewerWindow(QWidget):
 
         # Get precursor intensity for display
         precursor_intensity = spectrum_data.get("precursor_intensity", 0)
-        intensity_text = (
-            f"{precursor_intensity:.1e}" if precursor_intensity > 0 else "N/A"
-        )
+        intensity_text = f"{precursor_intensity:.1e}" if precursor_intensity > 0 else "N/A"
 
         chart.setTitle(
-            f"RT: {spectrum_data['rt']:.2f} min / {spectrum_data['rt'] / 60.0:.1f} sec /  | "
-            f"Precursor: {spectrum_data['precursor_mz']:.4f} | "
-            f"Intensity: {intensity_text}"
-            + (
-                f"\nScan: {spectrum_data['scan_id']}"
-                if spectrum_data.get("scan_id")
-                else ""
-            )
-            + (
-                f" | Filter: {spectrum_data['filter_string']}"
-                if spectrum_data.get("filter_string")
-                else ""
-            )
+            f"RT: {spectrum_data['rt']:.2f} min / {spectrum_data['rt'] / 60.0:.1f} sec /  | Precursor: {spectrum_data['precursor_mz']:.4f} | Intensity: {intensity_text}"
+            + (f"\nScan: {spectrum_data['scan_id']}" if spectrum_data.get("scan_id") else "")
+            + (f" | Filter: {spectrum_data['filter_string']}" if spectrum_data.get("filter_string") else "")
         )
 
         # Create series for the spectrum
@@ -1313,9 +1184,7 @@ class MSMSViewerWindow(QWidget):
         # Create interactive chart view with dynamic sizing
         chart_view = InteractiveMSMSChartView(chart)
         chart_view.setMinimumSize(250, 150)  # Reduced minimum size
-        chart_view.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
-        )
+        chart_view.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
         # Store spectrum data for popup display
         chart_view.spectrum_data = spectrum_data
@@ -1396,13 +1265,9 @@ class MSMSViewerWindow(QWidget):
         if file1_spectra and file2_spectra:
             info_text += f"<b>Representative Precursor Info:</b><br>"
             info_text += f"  Spectrum A: m/z = {file1_spectra[0]['precursor_mz']:.4f}, "
-            info_text += (
-                f"Intensity = {file1_spectra[0].get('precursor_intensity', 0):.2e}<br>"
-            )
+            info_text += f"Intensity = {file1_spectra[0].get('precursor_intensity', 0):.2e}<br>"
             info_text += f"  Spectrum B: m/z = {file2_spectra[0]['precursor_mz']:.4f}, "
-            info_text += (
-                f"Intensity = {file2_spectra[0].get('precursor_intensity', 0):.2e}<br>"
-            )
+            info_text += f"Intensity = {file2_spectra[0].get('precursor_intensity', 0):.2e}<br>"
 
         info_section.setText(info_text)
         info_section.setStyleSheet("padding: 10px; background-color: #f9f9f9;")
@@ -1428,9 +1293,7 @@ class MSMSViewerWindow(QWidget):
         # Add mirror plot action (only for off-diagonal or if there are multiple spectra)
         if not is_diagonal or len(file1_spectra) >= 2:
             mirror_action = QAction("Show Mirror Plot", self)
-            mirror_action.triggered.connect(
-                lambda: self._show_mirror_plot(file1_data, file2_data, is_diagonal)
-            )
+            mirror_action.triggered.connect(lambda: self._show_mirror_plot(file1_data, file2_data, is_diagonal))
             menu.addAction(mirror_action)
 
         # Show menu at cursor position
@@ -1450,9 +1313,7 @@ class MSMSViewerWindow(QWidget):
             spectrum_b = file2_data["spectra"][0] if file2_data["spectra"] else None
 
             if not spectrum_a or not spectrum_b:
-                QMessageBox.warning(
-                    self, "No Spectra", "No spectra available for comparison."
-                )
+                QMessageBox.warning(self, "No Spectra", "No spectra available for comparison.")
                 return
 
             title_a = f"{file1_data['filename']} - RT: {spectrum_a['rt']:.2f} min"
@@ -1461,9 +1322,7 @@ class MSMSViewerWindow(QWidget):
         # Calculate cosine similarity between these two spectra
         tol = self._get_pair_mz_tolerance(spectrum_a, spectrum_b)
         method = self.defaults.get("msms_similarity_method", "CosineHungarian")
-        similarity = calculate_cosine_similarity(
-            spectrum_a, spectrum_b, mz_tolerance=tol, method=method
-        )
+        similarity = calculate_cosine_similarity(spectrum_a, spectrum_b, mz_tolerance=tol, method=method)
 
         # Open enhanced mirror plot window
         if not hasattr(self, "_open_popups"):
@@ -1477,11 +1336,7 @@ class MSMSViewerWindow(QWidget):
             mz_tolerance=tol,
             method=method,
         )
-        window.destroyed.connect(
-            lambda: self._open_popups.remove(window)
-            if window in self._open_popups
-            else None
-        )
+        window.destroyed.connect(lambda: self._open_popups.remove(window) if window in self._open_popups else None)
         self._open_popups.append(window)
         window.show()
 
@@ -1501,12 +1356,8 @@ class MSMSViewerWindow(QWidget):
         is_diagonal = metadata["is_diagonal"]
 
         # Locate the spectrum lists from processed_data
-        file1_data = next(
-            (d for _, d in self.processed_data if d["filename"] == file1_name), None
-        )
-        file2_data = next(
-            (d for _, d in self.processed_data if d["filename"] == file2_name), None
-        )
+        file1_data = next((d for _, d in self.processed_data if d["filename"] == file1_name), None)
+        file2_data = next((d for _, d in self.processed_data if d["filename"] == file2_name), None)
         if not file1_data or not file2_data:
             return
 
@@ -1541,9 +1392,7 @@ class MSMSViewerWindow(QWidget):
 
         tol = self._get_pair_mz_tolerance(spec_a, spec_b)
         method = self.defaults.get("msms_similarity_method", "CosineHungarian")
-        similarity = calculate_cosine_similarity(
-            spec_a, spec_b, mz_tolerance=tol, method=method
-        )
+        similarity = calculate_cosine_similarity(spec_a, spec_b, mz_tolerance=tol, method=method)
 
         if not hasattr(self, "_open_popups"):
             self._open_popups = []
@@ -1556,11 +1405,7 @@ class MSMSViewerWindow(QWidget):
             mz_tolerance=tol,
             method=method,
         )
-        window.destroyed.connect(
-            lambda: self._open_popups.remove(window)
-            if window in self._open_popups
-            else None
-        )
+        window.destroyed.connect(lambda: self._open_popups.remove(window) if window in self._open_popups else None)
         self._open_popups.append(window)
         window.show()
 
@@ -1601,12 +1446,7 @@ class EnhancedMirrorPlotWindow(QWidget):
         parent=None,
     ):
         super().__init__(parent)
-        self.setWindowFlags(
-            Qt.WindowType.Window
-            | Qt.WindowType.WindowMinimizeButtonHint
-            | Qt.WindowType.WindowMaximizeButtonHint
-            | Qt.WindowType.WindowCloseButtonHint
-        )
+        self.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.WindowMinimizeButtonHint | Qt.WindowType.WindowMaximizeButtonHint | Qt.WindowType.WindowCloseButtonHint)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
 
         self.spectrum_a = spectrum_a
@@ -1622,16 +1462,8 @@ class EnhancedMirrorPlotWindow(QWidget):
         self._mz_b = np.array(spectrum_b["mz"], dtype=float)
         self._int_b = np.array(spectrum_b["intensity"], dtype=float)
 
-        _max_a = (
-            float(np.max(self._int_a))
-            if len(self._int_a) > 0 and np.max(self._int_a) > 0
-            else 1.0
-        )
-        _max_b = (
-            float(np.max(self._int_b))
-            if len(self._int_b) > 0 and np.max(self._int_b) > 0
-            else 1.0
-        )
+        _max_a = float(np.max(self._int_a)) if len(self._int_a) > 0 and np.max(self._int_a) > 0 else 1.0
+        _max_b = float(np.max(self._int_b)) if len(self._int_b) > 0 and np.max(self._int_b) > 0 else 1.0
         self._max_a = _max_a
         self._max_b = _max_b
         self._rel_a = self._int_a / _max_a * 100.0
@@ -1659,12 +1491,7 @@ class EnhancedMirrorPlotWindow(QWidget):
         tol = self.mz_tolerance
 
         # All candidate pairs within tolerance, sorted by product of intensities
-        candidates = [
-            (i, j, float(int_a[i]) * float(int_b[j]))
-            for i in range(len(mz_a))
-            for j in range(len(mz_b))
-            if abs(float(mz_a[i]) - float(mz_b[j])) <= tol
-        ]
+        candidates = [(i, j, float(int_a[i]) * float(int_b[j])) for i in range(len(mz_a)) for j in range(len(mz_b)) if abs(float(mz_a[i]) - float(mz_b[j])) <= tol]
         candidates.sort(key=lambda x: -x[2])
 
         used_a: set = set()
@@ -1688,9 +1515,7 @@ class EnhancedMirrorPlotWindow(QWidget):
                     "mz_b": float(mz_b[j]),
                     "int_b": float(int_b[j]),
                     "delta_mz": delta,
-                    "delta_ppm": delta / float(mz_b[j]) * 1e6
-                    if float(mz_b[j]) != 0.0
-                    else 0.0,
+                    "delta_ppm": delta / float(mz_b[j]) * 1e6 if float(mz_b[j]) != 0.0 else 0.0,
                 }
             )
         for i in range(len(mz_a)):
@@ -1732,9 +1557,7 @@ class EnhancedMirrorPlotWindow(QWidget):
         outer.setSpacing(4)
 
         # ---- header block (fixed height — must not stretch vertically) ----
-        n_matched = sum(
-            1 for r in self._rows if r["idx_a"] is not None and r["idx_b"] is not None
-        )
+        n_matched = sum(1 for r in self._rows if r["idx_a"] is not None and r["idx_b"] is not None)
         n_only_a = sum(1 for r in self._rows if r["idx_b"] is None)
         n_only_b = sum(1 for r in self._rows if r["idx_a"] is None)
 
@@ -1742,9 +1565,7 @@ class EnhancedMirrorPlotWindow(QWidget):
             """Build one info line for a spectrum."""
             prec_mz = spectrum.get("precursor_mz", None)
             prec_int = spectrum.get("precursor_intensity", None)
-            scan_id = (
-                spectrum.get("id") or spectrum.get("scan_id") or spectrum.get("index")
-            )
+            scan_id = spectrum.get("id") or spectrum.get("scan_id") or spectrum.get("index")
             fs = spectrum.get("filter_string") or ""
             parts = [f"<b>{label}: {title}</b>"]
             if prec_mz is not None:
@@ -1757,18 +1578,8 @@ class EnhancedMirrorPlotWindow(QWidget):
                 parts.append(f"<span style='color:#555;font-size:10px'>{fs}</span>")
             return " &nbsp;|&nbsp; ".join(parts)
 
-        score_line = (
-            f"{self.method} score: <b>{self.similarity:.4f}</b>"
-            f" &nbsp;|&nbsp; tolerance: {self.mz_tolerance:.4f} Da"
-            f" &nbsp;|&nbsp; matched: <b>{n_matched}</b>"
-            f" &nbsp; only-A: <b>{n_only_a}</b>"
-            f" &nbsp; only-B: <b>{n_only_b}</b>"
-        )
-        hdr_html = (
-            f"{_spec_info_html(self.spectrum_a, self.title_a, 'A')}<br>"
-            f"{_spec_info_html(self.spectrum_b, self.title_b, 'B')}<br>"
-            f"<span style='color:#444'>{score_line}</span>"
-        )
+        score_line = f"{self.method} score: <b>{self.similarity:.4f}</b> &nbsp;|&nbsp; tolerance: {self.mz_tolerance:.4f} Da &nbsp;|&nbsp; matched: <b>{n_matched}</b> &nbsp; only-A: <b>{n_only_a}</b> &nbsp; only-B: <b>{n_only_b}</b>"
+        hdr_html = f"{_spec_info_html(self.spectrum_a, self.title_a, 'A')}<br>{_spec_info_html(self.spectrum_b, self.title_b, 'B')}<br><span style='color:#444'>{score_line}</span>"
         hdr = QLabel(hdr_html)
         hdr.setStyleSheet("font-size: 11px; padding: 3px 4px;")
         hdr.setWordWrap(True)
@@ -1798,9 +1609,7 @@ class EnhancedMirrorPlotWindow(QWidget):
         tbl_l.setSpacing(2)
 
         hint = QLabel(
-            "<small>Click a row to highlight that peak in the mirror plot.&nbsp;&nbsp;"
-            "<span style='background:#dceafc;padding:1px 4px'>Blue background</span> = matched &nbsp;"
-            "<span style='background:#ffebee;padding:1px 4px'>Peach background</span> = only in A or B</small>"
+            "<small>Click a row to highlight that peak in the mirror plot.&nbsp;&nbsp;<span style='background:#dceafc;padding:1px 4px'>Blue background</span> = matched &nbsp;<span style='background:#ffebee;padding:1px 4px'>Peach background</span> = only in A or B</small>"
         )
         hint.setWordWrap(True)
         hint.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
@@ -1836,25 +1645,13 @@ class EnhancedMirrorPlotWindow(QWidget):
             is_matched = row["idx_a"] is not None and row["idx_b"] is not None
             has_a = row["idx_a"] is not None
             has_b = row["idx_b"] is not None
-            bg = (
-                self._MATCH_BG
-                if is_matched
-                else self._ONLY_B_BG
-                if not has_a
-                else self._ONLY_A_BG
-            )
+            bg = self._MATCH_BG if is_matched else self._ONLY_B_BG if not has_a else self._ONLY_A_BG
 
             # Start with empty placeholder items so every cell has a background
             items = [QTableWidgetItem("") for _ in range(len(COL_HEADERS))]
 
             # col 0: mean m/z (average when matched, single value otherwise)
-            mean_mz = (
-                (row["mz_a"] + row["mz_b"]) / 2.0
-                if is_matched
-                else row["mz_a"]
-                if has_a
-                else row["mz_b"]
-            )
+            mean_mz = (row["mz_a"] + row["mz_b"]) / 2.0 if is_matched else row["mz_a"] if has_a else row["mz_b"]
             items[0] = NumericTableWidgetItem(f"{mean_mz:.4f}")
             items[0].setData(Qt.ItemDataRole.UserRole, mean_mz)
 

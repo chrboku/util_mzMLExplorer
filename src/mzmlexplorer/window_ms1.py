@@ -61,6 +61,7 @@ class MS1ViewerWindow(QWidget):
         self.mz_tolerance = mz_tolerance
         self.formula = formula
         self.show_isotope_pattern = False
+        self._single_windows = []  # keep references so single-spectrum windows are not GC'd
 
         self.init_ui()
 
@@ -174,8 +175,10 @@ class MS1ViewerWindow(QWidget):
                     adduct=self.adduct,
                     mz_tolerance=self.mz_tolerance,
                     formula=self.formula,
-                    parent=self,
+                    parent=None,
                 )
+                self._single_windows.append(win)
+                win.destroyed.connect(lambda _, w=win: self._single_windows.remove(w) if w in self._single_windows else None)
                 win.show()
 
             file_label.clicked.connect(_open_single)
@@ -854,7 +857,7 @@ class InteractiveMS1ChartView(QChartView):
                     self.tooltip_label = QLabel(self)
                     self.tooltip_label.setStyleSheet("""
                         QLabel {
-                            background-color: rgba(255, 255, 255, 220);
+                            background-color: white;
                             border: 1px solid #555;
                             border-radius: 3px;
                             padding: 2px 6px;
@@ -874,6 +877,7 @@ class InteractiveMS1ChartView(QChartView):
                 ly = int(tip_pos.y()) + 6
             self.tooltip_label.move(lx, ly)
             self.tooltip_label.show()
+            self.tooltip_label.raise_()
         else:
             self._hide_tooltip()
 
@@ -907,7 +911,7 @@ class InteractiveMS1ChartView(QChartView):
             self.tooltip_label = QLabel(self)
             self.tooltip_label.setStyleSheet("""
                 QLabel {
-                    background-color: rgba(255, 255, 255, 230);
+                    background-color: white;
                     border: 1px solid #666;
                     border-radius: 4px;
                     padding: 4px;
@@ -931,6 +935,7 @@ class InteractiveMS1ChartView(QChartView):
 
         self.tooltip_label.move(tooltip_x, tooltip_y)
         self.tooltip_label.show()
+        self.tooltip_label.raise_()
 
     def _hide_tooltip(self):
         """Hide the tooltip label and remove any hover series"""

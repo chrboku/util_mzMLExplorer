@@ -10,6 +10,7 @@ from .utils import (
     parse_molecular_formula,
     calculate_molecular_mass,
     ISOTOPE_DATA,
+    adduct_mass_change,
 )
 
 
@@ -46,6 +47,8 @@ class CompoundManager:
             "mass_change": "Mass_change",
             "charge": "Charge",
             "multiplier": "Multiplier",
+            "elementsadded": "ElementsAdded",
+            "elementslost": "ElementsLost",
         }
 
         # Handle different input types
@@ -137,22 +140,22 @@ class CompoundManager:
                     # Test if the formula can be parsed
                     parse_molecular_formula(str(row["ChemicalFormula"]))
                     compound_dict["compound_type"] = "formula"
+                    # Explicitly parse and normalise Common_adducts for formula compounds
+                    compound_dict["Common_adducts"] = self._parse_adducts_string(compound_dict.get("Common_adducts", ""))
                 elif has_mass and pd.notna(row.get("Mass")) and str(row.get("Mass")).strip():
                     # Validate mass value
                     mass = float(row["Mass"])
                     if mass <= 0:
                         raise ValueError(f"Mass must be positive: {mass}")
                     compound_dict["compound_type"] = "mass"
+                    # Explicitly parse and normalise Common_adducts for mass compounds
+                    compound_dict["Common_adducts"] = self._parse_adducts_string(compound_dict.get("Common_adducts", ""))
                 else:
                     # Check if compound has adducts with m/z values (e.g., [197.23234]+)
-                    adducts_str = row.get("Common_adducts", "")
-                    if isinstance(adducts_str, str) and adducts_str.strip():
-                        adduct_list = [a.strip() for a in adducts_str.split(",") if a.strip()]
-                        has_mz_adducts = any(self._is_mz_adduct(adduct) for adduct in adduct_list)
-                        if has_mz_adducts:
-                            compound_dict["compound_type"] = "mz_only"
-                        else:
-                            raise ValueError("Either ChemicalFormula, Mass, or m/z adducts must be provided")
+                    adduct_list = self._parse_adducts_string(row.get("Common_adducts", ""))
+                    has_mz_adducts = any(self._is_mz_adduct(adduct) for adduct in adduct_list)
+                    if has_mz_adducts:
+                        compound_dict["compound_type"] = "mz_only"
                     else:
                         raise ValueError("Either ChemicalFormula, Mass, or m/z adducts must be provided")
 
@@ -186,9 +189,23 @@ class CompoundManager:
         """Pre-calculate m/z values and polarity for all compound-adduct combinations"""
         self.compound_adduct_data = {}  # Dictionary to store pre-calculated data
 
+        all_available_adducts = self.get_all_available_adducts()
         for _, compound in self.compounds_data.iterrows():
             compound_name = compound["Name"]
-            adducts = self.get_compound_adducts(compound_name)
+            compound_type = compound.get("compound_type", "formula")
+
+            # Get the specified Common_adducts for this compound
+            specified_adducts = compound.get("Common_adducts", [])
+            # For formula/mass compounds, pre-calculate for ALL adducts from the
+            # Adducts table (specified ones first, then remaining).  This avoids
+            # on-the-fly calculation in the context menu and ensures every adduct
+            # entry is available for look-up.
+            # For mz_only compounds only the directly-specified m/z adducts make
+            # sense, so we restrict to those.
+            if compound_type in ("formula", "mass"):
+                adducts = specified_adducts + [a for a in all_available_adducts if a not in specified_adducts]
+            else:
+                adducts = specified_adducts
 
             self.compound_adduct_data[compound_name] = {}
 
@@ -236,10 +253,35 @@ class CompoundManager:
     def _get_default_adducts(self) -> pd.DataFrame:
         """Get default adduct table"""
         default_adducts = [
-            {"Adduct": "[M+H]+", "Mass_change": 1.007276, "Charge": 1},
-            {"Adduct": "[M-H]-", "Mass_change": -1.007276, "Charge": -1},
+            {"Adduct": "[M+H]+", "Mass_change": "", "Charge": 1, "Multiplier": 1, "ElementsAdded": "H", "ElementsLost": ""},
+            {"Adduct": "[M-H]-", "Mass_change": "", "Charge": -1, "Multiplier": 1, "ElementsAdded": "", "ElementsLost": "H"},
         ]
         return pd.DataFrame(default_adducts)
+
+    @staticmethod
+    def _parse_adducts_string(val) -> list:
+        """Robustly parse a Common_adducts value into a list of adduct strings.
+
+        Handles None, NaN (float), list, and string values. Supports both
+        comma and semicolon as separators.
+        """
+        if val is None:
+            return []
+        if isinstance(val, list):
+            return [str(a).strip() for a in val if str(a).strip()]
+        if isinstance(val, float):
+            # float covers np.nan
+            import math
+
+            if math.isnan(val):
+                return []
+            val = str(val)
+        adducts_str = str(val).strip()
+        if not adducts_str or adducts_str.lower() == "nan":
+            return []
+        # Support both comma and semicolon as separators
+        sep = "," if "," in adducts_str else ";"
+        return [a.strip() for a in adducts_str.split(sep) if a.strip()]
 
     def _is_mz_adduct(self, adduct_str: str) -> bool:
         """
@@ -295,9 +337,7 @@ class CompoundManager:
         """
         compound = self.get_compound_by_name(compound_name)
         if compound is not None:
-            adducts_str = compound["Common_adducts"]
-            if isinstance(adducts_str, str):
-                return [adduct.strip() for adduct in adducts_str.split(",") if adduct.strip()]
+            return self._parse_adducts_string(compound["Common_adducts"])
         return []
 
     def calculate_compound_mz(self, compound_name: str, adduct: str) -> Optional[float]:
@@ -323,7 +363,6 @@ class CompoundManager:
 
             # Handle standard adducts
             compound_type = compound.get("compound_type", "formula")
-
             if compound_type == "formula":
                 mz_value = calculate_mz_from_formula(compound["ChemicalFormula"], adduct, self.adducts_data)
                 return mz_value
@@ -522,29 +561,22 @@ class CompoundManager:
         """
         Calculate m/z from molecular mass and adduct.
 
+        Uses ElementsAdded/ElementsLost when available, falls back to Mass_change.
+
         Args:
-            molecular_mass: Molecular mass in Da
+            molecular_mass: Neutral monoisotopic molecular mass in Da
             adduct: Adduct string
 
         Returns:
             m/z value
         """
-        # Look up adduct in adducts table
         adduct_row = self.adducts_data[self.adducts_data["Adduct"] == adduct]
 
         if adduct_row.empty:
             raise ValueError(f"Unknown adduct: {adduct}")
 
-        adduct_info = adduct_row.iloc[0]
-        mass_change = adduct_info["Mass_change"]
-        charge = adduct_info["Charge"]
-        multiplier = adduct_info.get("Multiplier", 1)
-
-        # Calculate m/z
-        total_mass = (molecular_mass * multiplier) + mass_change
-        mz = total_mass / abs(charge)
-
-        return mz
+        mass_change, charge, multiplier = adduct_mass_change(adduct_row.iloc[0])
+        return (multiplier * molecular_mass + mass_change) / abs(charge)
 
     def get_all_available_adducts(self) -> List[str]:
         """
@@ -722,10 +754,7 @@ class CompoundManager:
         # Count total adducts
         total_adducts = 0
         for _, row in self.compounds_data.iterrows():
-            adducts_str = row["Common_adducts"]
-            if isinstance(adducts_str, str):
-                adducts_count = len([a.strip() for a in adducts_str.split(",") if a.strip()])
-                total_adducts += adducts_count
+            total_adducts += len(self._parse_adducts_string(row["Common_adducts"]))
 
         # Count compound types
         formula_count = len(self.compounds_data[self.compounds_data.get("compound_type") == "formula"])

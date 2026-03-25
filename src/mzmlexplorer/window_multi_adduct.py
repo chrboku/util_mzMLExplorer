@@ -31,6 +31,7 @@ from PyQt6.QtWidgets import (
     QTabWidget,
     QApplication,
     QFrame,
+    QProgressDialog,
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QPointF, QMargins
 from PyQt6.QtCharts import QChart, QChartView, QLineSeries, QValueAxis
@@ -644,11 +645,27 @@ class MultiAdductWindow(QWidget):
         grid_layout.setSpacing(10)
 
         # Calculate max intensities for all adducts and sort by descending abundance
+        # Show a progress dialog during the (potentially slow) extraction step
+        valid_adducts = [(a, mz, pol) for a, mz, pol in self.adducts_data if mz is not None]
+        total = len(valid_adducts)
+        progress = QProgressDialog("Extracting EIC data…", None, 0, max(total, 1), self.parent())
+        progress.setWindowTitle("Multi-Adduct EIC – Please Wait")
+        progress.setWindowModality(Qt.WindowModality.ApplicationModal)
+        progress.setMinimumDuration(0)
+        progress.setAutoClose(True)
+        progress.setAutoReset(False)
+        progress.setValue(0)
+        QApplication.processEvents()
+
         adducts_with_intensity = []
-        for adduct, mz_value, polarity in self.adducts_data:
-            if mz_value is not None:  # Only process adducts with valid m/z
-                max_intensity = self._calculate_max_intensity_in_rt_window(adduct, mz_value, polarity)
-                adducts_with_intensity.append((adduct, mz_value, polarity, max_intensity))
+        for idx, (adduct, mz_value, polarity) in enumerate(valid_adducts):
+            progress.setValue(idx)
+            progress.setLabelText(f"Processing adduct {idx + 1}/{total}: {adduct}")
+            QApplication.processEvents()
+            max_intensity = self._calculate_max_intensity_in_rt_window(adduct, mz_value, polarity)
+            adducts_with_intensity.append((adduct, mz_value, polarity, max_intensity))
+
+        progress.setValue(total)
 
         # Sort by maximum intensity in descending order
         adducts_with_intensity.sort(key=lambda x: x[3], reverse=True)

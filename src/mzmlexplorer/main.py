@@ -31,8 +31,9 @@ from PyQt6.QtWidgets import (
     QFrame,
     QScrollArea,
     QAbstractItemView,
+    QWidgetAction,
 )
-from PyQt6.QtCore import Qt, QTimer, QMimeData, QUrl, QSettings, QEvent
+from PyQt6.QtCore import Qt, QTimer, QSettings, QEvent
 from PyQt6.QtGui import (
     QFont,
     QAction,
@@ -43,20 +44,16 @@ from PyQt6.QtGui import (
     QPainter,
     QPen,
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QObject
+from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor, QFont
 import pandas as pd
-import pymzml
-import numpy as np
 from .compound_manager import CompoundManager
 from .file_manager import FileManager
-from .windows import EICWindow
+from .windows import EICWindow, MultiAdductWindow
 from .compound_import_dialog import (
     CompoundImportDialog,
     validate_formula_smiles_agreement,
 )
-from .multi_adduct_window import MultiAdductWindow
-from natsort import natsorted, index_natsorted
 
 import json
 import toml
@@ -1002,6 +999,36 @@ class MzMLExplorerMainWindow(QMainWindow):
         menu = QMenu(self)
         menu.setTitle(f"Adducts for {compound_name}")
 
+        # --- non-clickable info header (formula / mass) ---
+        formula = compound_data.get("ChemicalFormula")
+        mass = compound_data.get("Mass")
+        # Treat NaN / None / empty string as absent
+        formula_ok = formula is not None and not (isinstance(formula, float) and pd.isna(formula)) and str(formula).strip()
+        mass_ok = mass is not None and not (isinstance(mass, float) and pd.isna(mass)) and str(mass).strip()
+        info_lines = [f"<b>{compound_name}</b>"]
+        if formula_ok:
+            info_lines.append(f"Formula: {formula}")
+            if not mass_ok:
+                # calculate mass from formula for display
+                try:
+                    from .utils import calculate_molecular_mass
+
+                    calc_mass = calculate_molecular_mass(str(formula).strip())
+                    info_lines.append(f"Mass: {calc_mass:.4f} Da")
+                except Exception:
+                    pass
+        if mass_ok:
+            info_lines.append(f"Mass: {mass} Da")
+        if len(info_lines) > 1:  # only show when there is something beyond the name
+            info_label = QLabel("<br>".join(info_lines))
+            info_label.setStyleSheet("padding: 4px 8px; color: #333; background: transparent;")
+            info_label.setTextFormat(Qt.TextFormat.RichText)
+            info_widget_action = QWidgetAction(self)
+            info_widget_action.setDefaultWidget(info_label)
+            info_widget_action.setEnabled(False)
+            menu.addAction(info_widget_action)
+            menu.addSeparator()
+
         # Get categorized adducts
         adducts_info = self.compound_manager.get_compound_adducts_categorized(compound_name)
         can_calculate = self.compound_manager.can_calculate_adducts_from_formula(compound_name)
@@ -1083,19 +1110,29 @@ class MzMLExplorerMainWindow(QMainWindow):
             else:
                 action_text = f"{display_name} (m/z: not calculated)"
 
-        # Create action
-        action = QAction(action_text, self)
-
-        # Make specified adducts bold
         if specified:
-            font = action.font()
-            font.setBold(True)
-            action.setFont(font)
-
-        # Connect to EIC window function
-        action.triggered.connect(lambda checked, c=compound_data, a=adduct, m=mz_value, p=polarity: self.show_eic_window(c, a, m, p))
-
-        menu.addAction(action)
+            # Use QWidgetAction with an HTML-bold label so bold text is guaranteed
+            # to render on all platforms (QAction.setFont is ignored by the native
+            # Windows menu renderer).
+            label = QLabel(f"<b>{action_text}</b>")
+            label.setTextFormat(Qt.TextFormat.RichText)
+            bold_font = label.font()
+            bold_font.setBold(True)
+            label.setFont(bold_font)
+            label.setContentsMargins(20, 3, 8, 3)
+            label.setAutoFillBackground(False)
+            # Pass mouse events through to the menu so that clicking the label
+            # correctly triggers the QWidgetAction (labels swallow mouse events
+            # by default, which prevents the triggered signal from firing).
+            label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+            waction = QWidgetAction(self)
+            waction.setDefaultWidget(label)
+            waction.triggered.connect(lambda checked, c=compound_data, a=adduct, m=mz_value, p=polarity: self.show_eic_window(c, a, m, p))
+            menu.addAction(waction)
+        else:
+            action = QAction(action_text, self)
+            action.triggered.connect(lambda checked, c=compound_data, a=adduct, m=mz_value, p=polarity: self.show_eic_window(c, a, m, p))
+            menu.addAction(action)
 
     def _add_isotopolog_menu(self, menu, compound_data, adducts_info, can_calculate) -> bool:
         """Add an isotopolog submenu allowing selection of labeled variants."""
@@ -1596,6 +1633,7 @@ class MzMLExplorerMainWindow(QMainWindow):
                 parent=None,  # Make it independent
                 integration_callback=self.record_peak_integration,  # Pass integration callback
                 settings_callback=self._on_eic_settings_changed,  # Persist control changes
+                adducts_data=self.compound_manager.adducts_data,  # For fragment annotation
             )
 
             # Show the window

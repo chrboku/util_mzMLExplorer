@@ -32,6 +32,7 @@ from .window_eic import (  # noqa: F401
     EmbeddedScatterPlotView,
     Interactive2DScatterChartView,
 )
+from .window_multi_adduct import MultiAdductWindow  # noqa: F401
 
 __all__ = [
     "ClickableLabel",

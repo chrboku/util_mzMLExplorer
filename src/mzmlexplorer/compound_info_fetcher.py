@@ -1,7 +1,11 @@
 """Utilities for fetching compound information from online databases (PubChem)."""
 
 import json
-import pickle
+
+try:
+    import _pickle as pickle  # C-accelerated pickle (cPickle equivalent in Python 3)
+except ImportError:
+    import pickle
 import re
 import time
 import urllib.request

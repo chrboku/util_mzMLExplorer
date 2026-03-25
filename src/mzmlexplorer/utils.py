@@ -10,6 +10,10 @@ import numpy as np
 from matchms import Spectrum as MatchmsSpectrum
 from matchms.similarity import CosineGreedy, CosineHungarian
 import colorsys
+import pandas as pd
+
+# Monoisotopic electron mass in Da (used for adduct m/z calculations)
+ELECTRON_MASS = 0.000549  # Da
 
 # Atomic masses (monoisotopic)
 ATOMIC_MASSES = {
@@ -67,9 +71,62 @@ def calculate_molecular_mass(formula: str) -> float:
     return _FORMULA_TOOLS.calcMolWeight(composition)
 
 
+def adduct_mass_change(adduct_info) -> tuple:
+    """Return (mass_change, charge, multiplier) from an adduct info row or dict.
+
+    Prefers *ElementsAdded* / *ElementsLost* columns when they are present and
+    non-empty; falls back to the pre-computed *Mass_change* value otherwise.
+
+    The relationship is::
+
+        ion_mass = multiplier * neutral_mass + mass_change
+        m/z      = ion_mass / abs(charge)
+
+    For ElementsAdded/ElementsLost the ion mass is derived as::
+
+        ion_mass = multiplier * neutral_mass
+                   + mass(ElementsAdded)
+                   - mass(ElementsLost)
+                   - charge * ELECTRON_MASS
+    """
+    charge = int(adduct_info["Charge"])
+
+    try:
+        multiplier = int(adduct_info["Multiplier"])
+        if multiplier < 1:
+            multiplier = 1
+    except (TypeError, ValueError, KeyError):
+        multiplier = 1
+
+    def _str_or_none(val):
+        """Return val if it is a non-blank string, otherwise None."""
+        try:
+            if pd.isna(val):
+                return None
+        except Exception:
+            pass
+        return val.strip() if isinstance(val, str) and val.strip() else None
+
+    # Support both dict and pandas Series
+    ea = _str_or_none(adduct_info.get("ElementsAdded") if hasattr(adduct_info, "get") else adduct_info["ElementsAdded"] if "ElementsAdded" in adduct_info else None)
+    el = _str_or_none(adduct_info.get("ElementsLost") if hasattr(adduct_info, "get") else adduct_info["ElementsLost"] if "ElementsLost" in adduct_info else None)
+
+    if ea is not None or el is not None:
+        added_mass = calculate_molecular_mass(ea) if ea else 0.0
+        lost_mass = calculate_molecular_mass(el) if el else 0.0
+        mass_change = added_mass - lost_mass - charge * ELECTRON_MASS
+    else:
+        mass_change = float(adduct_info["Mass_change"])
+
+    return mass_change, charge, multiplier
+
+
 def calculate_mz_from_formula(formula: str, adduct: str, adducts_data) -> float:
     """
     Calculate the m/z value for a given molecular formula and adduct.
+
+    Uses *ElementsAdded* / *ElementsLost* adduct columns when present;
+    falls back to *Mass_change* for legacy adduct tables.
 
     Args:
         formula: Molecular formula string
@@ -85,16 +142,8 @@ def calculate_mz_from_formula(formula: str, adduct: str, adducts_data) -> float:
     if adduct_row.empty:
         raise ValueError(f"Unknown adduct: {adduct}")
 
-    adduct_info = adduct_row.iloc[0]
-    mass_change = adduct_info["Mass_change"]
-    charge = adduct_info["Charge"]
-    multiplier = adduct_info.get("Multiplier", 1)
-
-    # Calculate m/z
-    total_mass = (molecular_mass * multiplier) + mass_change
-    mz = total_mass / abs(charge)
-
-    return mz
+    mass_change, charge, multiplier = adduct_mass_change(adduct_row.iloc[0])
+    return (multiplier * molecular_mass + mass_change) / abs(charge)
 
 
 def get_mass_tolerance_window(mz: float, tolerance_ppm: float = 5.0) -> tuple[float, float]:

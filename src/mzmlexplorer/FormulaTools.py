@@ -411,3 +411,276 @@ class formulaTools:
 
     def calcDifferenceBetweenSumFormulas(self, sfFragment, sfParent):
         return self.calcDifferenceBetweenElemDicts(self.parseFormula(sfFragment), self.parseFormula(sfParent))
+
+
+class FragmentAnnotator:
+    """Annotates MS/MS fragment ions by finding possible sum formulas.
+
+    For each observed fragment m/z, all elemental formulas are enumerated
+    whose neutral monoisotopic mass matches within a given ppm tolerance and
+    whose element counts do not exceed those of the intact precursor molecule.
+    Neutral losses relative to the precursor neutral mass are computed
+    analogously.
+
+    Parameters
+    ----------
+    ft : formulaTools, optional
+        Shared formulaTools instance. A new one is created when omitted.
+
+    Example
+    -------
+    >>> fa = FragmentAnnotator()
+    >>> results = fa.annotate("C9H11NO2", [120.0813, 77.0391], ppm=5.0)
+    >>> # results[0]["fragment_formulas"] -> list of (formula_str, mass, ppm_err)
+    """
+
+    PROTON_MASS = 1.007276  # Da, monoisotopic proton
+
+    def __init__(self, ft=None):
+        self.ft = ft if ft is not None else formulaTools()
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def annotate(
+        self,
+        precursor_formula,
+        fragment_mzs,
+        ppm=5.0,
+        charge=1,
+        ion_mode="positive",
+        max_results=10,
+        adduct_info=None,
+        extra_formula=None,
+        tol_da=None,
+    ):
+        """Annotate a list of fragment m/z values.
+
+        Parameters
+        ----------
+        precursor_formula : str
+            Molecular formula of the intact (neutral) precursor molecule
+            (e.g. ``"C9H11NO2"``).  This defines the base upper bound on each
+            element count for neutral-loss formula candidates.
+        fragment_mzs : iterable of float
+            Observed fragment m/z values to annotate.
+        ppm : float
+            Mass tolerance in parts per million.
+        charge : int
+            Fragment ion charge state (default 1).
+        ion_mode : str
+            ``"positive"`` (default) or ``"negative"``.
+        max_results : int
+            Maximum number of candidate formulas returned per fragment.
+        adduct_info : dict or pandas.Series, optional
+            Adduct descriptor containing at minimum ``"ElementsAdded"`` and
+            ``"ElementsLost"`` (formula strings).  When provided, the element
+            upper bounds for *fragment* formula candidates are extended by the
+            adduct's added elements and reduced by its lost elements, reflecting
+            the full ion composition.  Neutral-loss upper bounds continue to
+            use only the neutral molecule's element counts.
+
+        Returns
+        -------
+        list of dict, one entry per input m/z, each containing:
+
+        ``mz``
+            The input fragment m/z value.
+        ``fragment_formulas``
+            List of ``(formula_str, neutral_mass, ppm_err)`` tuples for
+            candidate fragment formulas, sorted by ``|ppm_err|``.
+        ``neutral_loss_formulas``
+            Same format, for the matched neutral-loss formulas.
+            Upper-bounded by the neutral molecule's element counts.
+        """
+        precursor_elems = self.ft.parseFormula(precursor_formula)
+        # Base element counts from the neutral molecule (used for neutral-loss bound)
+        mol_elems = {k: v for k, v in precursor_elems.items() if not self.ft.isIso(k)}
+        precursor_neutral_mass = self.ft.calcMolWeight(precursor_elems)
+
+        ion_offset = self.PROTON_MASS * charge if ion_mode == "positive" else -self.PROTON_MASS * charge
+
+        # Build ion element upper bound (fragment formulas include adduct atoms)
+        ion_elems = dict(mol_elems)
+        if adduct_info is not None:
+            ion_elems = self._apply_adduct_elements(ion_elems, adduct_info)
+
+        # Expand upper bounds with user-supplied extra elements
+        if extra_formula:
+            extra = {k: v for k, v in self.ft.parseFormula(extra_formula).items() if not self.ft.isIso(k)}
+            for elem, cnt in extra.items():
+                mol_elems[elem] = mol_elems.get(elem, 0) + cnt
+                ion_elems[elem] = ion_elems.get(elem, 0) + cnt
+
+        def _build(elems):
+            order = sorted(
+                elems.keys(),
+                key=lambda e: self.ft.elemDetails[e][3],
+                reverse=True,
+            )
+            rmf = [0.0] * (len(order) + 1)
+            for i in range(len(order) - 1, -1, -1):
+                rmf[i] = rmf[i + 1] + elems[order[i]] * self.ft.elemDetails[order[i]][3]
+            return order, rmf
+
+        ion_order, ion_rmf = _build(ion_elems)
+        mol_order, mol_rmf = _build(mol_elems)
+
+        results = []
+        # When tol_da was derived from precursor_mz (tol_da = precursor_mz * ppm / 1e6),
+        # we recover that reference mass so that displayed ppm errors are consistent
+        # with the threshold (i.e. always ≤ ppm_threshold).
+        ref_for_ppm = (tol_da / ppm * 1e6) if (tol_da is not None and ppm > 0) else None
+
+        for mz in fragment_mzs:
+            mz_f = float(mz)
+            frag_neutral = mz_f * charge - ion_offset
+
+            # Use caller-supplied absolute Da tolerance (e.g. derived from precursor m/z),
+            # falling back to computing it per-fragment from ppm when not provided.
+            search_tol_da = tol_da if tol_da is not None else frag_neutral * ppm / 1e6
+
+            frag_formulas = self._search(
+                frag_neutral, ion_elems, ion_order, ion_rmf, search_tol_da, max_results
+            )
+
+            nl_mass = precursor_neutral_mass - frag_neutral
+            nl_formulas = (
+                self._search(nl_mass, mol_elems, mol_order, mol_rmf, search_tol_da, max_results)
+                if nl_mass > 0
+                else []
+            )
+
+            # Re-express ppm errors relative to precursor m/z so they are
+            # always consistent with the user-set threshold.
+            if ref_for_ppm is not None:
+                frag_formulas = [
+                    (f, m, (m - frag_neutral) / ref_for_ppm * 1e6)
+                    for f, m, _ in frag_formulas
+                ]
+                nl_formulas = [
+                    (f, m, (m - nl_mass) / ref_for_ppm * 1e6)
+                    for f, m, _ in nl_formulas
+                ]
+
+            results.append(
+                {
+                    "mz": mz_f,
+                    "fragment_formulas": frag_formulas,
+                    "neutral_loss_formulas": nl_formulas,
+                }
+            )
+        return results
+
+    def _apply_adduct_elements(self, base_elems, adduct_info):
+        """Return a new element-count dict expanded by adduct ElementsAdded/Lost."""
+        import pandas as pd
+
+        def _get_str(key):
+            val = adduct_info.get(key) if hasattr(adduct_info, "get") else None
+            if val is None:
+                try:
+                    val = adduct_info[key]
+                except (KeyError, IndexError, TypeError):
+                    val = None
+            try:
+                if val is not None and pd.isna(val):
+                    val = None
+            except Exception:
+                pass
+            return val.strip() if isinstance(val, str) and val.strip() else None
+
+        result = dict(base_elems)
+
+        added_str = _get_str("ElementsAdded")
+        if added_str:
+            added = {k: v for k, v in self.ft.parseFormula(added_str).items() if not self.ft.isIso(k)}
+            for elem, cnt in added.items():
+                result[elem] = result.get(elem, 0) + cnt
+
+        lost_str = _get_str("ElementsLost")
+        if lost_str:
+            lost = {k: v for k, v in self.ft.parseFormula(lost_str).items() if not self.ft.isIso(k)}
+            for elem, cnt in lost.items():
+                result[elem] = max(0, result.get(elem, 0) - cnt)
+
+        return {k: v for k, v in result.items() if v > 0}
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _search(self, target_mass, max_elems, elem_order, remaining_mass_from, tol_da, max_results):
+        """Return up to *max_results* formula candidates matching *target_mass*."""
+        if target_mass <= 0:
+            return []
+        candidates = []
+        self._dfs(
+            target_mass, tol_da, max_elems, elem_order, remaining_mass_from,
+            0, {}, 0.0, candidates, max_results,
+        )
+        candidates.sort(key=lambda x: abs(x[2]))
+        return candidates
+
+    def _dfs(self, target, tol_da, max_elems, elem_order, rmf,
+             depth, current, mass_so_far, candidates, max_results):
+        """Depth-first search over element counts with mass-based pruning."""
+        if len(candidates) >= max_results:
+            return
+
+        if depth == len(elem_order):
+            diff = mass_so_far - target
+            if abs(diff) <= tol_da:
+                ppm_err = diff / target * 1e6
+                formula_elems = {k: v for k, v in current.items() if v > 0}
+                formula_str = self._formula_to_str(formula_elems)
+                if formula_str:
+                    candidates.append((formula_str, mass_so_far, ppm_err))
+            return
+
+        elem = elem_order[depth]
+        e_mass = self.ft.elemDetails[elem][3]
+        max_cnt = max_elems[elem]
+        remaining = rmf[depth + 1]  # max further mass from elements at depth+1 ..
+
+        for cnt in range(max_cnt + 1):
+            partial = mass_so_far + cnt * e_mass
+
+            # Prune: already heavier than target + tolerance
+            if partial > target + tol_da:
+                break
+
+            # Prune: even using all remaining elements at max we can't reach the target
+            if partial + remaining < target - tol_da:
+                continue
+
+            current[elem] = cnt
+            self._dfs(
+                target, tol_da, max_elems, elem_order, rmf,
+                depth + 1, current, partial, candidates, max_results,
+            )
+
+        current.pop(elem, None)
+
+    @staticmethod
+    def _formula_to_str(elems):
+        """Return a Hill-notation formula string (C first, H second, then alphabetical).
+
+        Zero-count elements are silently skipped.
+        """
+        elems = {k: v for k, v in elems.items() if v > 0}
+        if not elems:
+            return ""
+        keys = sorted(elems.keys())
+        ordered = []
+        for priority in ("C", "H"):
+            if priority in keys:
+                ordered.append(priority)
+                keys.remove(priority)
+        ordered.extend(keys)
+        parts = []
+        for e in ordered:
+            c = elems[e]
+            parts.append(e + (str(c) if c > 1 else ""))
+        return "".join(parts)

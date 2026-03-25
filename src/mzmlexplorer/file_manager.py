@@ -4,7 +4,11 @@ File manager for handling mzML files and their metadata
 
 import os
 import hashlib
-import pickle
+
+try:
+    import _pickle as pickle  # C-accelerated pickle (cPickle equivalent in Python 3)
+except ImportError:
+    import pickle
 import json
 from natsort import natsort_keygen
 import importlib.metadata

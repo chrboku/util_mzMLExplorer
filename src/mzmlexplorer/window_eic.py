@@ -41,6 +41,9 @@ from PyQt6.QtWidgets import (
     QApplication,
     QSizePolicy,
     QSlider,
+    QDialog,
+    QScrollArea,
+    QTextEdit,
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QPointF, QMargins
 from PyQt6.QtCharts import QChart, QChartView, QLineSeries, QValueAxis
@@ -623,6 +626,7 @@ class EICWindow(QWidget):
         parent=None,
         integration_callback=None,
         settings_callback=None,
+        adducts_data=None,
     ):
         super().__init__(parent)
 
@@ -633,6 +637,8 @@ class EICWindow(QWidget):
         self.compound_data = compound_data
         self.adduct = adduct
         self.file_manager = file_manager
+        self._adducts_data = adducts_data  # optional adducts DataFrame for annotation
+        self._msms_windows = []  # keep references so windows are not garbage-collected
         self.eic_data = {}
         self.group_shifts = {}
         self.file_shifts = {}
@@ -699,6 +705,9 @@ class EICWindow(QWidget):
         # Initialize group settings for EIC plotting
         self.group_settings = {}  # Will be populated when EIC data is loaded
 
+        # Initialize sample settings for EIC plotting (persisted across windows via defaults)
+        self.sample_settings = dict(defaults.get("sample_settings", {})) if defaults else {}
+
         self.init_ui()
         self._load_stylesheet()
         self.extract_eic_data()
@@ -709,6 +718,19 @@ class EICWindow(QWidget):
         if os.path.exists(stylesheet_path):
             with open(stylesheet_path, "r") as f:
                 self.setStyleSheet(f.read())
+
+    def _lookup_adduct_info(self):
+        """Return the adduct row as a dict for the current adduct, or None.
+
+        Looks up from *self._adducts_data* when available; otherwise returns
+        None so the fragment annotator falls back to a proton offset.
+        """
+        if self._adducts_data is None or self._adducts_data.empty:
+            return None
+        row = self._adducts_data[self._adducts_data["Adduct"] == self.adduct]
+        if row.empty:
+            return None
+        return row.iloc[0].to_dict()
 
     def init_ui(self):
         """Initialize the user interface"""
@@ -742,37 +764,28 @@ class EICWindow(QWidget):
         info_group = self.create_compound_info_group()
         layout.addWidget(info_group)
 
-        # Extraction parameters
-        control_panel = self.create_control_panel()
-        layout.addWidget(control_panel)
-
-        # Extract button
-        self.extract_btn = QPushButton("Extract EIC")
-        self.extract_btn.clicked.connect(self.extract_eic_data)
-        layout.addWidget(self.extract_btn)
-
-        # Reset View button
+        # Reset / navigation buttons placed below compound info
+        nav_layout = QHBoxLayout()
         self.reset_view_btn = QPushButton("Reset View")
         self.reset_view_btn.clicked.connect(self.reset_view)
         self.reset_view_btn.setEnabled(False)  # Disabled until data is loaded
-        layout.addWidget(self.reset_view_btn)
-
-        # Individual axis reset buttons
-        axis_reset_layout = QHBoxLayout()
+        nav_layout.addWidget(self.reset_view_btn)
         self.reset_x_btn = QPushButton("Reset X-axis")
         self.reset_x_btn.clicked.connect(self.reset_x_axis)
         self.reset_x_btn.setEnabled(False)
-        axis_reset_layout.addWidget(self.reset_x_btn)
+        nav_layout.addWidget(self.reset_x_btn)
         self.reset_y_btn = QPushButton("Reset Y-axis")
         self.reset_y_btn.clicked.connect(self.reset_y_axis)
         self.reset_y_btn.setEnabled(False)
-        axis_reset_layout.addWidget(self.reset_y_btn)
-        layout.addLayout(axis_reset_layout)
-
-        # Optional scatter plot button (lazy-loads scatter data when first shown)
+        nav_layout.addWidget(self.reset_y_btn)
         self.scatter_toggle_btn = QPushButton("Show 2D Scatter Plot")
         self.scatter_toggle_btn.clicked.connect(self.toggle_scatter_plot)
-        layout.addWidget(self.scatter_toggle_btn)
+        nav_layout.addWidget(self.scatter_toggle_btn)
+        layout.addLayout(nav_layout)
+
+        # Extraction parameters (contains Extract EIC button at bottom)
+        control_panel = self.create_control_panel()
+        layout.addWidget(control_panel)
 
         # Progress bar (underneath the buttons)
         self.progress_bar = QProgressBar()
@@ -782,6 +795,10 @@ class EICWindow(QWidget):
         # Group settings table
         self.create_group_settings_table()
         layout.addWidget(self.group_settings_box)
+
+        # Sample settings table (collapsible, placed below group settings)
+        self.create_sample_settings_table()
+        layout.addWidget(self.sample_settings_box)
 
         layout.addStretch()
         return panel
@@ -848,16 +865,19 @@ class EICWindow(QWidget):
     def _create_structure_widget(self, smiles: str):
         """Render a SMILES string as a widget showing the SMILES text and, if rdkit
         is available, a 2-D structure image below it.
+        Clicking on the SMILES text or the image opens a high-resolution popup.
         """
         container = QWidget()
         container_layout = QVBoxLayout(container)
         container_layout.setContentsMargins(0, 0, 0, 0)
         container_layout.setSpacing(2)
 
-        # Always show the SMILES string as text
+        # SMILES text – clickable
         smiles_label = QLabel(f"<b>SMILES:</b><br><small>{smiles}</small>")
         smiles_label.setWordWrap(True)
-        smiles_label.setToolTip(smiles)
+        smiles_label.setToolTip("Click to view full details")
+        smiles_label.setCursor(Qt.CursorShape.PointingHandCursor)
+        smiles_label.mousePressEvent = lambda _ev, s=smiles: self._show_structure_detail_dialog(s)
         container_layout.addWidget(smiles_label)
 
         # Try to render the 2-D structure with rdkit
@@ -883,7 +903,9 @@ class EICWindow(QWidget):
             img_label = QLabel()
             img_label.setPixmap(pixmap)
             img_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            img_label.setToolTip(smiles)
+            img_label.setToolTip("Click to view high-resolution structure")
+            img_label.setCursor(Qt.CursorShape.PointingHandCursor)
+            img_label.mousePressEvent = lambda _ev, s=smiles: self._show_structure_detail_dialog(s)
             container_layout.addWidget(img_label)
 
         except ImportError:
@@ -893,13 +915,155 @@ class EICWindow(QWidget):
 
         return container
 
+    def _show_structure_detail_dialog(self, smiles: str) -> None:
+        """Open a modal popup with a high-resolution structure image, SMILES text,
+        and computed compound properties."""
+        import math
+
+        def _val_ok(v):
+            """Return True when v is a non-empty, non-NaN usable scalar."""
+            if v is None:
+                return False
+            try:
+                if math.isnan(float(v)):
+                    return False
+            except (TypeError, ValueError):
+                pass
+            return str(v).strip().lower() not in ("", "nan", "none", "na")
+
+        # Inner helper: QLabel that rescales its pixmap whenever the label is resized.
+        class _ResizableImageLabel(QLabel):
+            def __init__(self, orig_pixmap, parent=None):
+                super().__init__(parent)
+                self._orig = orig_pixmap
+                self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                self.setMinimumSize(300, 300)
+                self.setAutoFillBackground(False)
+
+            def resizeEvent(self, event):
+                super().resizeEvent(event)
+                if self._orig and not self._orig.isNull():
+                    self.setPixmap(
+                        self._orig.scaled(
+                            self.size(),
+                            Qt.AspectRatioMode.KeepAspectRatio,
+                            Qt.TransformationMode.SmoothTransformation,
+                        )
+                    )
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"Structure \u2013 {self.compound_data.get('Name', '')}")
+        dialog.setMinimumSize(700, 500)
+        dialog.resize(820, 580)
+
+        outer = QHBoxLayout(dialog)
+        outer.setContentsMargins(8, 8, 8, 8)
+
+        # ---- Left: high-res structure image (stretches when dialog is resized) ----
+        orig_pixmap = None
+        try:
+            from rdkit import Chem
+            from rdkit.Chem.Draw import rdMolDraw2D
+            from PyQt6.QtGui import QPixmap
+
+            mol = Chem.MolFromSmiles(smiles)
+            if mol is not None:
+                drawer = rdMolDraw2D.MolDraw2DCairo(600, 600)
+                drawer.drawOptions().clearBackground = False  # transparent background
+                drawer.drawOptions().addStereoAnnotation = True
+                drawer.drawOptions().baseFontSize = 0.8
+                drawer.DrawMolecule(mol)
+                drawer.FinishDrawing()
+                png_bytes = drawer.GetDrawingText()
+                orig_pixmap = QPixmap()
+                orig_pixmap.loadFromData(png_bytes, "PNG")
+        except Exception:
+            pass
+
+        img_widget = _ResizableImageLabel(orig_pixmap)
+        if orig_pixmap is None:
+            img_widget.setText("(structure unavailable)")
+        # Image side stretches on resize; right panel stays at fixed width
+        outer.addWidget(img_widget, stretch=1)
+
+        # ---- Right: SMILES + properties (fixed width, does not grow on resize) ----
+        right_widget = QWidget()
+        right_widget.setFixedWidth(290)
+        right_layout = QVBoxLayout(right_widget)
+        right_layout.setContentsMargins(8, 0, 0, 0)
+
+        # SMILES (selectable)
+        smiles_header = QLabel("<b>SMILES:</b>")
+        smiles_header.setStyleSheet("font-size: 13px;")
+        right_layout.addWidget(smiles_header)
+        smiles_text = QTextEdit()
+        smiles_text.setPlainText(smiles)
+        smiles_text.setReadOnly(True)
+        smiles_text.setMaximumHeight(70)
+        smiles_text.setStyleSheet("font-family: monospace; font-size: 11px;")
+        right_layout.addWidget(smiles_text)
+
+        # Properties
+        props_header = QLabel("<b>Properties:</b>")
+        props_header.setStyleSheet("font-size: 13px; margin-top: 8px;")
+        right_layout.addWidget(props_header)
+
+        props: list[tuple[str, str]] = []
+        cd = self.compound_data
+        if _val_ok(cd.get("ChemicalFormula")):
+            props.append(("Formula", str(cd["ChemicalFormula"])))
+        if _val_ok(cd.get("Mass")):
+            props.append(("Monoisotopic mass", f"{float(cd['Mass']):.4f} Da"))
+        if _val_ok(cd.get("RT_min")):
+            props.append(("RT (center)", f"{float(cd['RT_min']):.2f} min"))
+
+        # From rdkit
+        try:
+            from rdkit import Chem
+            from rdkit.Chem import Descriptors, rdMolDescriptors
+
+            mol = Chem.MolFromSmiles(smiles)
+            if mol is not None:
+                props.append(("Molecular weight", f"{Descriptors.MolWt(mol):.4f}"))
+                props.append(("Exact mass", f"{Descriptors.ExactMolWt(mol):.4f}"))
+                props.append(("LogP", f"{Descriptors.MolLogP(mol):.3f}"))
+                props.append(("H-bond donors", str(rdMolDescriptors.CalcNumHBD(mol))))
+                props.append(("H-bond acceptors", str(rdMolDescriptors.CalcNumHBA(mol))))
+                props.append(("TPSA", f"{rdMolDescriptors.CalcTPSA(mol):.2f} \u00c5\u00b2"))
+                props.append(("Rotatable bonds", str(rdMolDescriptors.CalcNumRotatableBonds(mol))))
+                props.append(("Aromatic rings", str(rdMolDescriptors.CalcNumAromaticRings(mol))))
+                props.append(("Heavy atoms", str(mol.GetNumHeavyAtoms())))
+        except Exception:
+            pass
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        props_container = QWidget()
+        props_layout = QVBoxLayout(props_container)
+        props_layout.setSpacing(2)
+        for key, val in props:
+            row_label = QLabel(f"<b>{key}:</b>&nbsp;&nbsp;{val}")
+            row_label.setStyleSheet("font-size: 12px;")
+            props_layout.addWidget(row_label)
+        props_layout.addStretch()
+        scroll.setWidget(props_container)
+        right_layout.addWidget(scroll)
+
+        # Close button
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(dialog.accept)
+        right_layout.addWidget(close_btn)
+
+        outer.addWidget(right_widget, stretch=0)
+        dialog.exec()
+
     def create_control_panel(self) -> CollapsibleBox:
         """Create the control panel"""
-        group = CollapsibleBox("Extraction Parameters")
+        group = CollapsibleBox("View Settings")
         inner = QWidget()
         layout = QFormLayout(inner)
         group.add_widget(inner)
-        group.set_expanded(True)
+        group.set_expanded(False)
 
         # EIC calculation method
         self.eic_method_combo = QComboBox()
@@ -1020,6 +1184,11 @@ class EICWindow(QWidget):
         ridge_layout.addWidget(self.ridge_increment_label)
         self.ridge_increment_widget.setVisible(False)
         layout.addRow("Increment:", self.ridge_increment_widget)
+
+        # Extract EIC button at the bottom of the extraction parameters
+        self.extract_btn = QPushButton("Extract EIC")
+        self.extract_btn.clicked.connect(self.extract_eic_data)
+        layout.addRow(self.extract_btn)
 
         return group
 
@@ -1190,11 +1359,209 @@ class EICWindow(QWidget):
                 self.update_plot()
 
     def on_group_setting_changed(self, group, setting, value):
-        """Handle changes to group settings"""
+        """Handle changes to group settings.
+
+        For 'plot' and 'line_width' settings, the new value is also
+        propagated to every sample that belongs to this group so that
+        group visibility / line-width is the authority.  Changes to
+        individual sample settings never flow back the other way.
+        """
         if group in self.group_settings:
             self.group_settings[group][setting] = value
+
+            # Propagate plot/line_width to matching samples (one-way)
+            if setting in ("plot", "line_width") and hasattr(self.file_manager, "files_data") and self.file_manager.files_data is not None:
+                df = self.file_manager.files_data
+                group_col = self.grouping_column if self.grouping_column in df.columns else None
+                if group_col is not None:
+                    matching_files = df[df[group_col].astype(str) == group]
+                    for _, frow in matching_files.iterrows():
+                        fn = str(frow.get("filename", ""))
+                        if not fn:
+                            continue
+                        if fn not in self.sample_settings:
+                            self.sample_settings[fn] = {"plot": True, "line_width": 1.0}
+                        self.sample_settings[fn][setting] = value
+
+                # Silently update the sample settings table widgets
+                self._sync_sample_table_from_settings()
+
             # Update the plot when settings change without resetting the view
             self.update_plot(preserve_view=True)
+
+    def _sync_sample_table_from_settings(self):
+        """Refresh sample table widgets from self.sample_settings without triggering per-row plot updates."""
+        table = self.sample_settings_table
+        if table is None:
+            return
+        for row in range(table.rowCount()):
+            name_item = table.item(row, 0)
+            if name_item is None:
+                continue
+            fn = name_item.data(Qt.ItemDataRole.UserRole)
+            if fn is None or fn not in self.sample_settings:
+                continue
+            # Column 1: Plot checkbox
+            cb_widget = table.cellWidget(row, 1)
+            if cb_widget is not None:
+                cb = cb_widget.findChild(QCheckBox)
+                if cb is not None:
+                    cb.blockSignals(True)
+                    cb.setChecked(self.sample_settings[fn]["plot"])
+                    cb.blockSignals(False)
+            # Column 2: Line width spinbox
+            lw_widget = table.cellWidget(row, 2)
+            if lw_widget is not None and isinstance(lw_widget, QDoubleSpinBox):
+                lw_widget.blockSignals(True)
+                lw_widget.setValue(self.sample_settings[fn].get("line_width", 1.0))
+                lw_widget.blockSignals(False)
+
+    def create_sample_settings_table(self):
+        """Create the sample settings table for per-sample display controls"""
+        self.sample_settings_box = CollapsibleBox("Sample Display Settings")
+
+        self.sample_settings_table = QTableWidget()
+        # Column 0: Sample name  |  Column 1: Plot  |  Column 2: Line Width
+        self.sample_settings_table.setColumnCount(3)
+        self.sample_settings_table.setHorizontalHeaderLabels(["Sample", "Plot", "Line Width"])
+
+        self.sample_settings_table.setAlternatingRowColors(True)
+        self.sample_settings_table.setSortingEnabled(True)
+        self.sample_settings_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        self.sample_settings_table.horizontalHeader().setStretchLastSection(False)
+        self.sample_settings_table.verticalHeader().setVisible(False)
+        self.sample_settings_table.setColumnWidth(0, 160)  # Sample name column
+        self.sample_settings_table.setColumnWidth(1, 40)  # Plot checkbox column
+        self.sample_settings_table.setColumnWidth(2, 80)  # Line Width column
+        self.sample_settings_table.setMaximumHeight(400)
+        self.sample_settings_table.setMinimumHeight(80)
+
+        # Context menu for show/hide all
+        self.sample_settings_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.sample_settings_table.customContextMenuRequested.connect(self._sample_settings_context_menu)
+
+        self.sample_settings_box.add_widget(self.sample_settings_table)
+
+    def populate_sample_settings_table(self):
+        """Populate the sample settings table with all samples from the file manager"""
+        table = self.sample_settings_table
+        if table is None:
+            return
+
+        # Collect all filenames from the sample matrix
+        samples = []
+        if hasattr(self.file_manager, "files_data") and self.file_manager.files_data is not None:
+            df = self.file_manager.files_data
+            if "filename" in df.columns:
+                for filename in df["filename"].dropna().unique():
+                    if filename:
+                        samples.append(str(filename))
+
+        sorted_samples = natsorted(samples)
+
+        table.setSortingEnabled(False)
+        table.setRowCount(len(sorted_samples))
+
+        # Initialise settings for samples that haven't been seen before
+        for filename in sorted_samples:
+            if filename not in self.sample_settings:
+                self.sample_settings[filename] = {"plot": True, "line_width": 1.0}
+            else:
+                self.sample_settings[filename].setdefault("line_width", 1.0)
+
+        for row, filename in enumerate(sorted_samples):
+            display_name = filename.rsplit(".", 1)[0] if "." in filename else filename
+
+            # Column 0: Sample name (stores full filename in UserRole for later lookup)
+            name_item = QTableWidgetItem(display_name)
+            name_item.setData(Qt.ItemDataRole.UserRole, filename)
+            name_item.setFlags(name_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            group_color = self._get_sample_group_color(filename)
+            if group_color:
+                name_item.setForeground(QColor(group_color))
+            table.setItem(row, 0, name_item)
+
+            # Column 1: Plot checkbox
+            plot_checkbox = QCheckBox()
+            plot_checkbox.setChecked(self.sample_settings[filename]["plot"])
+            plot_checkbox.stateChanged.connect(lambda state, fn=filename: self.on_sample_setting_changed(fn, "plot", state == Qt.CheckState.Checked.value))
+            checkbox_widget = QWidget()
+            checkbox_layout = QHBoxLayout(checkbox_widget)
+            checkbox_layout.addWidget(plot_checkbox)
+            checkbox_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            checkbox_layout.setContentsMargins(0, 0, 0, 0)
+            table.setCellWidget(row, 1, checkbox_widget)
+
+            # Column 2: Line width spinbox
+            width_spin = QDoubleSpinBox()
+            width_spin.setRange(0.5, 10.0)
+            width_spin.setValue(self.sample_settings[filename]["line_width"])
+            width_spin.setDecimals(1)
+            width_spin.setSingleStep(0.5)
+            width_spin.valueChanged.connect(lambda value, fn=filename: self.on_sample_setting_changed(fn, "line_width", value))
+            table.setCellWidget(row, 2, width_spin)
+
+        table.setSortingEnabled(True)
+
+    def _get_sample_group_color(self, filename: str):
+        """Return the group colour for *filename*, or None if unavailable."""
+        if not hasattr(self.file_manager, "files_data") or self.file_manager.files_data is None:
+            return None
+        df = self.file_manager.files_data
+        if "filename" not in df.columns or "group" not in df.columns:
+            return None
+        matching = df[df["filename"] == filename]
+        if matching.empty:
+            return None
+        group = str(matching.iloc[0]["group"])
+        return self.file_manager.get_group_color(group)
+
+    def on_sample_setting_changed(self, filename: str, setting: str, value) -> None:
+        """Handle changes to per-sample display settings"""
+        if filename not in self.sample_settings:
+            self.sample_settings[filename] = {"plot": True, "line_width": 1.0}
+        self.sample_settings[filename][setting] = value
+        # Persist across future EIC windows
+        self._notify_setting("sample_settings", dict(self.sample_settings))
+        self.update_plot(preserve_view=True)
+
+    def _sample_settings_context_menu(self, pos) -> None:
+        """Show context menu on the sample settings table."""
+        menu = QMenu(self)
+        show_all_action = QAction("Show all", self)
+        hide_all_action = QAction("Hide all", self)
+
+        def _set_all(visible: bool):
+            table = self.sample_settings_table
+            for row in range(table.rowCount()):
+                # Retrieve the full filename stored in column 0's UserRole
+                name_item = table.item(row, 0)
+                if name_item is None:
+                    continue
+                fn = name_item.data(Qt.ItemDataRole.UserRole)
+                if fn is None:
+                    continue
+                # Update the settings dict directly (no signal → no individual plot update)
+                if fn not in self.sample_settings:
+                    self.sample_settings[fn] = {"plot": True, "line_width": 1.0}
+                self.sample_settings[fn]["plot"] = visible
+                # Silence the checkbox signal so it doesn't call update_plot per row
+                cell_widget = table.cellWidget(row, 1)
+                if cell_widget is not None:
+                    cb = cell_widget.findChild(QCheckBox)
+                    if cb is not None:
+                        cb.blockSignals(True)
+                        cb.setChecked(visible)
+                        cb.blockSignals(False)
+            # Persist and redraw once
+            self._notify_setting("sample_settings", dict(self.sample_settings))
+            self.update_plot(preserve_view=True)
+
+        show_all_action.triggered.connect(lambda: _set_all(True))
+        hide_all_action.triggered.connect(lambda: _set_all(False))
+        menu.addAction(show_all_action)
+        menu.addAction(hide_all_action)
+        menu.exec(self.sample_settings_table.viewport().mapToGlobal(pos))
 
     def create_boxplot_widget(self):
         """Create the tabbed widget for boxplots and peak area table"""
@@ -4441,6 +4808,9 @@ class EICWindow(QWidget):
         # Populate group settings table with extracted groups
         self.populate_group_settings_table()
 
+        # Populate sample settings table
+        self.populate_sample_settings_table()
+
         # Update plot
         self.update_plot()
 
@@ -4739,6 +5109,9 @@ class EICWindow(QWidget):
                 if not _gs.get("plot", True):
                     continue
                 for _fd in groups_data.get(_grp, []):
+                    _fn = _fd["metadata"].get("filename", os.path.basename(_fd["filepath"]))
+                    if not self.sample_settings.get(_fn, {}).get("plot", True):
+                        continue
                     _ints = _fd["intensity"] * _gs.get("scaling", 1.0)
                     if _gs.get("negative", False):
                         _ints = -_ints
@@ -4800,6 +5173,14 @@ class EICWindow(QWidget):
             first_file_in_group = True
 
             for file_data in group_files:
+                # Check per-sample visibility setting
+                _fn = file_data["metadata"].get(
+                    "filename",
+                    os.path.basename(file_data["filepath"]),
+                )
+                if not self.sample_settings.get(_fn, {}).get("plot", True):
+                    continue
+
                 rt = file_data["rt"]
                 intensity = file_data["intensity"]
 
@@ -4855,11 +5236,14 @@ class EICWindow(QWidget):
                     series.append(float(x), float(y))
 
                 # Apply group color with transparency and line width
+                # Per-sample line_width overrides the group line_width when set
+                _sample_lw = self.sample_settings.get(_fn, {}).get("line_width", None)
+                _effective_lw = _sample_lw if _sample_lw is not None else group_settings["line_width"]
                 if group_color:
                     color = QColor(group_color)
                     color.setAlpha(180)  # Make lines semi-transparent (0-255, 180 = ~70% opacity)
                     pen = QPen(color)
-                    pen.setWidthF(group_settings["line_width"])
+                    pen.setWidthF(_effective_lw)
                     series.setPen(pen)
 
                 # Add series to chart
@@ -5278,7 +5662,7 @@ class EICWindow(QWidget):
                 )
                 return
 
-            # Open MSMS viewer window
+            # Open MSMS viewer window (parent=None → independent top-level window)
             msms_viewer = MSMSViewerWindow(
                 msms_spectra,
                 self.target_mz,
@@ -5286,11 +5670,16 @@ class EICWindow(QWidget):
                 rt_window,
                 self.compound_data["Name"],
                 self.adduct,
-                self,
+                None,
                 file_manager=self.file_manager,
                 filter_type=filter_type,
                 defaults=self.defaults,
+                compound_formula=self.compound_data.get("ChemicalFormula"),
+                adduct_info=self._lookup_adduct_info(),
+                compound_smiles=self.compound_data.get("SMILES"),
             )
+            self._msms_windows.append(msms_viewer)
+            msms_viewer.destroyed.connect(lambda _, w=msms_viewer: self._msms_windows.remove(w) if w in self._msms_windows else None)
             msms_viewer.show()
 
         except Exception as e:
@@ -5321,6 +5710,7 @@ class EICWindow(QWidget):
                 for s in entry["spectra"]:
                     max_offset = max(max_offset, abs(s["rt"] - rt_center))
 
+            # Independent top-level window (parent=None)
             msms_viewer = MSMSViewerWindow(
                 msms_spectra,
                 self.target_mz,
@@ -5328,11 +5718,16 @@ class EICWindow(QWidget):
                 max_offset,
                 self.compound_data["Name"],
                 self.adduct,
-                self,
+                None,
                 file_manager=self.file_manager,
                 filter_type=filter_type,
                 defaults=self.defaults,
+                compound_formula=self.compound_data.get("ChemicalFormula"),
+                adduct_info=self._lookup_adduct_info(),
+                compound_smiles=self.compound_data.get("SMILES"),
             )
+            self._msms_windows.append(msms_viewer)
+            msms_viewer.destroyed.connect(lambda _, w=msms_viewer: self._msms_windows.remove(w) if w in self._msms_windows else None)
             msms_viewer.show()
 
         except Exception as e:
@@ -5352,7 +5747,7 @@ class EICWindow(QWidget):
                 )
                 return
 
-            # Open MS1 viewer window
+            # Open MS1 viewer window (parent=None → independent top-level window)
             ms1_viewer = MS1ViewerWindow(
                 ms1_spectra,
                 self.target_mz,
@@ -5361,12 +5756,27 @@ class EICWindow(QWidget):
                 self.adduct,
                 self.mz_tolerance_da_spin.value(),
                 self.compound_data.get("ChemicalFormula", ""),
-                self,
+                None,
             )
+            self._msms_windows.append(ms1_viewer)
+            ms1_viewer.destroyed.connect(lambda _, w=ms1_viewer: self._msms_windows.remove(w) if w in self._msms_windows else None)
             ms1_viewer.show()
 
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to view MS1 spectra: {str(e)}")
+
+    def _is_file_visible(self, row) -> bool:
+        """Return True if the file described by *row* is visible per current group/sample settings."""
+        filename = str(row.get("filename", ""))
+        group_value = row.get(self.grouping_column, row.get("group", "Unknown"))
+        group = str(group_value) if group_value is not None else "Unknown"
+        # Check group visibility
+        if not self.group_settings.get(group, {"plot": True}).get("plot", True):
+            return False
+        # Check sample visibility
+        if not self.sample_settings.get(filename, {"plot": True}).get("plot", True):
+            return False
+        return True
 
     def find_ms1_spectra(self, rt_center: float):
         """Find MS1 spectra closest to the specified RT for each file"""
@@ -5378,6 +5788,10 @@ class EICWindow(QWidget):
             filepath = row["Filepath"]
             filename = row["filename"]
             group = row.get("group", "Unknown")
+
+            # Skip hidden groups/samples
+            if not self._is_file_visible(row):
+                continue
 
             try:
                 closest_spectrum = None
@@ -5722,6 +6136,10 @@ class EICWindow(QWidget):
             filepath = row["Filepath"]
             filename = row["filename"]
 
+            # Skip hidden groups/samples
+            if not self._is_file_visible(row):
+                continue
+
             try:
                 file_msms = []
 
@@ -5874,6 +6292,10 @@ class EICWindow(QWidget):
         for _, row in files_data.iterrows():
             filepath = row["Filepath"]
             filename = row["filename"]
+
+            # Skip hidden groups/samples
+            if not self._is_file_visible(row):
+                continue
 
             try:
                 closest_spectrum = None

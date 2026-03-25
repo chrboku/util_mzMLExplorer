@@ -182,17 +182,6 @@ class CollapsibleBox(QWidget):
         """Toggle visibility of content area"""
         is_visible = self.content_area.isVisible()
         self.content_area.setVisible(not is_visible)
-        # Update button text to show collapse state
-        current_text = self.toggle_button.text()
-        if "▼" in current_text:
-            self.toggle_button.setText(current_text.replace("▼", "▶"))
-        elif "▶" in current_text:
-            self.toggle_button.setText(current_text.replace("▶", "▼"))
-        else:
-            if not is_visible:
-                self.toggle_button.setText("▼ " + current_text)
-            else:
-                self.toggle_button.setText("▶ " + current_text)
 
     def add_widget(self, widget):
         """Add a widget to the content area"""

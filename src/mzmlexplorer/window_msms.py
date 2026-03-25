@@ -34,27 +34,34 @@ from PyQt6.QtWidgets import (
     QApplication,
     QWidgetAction,
     QSizePolicy,
+    QDoubleSpinBox,
+    QLineEdit,
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QPointF, QMargins
 from PyQt6.QtCharts import QChart, QChartView, QLineSeries, QValueAxis
 from PyQt6.QtGui import QPen, QColor, QPainter, QMouseEvent, QAction, QBrush
 from .window_shared import BarDelegate, NumericTableWidgetItem
 from .utils import calculate_cosine_similarity, calculate_similarity_statistics
+from .FormulaTools import FragmentAnnotator
 
 
 class MSMSPopupWindow(QWidget):
     """Popup window for displaying a single MSMS spectrum in a larger view"""
 
-    def __init__(self, spectrum_data, filename, group, parent=None):
+    def __init__(self, spectrum_data, filename, group, parent=None, compound_formula=None, adduct=None, adduct_info=None, compound_smiles=None):
         super().__init__(parent)
         self.spectrum_data = spectrum_data
         self.filename = filename
         self.group = group
+        self.compound_formula = compound_formula
+        self.adduct = adduct
+        self.adduct_info = adduct_info  # dict/Series with ElementsAdded, ElementsLost, Charge, …
+        self.compound_smiles = compound_smiles
         self.selected_mz = None  # Track selected m/z for highlighting
 
         self.setWindowTitle(f"MSMS Spectrum - {filename}")
         self.setWindowFlags(Qt.WindowType.Window)  # Make it a separate window
-        self.resize(1000, 800)
+        self.resize(1200, 800)
 
         self.setup_ui()
 
@@ -73,19 +80,37 @@ class MSMSPopupWindow(QWidget):
             header_text += f"<br><b>Scan:</b> {scan_id}"
         if filter_str:
             header_text += f"<br><b>Filter:</b> {filter_str}"
+        if self.compound_formula:
+            header_text += f"<br><b>Formula:</b> {self.compound_formula}"
 
-        header_label = QLabel(header_text)
-        header_label.setStyleSheet("""
-            QLabel { 
-                background-color: #f0f0f0; 
-                padding: 5px; 
-                margin: 2px;
+        # Info header: text on the left, compound structure on the right
+        header_widget = QWidget()
+        header_widget.setStyleSheet("""
+            QWidget {
+                background-color: #f0f0f0;
                 border: 1px solid #ccc;
                 border-radius: 3px;
             }
         """)
-        header_label.setMaximumHeight(100)  # enough room for scan_id + filter_string lines
-        layout.addWidget(header_label)
+        header_h_layout = QHBoxLayout(header_widget)
+        header_h_layout.setContentsMargins(5, 5, 5, 5)
+        header_h_layout.setSpacing(8)
+
+        header_label = QLabel(header_text)
+        header_label.setStyleSheet("background: transparent; border: none;")
+        header_h_layout.addWidget(header_label, stretch=1)
+
+        # Structure image on the right (transparent background)
+        self._structure_label = QLabel()
+        self._structure_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._structure_label.setFixedSize(160, 120)
+        self._structure_label.setStyleSheet("background: transparent; border: none;")
+        self._render_structure()
+        if self.compound_smiles:
+            header_h_layout.addWidget(self._structure_label)
+
+        header_widget.setMaximumHeight(140)
+        layout.addWidget(header_widget)
 
         # Create splitter for table and chart (horizontal layout)
         splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -106,13 +131,79 @@ class MSMSPopupWindow(QWidget):
 
         layout.addWidget(splitter)
 
-        # Close button
+        # Annotation controls and close button
         button_layout = QHBoxLayout()
+        ppm_label = QLabel("Tolerance:")
+        self.ppm_spinbox = QDoubleSpinBox()
+        self.ppm_spinbox.setRange(0.1, 2000.0)
+        self.ppm_spinbox.setValue(5.0)
+        self.ppm_spinbox.setSuffix(" ppm")
+        self.ppm_spinbox.setDecimals(1)
+        self.ppm_spinbox.setFixedWidth(110)
+        self.ppm_spinbox.setToolTip(
+            "Mass tolerance in ppm.\nThe absolute Da window is fixed to precursor_m/z × ppm / 1e6,\nand displayed ppm errors are also expressed relative to the precursor m/z."
+        )
+        extra_elem_label = QLabel("Extra elements:")
+        self.extra_elements_edit = QLineEdit()
+        self.extra_elements_edit.setPlaceholderText("e.g. Na or C2H4O")
+        self.extra_elements_edit.setToolTip(
+            "Additional element budget added on top of the compound formula\nand adduct when searching for fragment annotations.\nEnter a sum formula, e.g. 'Na', 'K', or 'C2H4O'."
+        )
+        self.extra_elements_edit.setFixedWidth(110)
+        self.annotate_button = QPushButton("Annotate Fragments")
+        self.annotate_button.clicked.connect(self._annotate_fragments)
+        if not self.compound_formula:
+            self.annotate_button.setEnabled(False)
+            self.annotate_button.setToolTip("No compound formula available for annotation")
+        button_layout.addWidget(ppm_label)
+        button_layout.addWidget(self.ppm_spinbox)
+        button_layout.addWidget(extra_elem_label)
+        button_layout.addWidget(self.extra_elements_edit)
+        button_layout.addWidget(self.annotate_button)
         button_layout.addStretch()
         close_button = QPushButton("Close")
         close_button.clicked.connect(self.close)
         button_layout.addWidget(close_button)
         layout.addLayout(button_layout)
+
+    def _render_structure(self):
+        """Render self.compound_smiles into self._structure_label using RDKit.
+
+        Uses SVG output so the background is genuinely transparent.
+        Silent no-op when RDKit / QtSvg is not installed or the SMILES is invalid.
+        """
+        smiles = self.compound_smiles
+        if not smiles:
+            return
+        smiles = str(smiles).strip()
+        if not smiles or smiles.lower() in ("nan", "none", ""):
+            return
+        try:
+            from rdkit import Chem
+            from rdkit.Chem.Draw import rdMolDraw2D
+            from PyQt6.QtSvg import QSvgRenderer
+            from PyQt6.QtCore import QByteArray
+            from PyQt6.QtGui import QPixmap, QPainter
+
+            mol = Chem.MolFromSmiles(smiles)
+            if mol is None:
+                return
+            w, h = self._structure_label.width(), self._structure_label.height()
+            drawer = rdMolDraw2D.MolDraw2DSVG(w, h)
+            drawer.drawOptions().clearBackground = False
+            drawer.DrawMolecule(mol)
+            drawer.FinishDrawing()
+            svg_bytes = QByteArray(drawer.GetDrawingText().encode())
+
+            pixmap = QPixmap(w, h)
+            pixmap.fill(Qt.GlobalColor.transparent)
+            renderer = QSvgRenderer(svg_bytes)
+            painter = QPainter(pixmap)
+            renderer.render(painter)
+            painter.end()
+            self._structure_label.setPixmap(pixmap)
+        except Exception:
+            pass
 
     def create_data_table(self):
         """Create a sortable table with m/z and intensity data"""
@@ -129,8 +220,8 @@ class MSMSPopupWindow(QWidget):
         # Setup table
         num_rows = len(mz_array)
         self.table_widget.setRowCount(num_rows)
-        self.table_widget.setColumnCount(3)
-        self.table_widget.setHorizontalHeaderLabels(["m/z", "Intensity", "Rel. Abundance (%)"])
+        self.table_widget.setColumnCount(5)
+        self.table_widget.setHorizontalHeaderLabels(["m/z", "Intensity", "Rel. Abundance (%)", "Annotation", "Neutral Loss"])
 
         # Disable sorting during population to prevent data loss
         self.table_widget.setSortingEnabled(False)
@@ -167,9 +258,17 @@ class MSMSPopupWindow(QWidget):
             rel_abund_item.setData(BarDelegate.BAR_FRAC_ROLE, rel_abund_val / 100.0)
             rel_abund_item.setData(BarDelegate.BAR_COLOR_ROLE, QColor("steelblue"))
 
+            # Create empty annotation placeholders
+            annot_item = QTableWidgetItem("")
+            annot_item.setFlags(annot_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            nl_item = QTableWidgetItem("")
+            nl_item.setFlags(nl_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+
             self.table_widget.setItem(i, 0, mz_item)
             self.table_widget.setItem(i, 1, intensity_item)
             self.table_widget.setItem(i, 2, rel_abund_item)
+            self.table_widget.setItem(i, 3, annot_item)
+            self.table_widget.setItem(i, 4, nl_item)
 
         # Enable sorting after all data is populated
         self.table_widget.setSortingEnabled(True)
@@ -188,9 +287,97 @@ class MSMSPopupWindow(QWidget):
         header.resizeSection(0, 120)
         header.resizeSection(1, 120)
         header.resizeSection(2, 120)
+        header.resizeSection(3, 200)
+        header.resizeSection(4, 200)
 
         # Set minimum height
         self.table_widget.setMinimumHeight(200)
+
+    def _annotate_fragments(self):
+        """Run fragment formula annotation and populate Annotation/Neutral Loss columns."""
+        if not self.compound_formula:
+            QMessageBox.warning(self, "No Formula", "No compound formula available for annotation.")
+            return
+
+        ppm = self.ppm_spinbox.value()
+        ion_mode = "negative" if self.adduct and self.adduct.strip().endswith("-") else "positive"
+
+        # Compute absolute Da tolerance relative to the precursor m/z so that
+        # the tolerance is not artificially tightened for small fragments.
+        precursor_mz = float(self.spectrum_data.get("precursor_mz", 0) or 0)
+        tol_da = (precursor_mz * ppm / 1e6) if precursor_mz > 0 else None
+
+        # Optional extra element budget entered by the user
+        extra_formula = self.extra_elements_edit.text().strip() or None
+
+        mz_array = np.array(self.spectrum_data["mz"], dtype=float)
+
+        try:
+            annotator = FragmentAnnotator()
+            annotation_results = annotator.annotate(
+                self.compound_formula,
+                mz_array,
+                ppm=ppm,
+                ion_mode=ion_mode,
+                adduct_info=self.adduct_info,
+                extra_formula=extra_formula,
+                tol_da=tol_da,
+            )
+        except Exception as e:
+            QMessageBox.critical(self, "Annotation Error", f"Fragment annotation failed:\n{str(e)}")
+            return
+
+        # Build lookup: mz_value -> (frag_display, frag_tooltip, nl_display, nl_tooltip)
+        annotation_lookup = {
+            r["mz"]: (
+                *self._format_annotation_result(r["fragment_formulas"]),
+                *self._format_annotation_result(r["neutral_loss_formulas"]),
+            )
+            for r in annotation_results
+        }
+
+        self.table_widget.setSortingEnabled(False)
+        for row in range(self.table_widget.rowCount()):
+            mz_item = self.table_widget.item(row, 0)
+            if mz_item is None:
+                continue
+            mz_val = mz_item.data(Qt.ItemDataRole.UserRole)
+            if mz_val in annotation_lookup:
+                frag_str, frag_tip, nl_str, nl_tip = annotation_lookup[mz_val]
+                frag_cell = QTableWidgetItem(frag_str)
+                frag_cell.setFlags(frag_cell.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                if frag_tip:
+                    frag_cell.setToolTip(frag_tip)
+                nl_cell = QTableWidgetItem(nl_str)
+                nl_cell.setFlags(nl_cell.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                if nl_tip:
+                    nl_cell.setToolTip(nl_tip)
+                self.table_widget.setItem(row, 3, frag_cell)
+                self.table_widget.setItem(row, 4, nl_cell)
+        self.table_widget.setSortingEnabled(True)
+
+    @staticmethod
+    def _format_annotation_result(candidates):
+        """Format annotation candidates for compact table display.
+
+        Returns a tuple ``(display_str, tooltip_str)``.
+
+        * The first (best) hit is always shown in full.
+        * When there are additional hits a ``[+N]`` badge is appended to the
+          display string, and *tooltip_str* lists all additional formulas (one
+          per line) so they can be inspected on hover.
+        * *tooltip_str* is an empty string when there is only one hit.
+        """
+        if not candidates:
+            return "", ""
+        best_formula, _mass, best_ppm = candidates[0]
+        display = f"{best_formula} ({best_ppm:+.1f} ppm)"
+        extras = candidates[1:]
+        tooltip = ""
+        if extras:
+            display += f"  [+{len(extras)}]"
+            tooltip = "Additional candidates:\n" + "\n".join(f"  {formula} ({ppm_err:+.1f} ppm)" for formula, _m, ppm_err in extras)
+        return display, tooltip
 
     def on_table_selection_changed(self):
         """Handle table selection changes to highlight peaks in the chart"""
@@ -370,6 +557,10 @@ class InteractiveMSMSChartView(QChartView):
         self.spectrum_data = None
         self.filename = None
         self.group = None
+        self.compound_formula = None
+        self.adduct = None
+        self.adduct_info = None
+        self.compound_smiles = None
 
         # Mouse interaction state
         self.is_panning = False
@@ -389,6 +580,9 @@ class InteractiveMSMSChartView(QChartView):
         # Disable default rubber band
         self.setRubberBand(QChartView.RubberBand.NoRubberBand)
         self.setMouseTracking(True)
+
+        # Keep references to popup windows so they are not garbage-collected
+        self._popup_windows = []
 
         # Hover tooltip label for m/z values
         self.hover_label = QLabel(self)
@@ -691,8 +885,21 @@ class InteractiveMSMSChartView(QChartView):
         """Handle double-click events to show popup window"""
         if event.button() == Qt.MouseButton.LeftButton:
             if self.spectrum_data and self.filename and self.group:
-                # Create and show popup window
-                popup = MSMSPopupWindow(self.spectrum_data, self.filename, self.group, self)
+                # Create as a top-level window (parent=None) so it is not
+                # hidden/closed when the MSMS overview window is minimised
+                # or closed.
+                popup = MSMSPopupWindow(
+                    self.spectrum_data,
+                    self.filename,
+                    self.group,
+                    None,
+                    compound_formula=self.compound_formula,
+                    adduct=self.adduct,
+                    adduct_info=self.adduct_info,
+                    compound_smiles=self.compound_smiles,
+                )
+                self._popup_windows.append(popup)
+                popup.destroyed.connect(lambda _, p=popup: self._popup_windows.remove(p) if p in self._popup_windows else None)
                 popup.show()
         super().mouseDoubleClickEvent(event)
 
@@ -712,6 +919,9 @@ class MSMSViewerWindow(QWidget):
         file_manager=None,
         filter_type=None,
         defaults=None,
+        compound_formula=None,
+        adduct_info=None,
+        compound_smiles=None,
     ):
         super().__init__(parent)
 
@@ -725,6 +935,9 @@ class MSMSViewerWindow(QWidget):
         self.rt_window = rt_window
         self.compound_name = compound_name
         self.adduct = adduct
+        self.compound_formula = compound_formula
+        self.adduct_info = adduct_info  # dict with ElementsAdded / ElementsLost / Charge / Multiplier
+        self.compound_smiles = compound_smiles
         self.file_manager = file_manager
         self.filter_type = filter_type
         self.defaults = defaults or {}
@@ -1026,24 +1239,9 @@ class MSMSViewerWindow(QWidget):
                     similarities = []  # Initialize similarities for all cases
 
                     if i == j:
-                        # Diagonal - show intra-file median similarity with distinct styling
-                        if file1 in self.intra_file_similarities:
-                            stats = self.intra_file_similarities[file1]
-                            median_sim = stats["median"]
-                            text = f"{median_sim:.3f}"
-                            item = QTableWidgetItem(text)
-                            # Use lighter colors for diagonal to distinguish from inter-file
-                            if median_sim >= 0.8:
-                                item.setBackground(QColor(76, 175, 80, 100))  # Light Green
-                            elif median_sim >= 0.6:
-                                item.setBackground(QColor(255, 193, 7, 100))  # Light Amber
-                            elif median_sim >= 0.4:
-                                item.setBackground(QColor(255, 152, 0, 100))  # Light Orange
-                            else:
-                                item.setBackground(QColor(244, 67, 54, 100))  # Light Red
-                        else:
-                            item = QTableWidgetItem("N/A")
-                            item.setBackground(QColor(240, 240, 240))  # Light gray background
+                        # Diagonal - same file vs itself: always 1.000 (perfect match)
+                        item = QTableWidgetItem("1.000")
+                        item.setBackground(QColor(76, 175, 80, 200))  # Strong Green
                     else:
                         # Off-diagonal - show inter-file median similarity with color coding
                         key1 = (file1, file2)
@@ -1100,9 +1298,7 @@ class MSMSViewerWindow(QWidget):
             layout.addWidget(inter_table)
 
             # Add compact legend
-            legend_label = QLabel(
-                "<small><b>Legend:</b> Values show median cosine similarity | Diagonal = Intra-file (lighter colors) | Off-diagonal = Inter-file (darker colors)</small>"
-            )
+            legend_label = QLabel("<small><b>Legend:</b> Values show median cosine similarity | Diagonal = Same file (1.00) | Off-diagonal = Inter-file similarity</small>")
             legend_label.setFixedHeight(15)
             legend_label.setStyleSheet("QLabel { font-size: 10px; }")
             layout.addWidget(legend_label)
@@ -1190,8 +1386,10 @@ class MSMSViewerWindow(QWidget):
         chart_view.spectrum_data = spectrum_data
         chart_view.filename = filename
         chart_view.group = group
-
-        # Hide legend since we only have one series
+        chart_view.compound_formula = self.compound_formula
+        chart_view.adduct = self.adduct
+        chart_view.adduct_info = self.adduct_info
+        chart_view.compound_smiles = self.compound_smiles
         chart.legend().setVisible(False)
 
         return chart_view

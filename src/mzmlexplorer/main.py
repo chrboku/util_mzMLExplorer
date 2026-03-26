@@ -105,13 +105,13 @@ ADDUCTS_TEMPLATE_DATA = [
     {"Adduct": "[M-H]-",            "ElementsAdded": ""      , "ElementsLost": "H"   , "Mass_change": None        , "Charge": -1, "Multiplier": 1},
     {"Adduct": "[M+Cl]-",           "ElementsAdded": "Cl"    , "ElementsLost": ""    , "Mass_change": None        , "Charge": -1, "Multiplier": 1},
     {"Adduct": "[M+FA-H]-",         "ElementsAdded": ""      , "ElementsLost": ""    , "Mass_change": 44.9982010  , "Charge": -1, "Multiplier": 1},
-    {"Adduct": "[M-H2O-H]-",        "ElementsAdded": ""      , "ElementsLost": "H2OH", "Mass_change": -19.018390  , "Charge": -1, "Multiplier": 1},
-    {"Adduct": "[2M-H]-",           "ElementsAdded": ""      , "ElementsLost": "H"   , "Mass_change": -1.0072760  , "Charge": -1, "Multiplier": 2},
+    {"Adduct": "[M-H2O-H]-",        "ElementsAdded": ""      , "ElementsLost": "H2OH", "Mass_change": None        , "Charge": -1, "Multiplier": 1},
+    {"Adduct": "[2M-H]-",           "ElementsAdded": ""      , "ElementsLost": "H"   , "Mass_change": None        , "Charge": -1, "Multiplier": 2},
     {"Adduct": "[2M+FA-H]-",        "ElementsAdded": ""      , "ElementsLost": ""    , "Mass_change": 44.9982010  , "Charge": -1, "Multiplier": 2},
     {"Adduct": "[2M+Hac-H]-",       "ElementsAdded": ""      , "ElementsLost": ""    , "Mass_change": 59.0138510  , "Charge": -1, "Multiplier": 2},
-    {"Adduct": "[3M-H]-",           "ElementsAdded": ""      , "ElementsLost": "H"   , "Mass_change": 1.00727600  , "Charge": -1, "Multiplier": 3},
-    {"Adduct": "[M-2H]--",          "ElementsAdded": ""      , "ElementsLost": "H2"  , "Mass_change": -1.0072760  , "Charge": -2, "Multiplier": 1},
-    {"Adduct": "[M-3H]---",         "ElementsAdded": ""      , "ElementsLost": "H3"  , "Mass_change": -1.0072760  , "Charge": -3, "Multiplier": 1},
+    {"Adduct": "[3M-H]-",           "ElementsAdded": ""      , "ElementsLost": "H"   , "Mass_change": None        , "Charge": -1, "Multiplier": 3},
+    {"Adduct": "[M-2H]--",          "ElementsAdded": ""      , "ElementsLost": "H2"  , "Mass_change": None        , "Charge": -2, "Multiplier": 1},
+    {"Adduct": "[M-3H]---",         "ElementsAdded": ""      , "ElementsLost": "H3"  , "Mass_change": None        , "Charge": -3, "Multiplier": 1},
 ]
 # fmt: on
 

@@ -240,8 +240,8 @@ class MzMLExplorerMainWindow(QMainWindow):
         right_layout.addLayout(filter_layout)
 
         self.compounds_table = QTreeWidget()
-        self.compounds_table.setColumnCount(4)
-        self.compounds_table.setHeaderLabels(["Name", "Retention Time", "Type", "Quantification"])
+        self.compounds_table.setColumnCount(7)
+        self.compounds_table.setHeaderLabels(["Name", "Retention Time", "Type", "Quantification", "Formula", "Mass", "Common Adducts"])
         self.compounds_table.setSelectionBehavior(QTreeWidget.SelectionBehavior.SelectRows)
         self.compounds_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.compounds_table.customContextMenuRequested.connect(self.show_compound_context_menu)
@@ -253,10 +253,13 @@ class MzMLExplorerMainWindow(QMainWindow):
         header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         header.setStretchLastSection(False)
         # Set initial column widths
-        header.resizeSection(0, 300)
-        header.resizeSection(1, 150)
-        header.resizeSection(2, 80)
-        header.resizeSection(3, 160)
+        header.resizeSection(0, 250)
+        header.resizeSection(1, 100)
+        header.resizeSection(2, 55)
+        header.resizeSection(3, 90)
+        header.resizeSection(4, 100)
+        header.resizeSection(5, 60)
+        header.resizeSection(6, 150)
 
         right_layout.addWidget(self.compounds_table)
 
@@ -269,7 +272,7 @@ class MzMLExplorerMainWindow(QMainWindow):
 
         splitter.addWidget(left_panel)
         splitter.addWidget(right_panel)
-        splitter.setSizes([600, 600])
+        splitter.setSizes([300, 900])
 
         main_layout.addWidget(splitter)
 
@@ -752,6 +755,9 @@ class MzMLExplorerMainWindow(QMainWindow):
 
     def _on_compound_hover(self, item: QTreeWidgetItem, column: int) -> None:
         """Show the structure popup for the compound row the mouse entered."""
+        if not self.isActiveWindow():
+            # Only show hover popup when the main window has focus
+            return
         compound_data = item.data(0, Qt.ItemDataRole.UserRole)
         if not compound_data:
             # Group header rows carry no compound data
@@ -762,7 +768,7 @@ class MzMLExplorerMainWindow(QMainWindow):
     def update_compounds_table(self):
         """Update the compounds table with loaded data"""
         self.compounds_table.clear()
-        self.compounds_table.setHeaderLabels(["Name", "Retention Time", "Type", "Quantification"])
+        self.compounds_table.setHeaderLabels(["Name", "Retention Time", "Type", "Quantification", "Formula", "Mass", "Common Adducts"])
         compounds_data = self.compound_manager.get_compounds_data()
 
         if compounds_data.empty:
@@ -804,6 +810,9 @@ class MzMLExplorerMainWindow(QMainWindow):
             group_item.setBackground(1, QColor(230, 230, 230))
             group_item.setBackground(2, QColor(230, 230, 230))
             group_item.setBackground(3, QColor(230, 230, 230))
+            group_item.setBackground(4, QColor(230, 230, 230))
+            group_item.setBackground(5, QColor(230, 230, 230))
+            group_item.setBackground(6, QColor(230, 230, 230))
             group_item.setExpanded(True)  # Expand by default
 
             # Add compounds under this group
@@ -821,6 +830,9 @@ class MzMLExplorerMainWindow(QMainWindow):
             group_item.setBackground(1, QColor(245, 245, 245))
             group_item.setBackground(2, QColor(245, 245, 245))
             group_item.setBackground(3, QColor(245, 245, 245))
+            group_item.setBackground(4, QColor(245, 245, 245))
+            group_item.setBackground(5, QColor(245, 245, 245))
+            group_item.setBackground(6, QColor(245, 245, 245))
             group_item.setExpanded(True)  # Expand by default
 
             # Add ungrouped compounds
@@ -848,11 +860,9 @@ class MzMLExplorerMainWindow(QMainWindow):
             rt_end = compound["RT_end_min"]
             # Check if using default range (0-100 min)
             if rt_start == 0.0 and rt_end == 100.0:
-                rt_text = "full range"
+                pass
             else:
                 rt_text = f"{rt_start:.1f}-{rt_end:.1f} min"
-        else:
-            rt_text = "full range"
 
         rt_item = QTableWidgetItem(rt_text)
         self.compounds_table.setItem(row_idx, 1, rt_item)
@@ -887,11 +897,9 @@ class MzMLExplorerMainWindow(QMainWindow):
             rt_end = compound["RT_end_min"]
             # Check if using default range (0-100 min)
             if rt_start == 0.0 and rt_end == 100.0:
-                rt_text = "full range"
+                pass
             else:
                 rt_text = f"{rt_start:.1f}-{rt_end:.1f} min"
-        else:
-            rt_text = "full range"
 
         item.setText(1, rt_text)
 
@@ -908,6 +916,33 @@ class MzMLExplorerMainWindow(QMainWindow):
         # Quantification range
         quant_text = self._get_quant_range_for_compound(compound["Name"])
         item.setText(3, quant_text)
+
+        # Chemical formula
+        formula = compound.get("ChemicalFormula", "")
+        if formula is None or (isinstance(formula, float) and pd.isna(formula)):
+            formula = ""
+        item.setText(4, str(formula).strip())
+
+        # Mass
+        mass = compound.get("Mass", "")
+        if mass is None or (isinstance(mass, float) and pd.isna(mass)):
+            mass_text = ""
+        else:
+            try:
+                mass_text = f"{float(mass):.4f}"
+            except (TypeError, ValueError):
+                mass_text = str(mass).strip()
+        item.setText(5, mass_text)
+
+        # Common adducts
+        adducts = compound.get("Common_adducts", "")
+        if adducts is None or (isinstance(adducts, float) and pd.isna(adducts)):
+            adducts_text = ""
+        elif isinstance(adducts, list):
+            adducts_text = ", ".join(str(a) for a in adducts)
+        else:
+            adducts_text = str(adducts).strip()
+        item.setText(6, adducts_text)
 
     def show_files_context_menu(self, position):
         """Show context menu for file operations"""

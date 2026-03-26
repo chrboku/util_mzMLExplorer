@@ -44,6 +44,7 @@ from PyQt6.QtWidgets import (
     QDialog,
     QScrollArea,
     QTextEdit,
+    QStyle,
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QPointF, QMargins
 from PyQt6.QtCharts import QChart, QChartView, QLineSeries, QValueAxis
@@ -691,6 +692,10 @@ class EICWindow(QWidget):
         self.scatter_plot_menu_text = "View 2D scatter plot (RT vs m/z)"
         self._syncing_scatter_x_axis = False
 
+        # Group name annotation items drawn on the chart scene (cleared/rebuilt on each update_plot)
+        self._group_annotations = []  # QGraphicsSimpleTextItem references
+        self._group_annotation_data = []  # (text_item, x_rt_data) for live repositioning
+
         # Initialize peak boundary line attributes
         self.peak_boundary_lines = []  # List of QLineSeries for boundary lines
         self.peak_start_rt = None  # Start RT of peak boundary
@@ -738,22 +743,36 @@ class EICWindow(QWidget):
         self.setGeometry(200, 200, 1400, 800)
 
         layout = QHBoxLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(2)
 
-        # Create splitter for left panel and right panel
-        splitter = QSplitter(Qt.Orientation.Horizontal)
+        # Toggle button – always visible on the left edge
+        self.panel_toggle_btn = QPushButton()
+        self.panel_toggle_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogDetailedView))
+        self.panel_toggle_btn.setToolTip("Show / Hide Properties Panel")
+        self.panel_toggle_btn.setFixedWidth(32)
+        self.panel_toggle_btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
+        self.panel_toggle_btn.clicked.connect(self._toggle_left_panel)
+        layout.addWidget(self.panel_toggle_btn)
 
-        # Left panel for compound info and controls
+        # Left panel wrapped in a vertically-scrollable area (hidden by default)
+        self.left_scroll = QScrollArea()
+        self.left_scroll.setWidgetResizable(True)
+        self.left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.left_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.left_scroll.setFixedWidth(400)
         left_panel = self.create_left_panel()
-        splitter.addWidget(left_panel)
+        self.left_scroll.setWidget(left_panel)
+        self.left_scroll.setVisible(False)  # Hidden by default
+        layout.addWidget(self.left_scroll)
 
-        # Right panel for chart
+        # Right panel for chart – expands to fill all remaining space
         right_panel = self.create_right_panel()
-        splitter.addWidget(right_panel)
+        layout.addWidget(right_panel, stretch=1)
 
-        # Set splitter proportions (left panel much narrower)
-        splitter.setSizes([250, 1150])
-
-        layout.addWidget(splitter)
+    def _toggle_left_panel(self) -> None:
+        """Show or hide the left properties panel."""
+        self.left_scroll.setVisible(not self.left_scroll.isVisible())
 
     def create_left_panel(self) -> QWidget:
         """Create the left panel with compound info and controls"""
@@ -763,25 +782,6 @@ class EICWindow(QWidget):
         # Compound information
         info_group = self.create_compound_info_group()
         layout.addWidget(info_group)
-
-        # Reset / navigation buttons placed below compound info
-        nav_layout = QHBoxLayout()
-        self.reset_view_btn = QPushButton("Reset View")
-        self.reset_view_btn.clicked.connect(self.reset_view)
-        self.reset_view_btn.setEnabled(False)  # Disabled until data is loaded
-        nav_layout.addWidget(self.reset_view_btn)
-        self.reset_x_btn = QPushButton("Reset X-axis")
-        self.reset_x_btn.clicked.connect(self.reset_x_axis)
-        self.reset_x_btn.setEnabled(False)
-        nav_layout.addWidget(self.reset_x_btn)
-        self.reset_y_btn = QPushButton("Reset Y-axis")
-        self.reset_y_btn.clicked.connect(self.reset_y_axis)
-        self.reset_y_btn.setEnabled(False)
-        nav_layout.addWidget(self.reset_y_btn)
-        self.scatter_toggle_btn = QPushButton("Show 2D Scatter Plot")
-        self.scatter_toggle_btn.clicked.connect(self.toggle_scatter_plot)
-        nav_layout.addWidget(self.scatter_toggle_btn)
-        layout.addLayout(nav_layout)
 
         # Extraction parameters (contains Extract EIC button at bottom)
         control_panel = self.create_control_panel()
@@ -1204,6 +1204,7 @@ class EICWindow(QWidget):
 
         # Configure table appearance
         self.group_settings_table.setAlternatingRowColors(True)
+        self.group_settings_table.setSortingEnabled(True)
         self.group_settings_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         self.group_settings_table.horizontalHeader().setStretchLastSection(False)
         self.group_settings_table.verticalHeader().setVisible(True)
@@ -1214,7 +1215,7 @@ class EICWindow(QWidget):
         self.group_settings_table.setColumnWidth(0, 95)  # Scaling column
         self.group_settings_table.setColumnWidth(1, 30)  # Plot checkbox column
         self.group_settings_table.setColumnWidth(2, 30)  # Negative checkbox column
-        self.group_settings_table.setColumnWidth(3, 60)  # Line Width column
+        self.group_settings_table.setColumnWidth(3, 80)  # Line Width column
 
         # Add table to collapsible box
         self.group_settings_box.add_widget(self.group_settings_table)
@@ -1433,8 +1434,8 @@ class EICWindow(QWidget):
         self.sample_settings_table.setColumnWidth(0, 160)  # Sample name column
         self.sample_settings_table.setColumnWidth(1, 40)  # Plot checkbox column
         self.sample_settings_table.setColumnWidth(2, 80)  # Line Width column
-        self.sample_settings_table.setMaximumHeight(400)
-        self.sample_settings_table.setMinimumHeight(80)
+        self.sample_settings_table.setMaximumHeight(800)
+        self.sample_settings_table.setMinimumHeight(340)
 
         # Context menu for show/hide all
         self.sample_settings_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -5030,11 +5031,6 @@ class EICWindow(QWidget):
         # Clear existing series
         self.chart.removeAllSeries()
 
-        # Enable reset view button now that we have data
-        self.reset_view_btn.setEnabled(True)
-        self.reset_x_btn.setEnabled(True)
-        self.reset_y_btn.setEnabled(True)
-
         sep_mode = self._separation_mode()
         separate_groups = sep_mode == "By group"
         separate_injection = sep_mode in (
@@ -5283,6 +5279,21 @@ class EICWindow(QWidget):
         else:
             self.y_axis.setTitleText("Intensity")
 
+        # Update x-axis title and tick-label visibility based on separation mode
+        is_separated = sep_mode != "None"
+        if is_separated:
+            rt_shift = self.rt_shift_spin.value()
+            self.x_axis.setTitleText(f"Retention Time (min) + i \u00d7 {rt_shift:.1f} min")
+            self.x_axis.setTickCount(2)  # Only two silent anchors; labels are hidden
+            self.x_axis.setLabelsVisible(False)
+        else:
+            self.x_axis.setTitleText("Retention Time (min)")
+            self.x_axis.setTickCount(8)
+            self.x_axis.setLabelsVisible(True)
+
+        # Clear any previous group-name annotations from the chart scene
+        self._clear_group_annotations()
+
         if normalize and not log_y and not ridge:
             # Pure normalization: fixed 0–1 range
             # Use a timer to ensure the range is applied after series are fully added
@@ -5313,12 +5324,104 @@ class EICWindow(QWidget):
             # Automatically reset view to show all data after any changes
             QTimer.singleShot(50, self.reset_view)  # Small delay to ensure chart is fully updated
 
+        # Schedule group-name annotations on the vertical reference lines when "By group"
+        # separation is active.  The delay (120 ms) is longer than reset_view (50 ms) so
+        # that axis ranges are fully settled before we map data → pixel coordinates.
+        if sep_mode == "By group":
+            _groups_snap = dict(groups_data)
+            QTimer.singleShot(120, lambda: self._place_group_annotations(_groups_snap))
+
         # Update series cache for hover detection
         if hasattr(self.chart_view, "update_series_cache"):
             self.chart_view.update_series_cache()
 
         # Re-add peak boundary lines if they exist
         self._restore_peak_boundary_lines()
+
+    def _clear_group_annotations(self):
+        """Remove all group-name text annotations and disconnect live-repositioning signals."""
+        # Disconnect before removing items so signals don't fire on stale references
+        try:
+            self.x_axis.rangeChanged.disconnect(self._reposition_group_annotations)
+        except (TypeError, RuntimeError):
+            pass
+        try:
+            self.chart.plotAreaChanged.disconnect(self._reposition_group_annotations)
+        except (TypeError, RuntimeError):
+            pass
+        for item in self._group_annotations:
+            if item.scene() is not None:
+                item.scene().removeItem(item)
+        self._group_annotations.clear()
+        self._group_annotation_data.clear()
+
+    def _reposition_group_annotations(self):
+        """Recompute pixel positions of all group-name labels from current axis state.
+
+        Connected to x_axis.rangeChanged and chart.plotAreaChanged so that
+        labels always stay fixed to their data-space x-coordinate when the
+        user pans, zooms, or resizes the chart.
+        """
+        if not self._group_annotation_data:
+            return
+        plot_area = self.chart.plotArea()
+        for text, x_rt in self._group_annotation_data:
+            pos = self.chart.mapToPosition(QPointF(x_rt, 0))
+            outside = pos.x() < plot_area.left() or pos.x() > plot_area.right()
+            text.setVisible(not outside)
+            if not outside:
+                text_rect = text.boundingRect()
+                text_w = text_rect.width()
+                text_h = text_rect.height()
+                # Centre label on the line; pin the top char near plot_area.top()
+                text.setPos(pos.x() - text_h / 2, plot_area.top() + text_w + 6)
+
+    def _place_group_annotations(self, groups_data):
+        """Create rotated group-name labels along the vertical reference lines.
+
+        Items are QGraphicsSimpleTextItem children of the chart, rotated -90°
+        so they read bottom-to-top.  Actual pixel positions are computed by
+        _reposition_group_annotations, which is also connected to
+        rangeChanged / plotAreaChanged so they follow every zoom or pan.
+        """
+        from PyQt6.QtWidgets import QGraphicsSimpleTextItem
+
+        self._clear_group_annotations()
+
+        compound_rt = self.compound_data.get("RT_min", 0.0)
+        if not (compound_rt > 0):
+            return
+
+        sorted_groups = natsorted(groups_data.keys())
+        if not sorted_groups or self.chart.scene() is None:
+            return
+
+        for group_name in sorted_groups:
+            x_rt = compound_rt + self.group_shifts.get(group_name, 0.0)
+
+            text = QGraphicsSimpleTextItem(group_name, self.chart)
+            font = text.font()
+            font.setPointSize(8)
+            text.setFont(font)
+
+            group_color = self._get_group_color(group_name)
+            if group_color:
+                text.setBrush(QBrush(QColor(group_color)))
+
+            # Rotate -90° so the label reads bottom-to-top along the reference line
+            text.setRotation(-90)
+            # Render on top of all chart content
+            text.setZValue(10)
+
+            self._group_annotations.append(text)
+            self._group_annotation_data.append((text, x_rt))
+
+        # Connect signals so positions update on every zoom / pan / resize
+        self.x_axis.rangeChanged.connect(self._reposition_group_annotations)
+        self.chart.plotAreaChanged.connect(self._reposition_group_annotations)
+
+        # Initial positioning
+        self._reposition_group_annotations()
 
     def _add_reference_lines(self, groups_data, separate_groups, separate_injection=False, sep_mode="None"):
         """Add reference lines to the chart"""
@@ -5548,7 +5651,30 @@ class EICWindow(QWidget):
         """Show context menu at the specified position"""
         context_menu = QMenu(self)
 
-        # Add RT info at the top
+        # --- View submenu at the top ---
+        view_menu = context_menu.addMenu("View")
+
+        reset_view_action = QAction("Reset View", self)
+        reset_view_action.triggered.connect(self.reset_view)
+        view_menu.addAction(reset_view_action)
+
+        reset_x_action = QAction("Reset X-axis", self)
+        reset_x_action.triggered.connect(self.reset_x_axis)
+        view_menu.addAction(reset_x_action)
+
+        reset_y_action = QAction("Reset Y-axis", self)
+        reset_y_action.triggered.connect(self.reset_y_axis)
+        view_menu.addAction(reset_y_action)
+
+        view_menu.addSeparator()
+
+        scatter_action = QAction(self.scatter_plot_menu_text, self)
+        scatter_action.triggered.connect(self.toggle_scatter_plot)
+        view_menu.addAction(scatter_action)
+
+        context_menu.addSeparator()
+
+        # Add RT info
         rt_action = QAction(f"RT: {rt_value:.2f} min", self)
         rt_action.setEnabled(False)  # Make it non-clickable header
         context_menu.addAction(rt_action)
@@ -5796,6 +5922,8 @@ class EICWindow(QWidget):
             try:
                 closest_spectrum = None
                 min_rt_diff = float("inf")
+                all_same_polarity = []
+                closest_idx = 0
 
                 # Check if we have cached data (memory mode)
                 if self.file_manager.keep_in_memory and filepath in self.file_manager.cached_data:
@@ -5820,20 +5948,24 @@ class EICWindow(QWidget):
                             ):
                                 continue
 
+                            spec_dict = {
+                                "rt": spectrum_rt,
+                                "mz": spectrum_data["mz"],
+                                "intensity": spectrum_data["intensity"],
+                                "polarity": spectrum_polarity,
+                                "filename": filename,
+                                "group": group,
+                                "scan_id": spectrum_data.get("scan_id"),
+                                "filter_string": spectrum_data.get("filter_string", "NA"),
+                            }
+                            all_same_polarity.append(spec_dict)
+
                             # Find closest spectrum to RT
                             rt_diff = abs(spectrum_rt - rt_center)
                             if rt_diff < min_rt_diff:
                                 min_rt_diff = rt_diff
-                                closest_spectrum = {
-                                    "rt": spectrum_rt,
-                                    "mz": spectrum_data["mz"],
-                                    "intensity": spectrum_data["intensity"],
-                                    "polarity": spectrum_polarity,
-                                    "filename": filename,
-                                    "group": group,
-                                    "scan_id": spectrum_data.get("scan_id"),
-                                    "filter_string": spectrum_data.get("filter_string", "NA"),
-                                }
+                                closest_spectrum = spec_dict
+                                closest_idx = len(all_same_polarity) - 1
 
                 else:
                     # Read from file to get MS1 spectra
@@ -5855,26 +5987,29 @@ class EICWindow(QWidget):
                             ):
                                 continue
 
-                            # Find closest spectrum to RT
-                            rt_diff = abs(spectrum_rt - rt_center)
-                            if rt_diff < min_rt_diff:
-                                min_rt_diff = rt_diff
+                            # Extract spectrum data
+                            mz_array = spectrum.mz
+                            intensity_array = spectrum.i
 
-                                # Extract spectrum data
-                                mz_array = spectrum.mz
-                                intensity_array = spectrum.i
+                            if len(mz_array) > 0:
+                                spec_dict = {
+                                    "rt": spectrum_rt,
+                                    "mz": mz_array,
+                                    "intensity": intensity_array,
+                                    "polarity": spectrum_polarity,
+                                    "filename": filename,
+                                    "group": group,
+                                    "scan_id": spectrum.ID,
+                                    "filter_string": spectrum.get("MS:1000512", "NA"),
+                                }
+                                all_same_polarity.append(spec_dict)
 
-                                if len(mz_array) > 0:
-                                    closest_spectrum = {
-                                        "rt": spectrum_rt,
-                                        "mz": mz_array,
-                                        "intensity": intensity_array,
-                                        "polarity": spectrum_polarity,
-                                        "filename": filename,
-                                        "group": group,
-                                        "scan_id": spectrum.ID,
-                                        "filter_string": spectrum.get("MS:1000512", "NA"),
-                                    }
+                                # Find closest spectrum to RT
+                                rt_diff = abs(spectrum_rt - rt_center)
+                                if rt_diff < min_rt_diff:
+                                    min_rt_diff = rt_diff
+                                    closest_spectrum = spec_dict
+                                    closest_idx = len(all_same_polarity) - 1
 
                 # Add the closest spectrum if found
                 if closest_spectrum is not None:
@@ -5882,6 +6017,8 @@ class EICWindow(QWidget):
                         "filename": filename,
                         "group": group,
                         "spectrum": closest_spectrum,
+                        "all_spectra": all_same_polarity,
+                        "current_index": closest_idx,
                     }
 
             except Exception as e:
@@ -5987,8 +6124,6 @@ class EICWindow(QWidget):
 
         # Update context menu text
         self.update_context_menu_text("Hide 2D scatter plot")
-        if hasattr(self, "scatter_toggle_btn"):
-            self.scatter_toggle_btn.setText("Hide 2D Scatter Plot")
 
     def remove_scatter_plot(self):
         """Remove the 2D scatter plot from the EIC window and restore two-way splitter layout"""
@@ -6029,8 +6164,6 @@ class EICWindow(QWidget):
 
         # Update context menu text
         self.update_context_menu_text("View 2D scatter plot (RT vs m/z)")
-        if hasattr(self, "scatter_toggle_btn"):
-            self.scatter_toggle_btn.setText("Show 2D Scatter Plot")
 
     def toggle_scatter_plot(self):
         """Show/hide the optional RT vs m/z scatter plot."""

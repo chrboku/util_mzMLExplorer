@@ -175,6 +175,8 @@ class MS1ViewerWindow(QWidget):
                     adduct=self.adduct,
                     mz_tolerance=self.mz_tolerance,
                     formula=self.formula,
+                    all_spectra=fd.get("all_spectra", []),
+                    current_index=fd.get("current_index", 0),
                     parent=None,
                 )
                 self._single_windows.append(win)
@@ -572,35 +574,39 @@ class InteractiveMS1ChartView(QChartView):
         self.signal_labels = []  # List to store QLabel widgets for top signals
         self.top_n = 3  # Number of top signals to annotate
 
+        # Y-axis auto-scale flag
+        self.auto_scale_y = True
+
     def auto_scale_y_axis(self):
         """Auto-scale Y-axis based on visible X-axis range"""
         if len(self.mz_array) == 0:
             return
 
-        # Get current X-axis range
-        x_axis = self.chart().axes(Qt.Orientation.Horizontal)[0]
-        y_axis = self.chart().axes(Qt.Orientation.Vertical)[0]
+        if self.auto_scale_y:
+            # Get current X-axis range
+            x_axis = self.chart().axes(Qt.Orientation.Horizontal)[0]
+            y_axis = self.chart().axes(Qt.Orientation.Vertical)[0]
 
-        x_min = x_axis.min()
-        x_max = x_axis.max()
+            x_min = x_axis.min()
+            x_max = x_axis.max()
 
-        # Find intensities within the visible m/z range
-        visible_mask = (self.mz_array >= x_min) & (self.mz_array <= x_max)
+            # Find intensities within the visible m/z range
+            visible_mask = (self.mz_array >= x_min) & (self.mz_array <= x_max)
 
-        if np.any(visible_mask):
-            visible_intensities = self.intensity_array[visible_mask]
-            max_visible_intensity = np.max(visible_intensities)
+            if np.any(visible_mask):
+                visible_intensities = self.intensity_array[visible_mask]
+                max_visible_intensity = np.max(visible_intensities)
 
-            # Set Y-axis range with some padding (10% above the maximum)
-            if max_visible_intensity > 0:
-                y_max = max_visible_intensity * 1.1
-                y_axis.setRange(0, y_max)
-        else:
-            # Fallback if no data in visible range
-            max_intensity = np.max(self.intensity_array) if len(self.intensity_array) > 0 else 100
-            y_axis.setRange(0, max_intensity * 1.1)
+                # Set Y-axis range with some padding (10% above the maximum)
+                if max_visible_intensity > 0:
+                    y_max = max_visible_intensity * 1.1
+                    y_axis.setRange(0, y_max)
+            else:
+                # Fallback if no data in visible range
+                max_intensity = np.max(self.intensity_array) if len(self.intensity_array) > 0 else 100
+                y_axis.setRange(0, max_intensity * 1.1)
 
-        # Update top signal labels after Y-axis change
+        # Always reposition top-signal labels (positions depend on current X and Y ranges)
         self.update_top_signal_labels()
 
     def mousePressEvent(self, event: QMouseEvent):
@@ -1066,6 +1072,21 @@ class InteractiveMS1SingleChartView(InteractiveMS1ChartView):
         self.reference_mz = ref
 
     # ------------------------------------------------------------------
+    # Keyboard navigation – forward arrow keys to the parent window
+    # ------------------------------------------------------------------
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key.Key_Left:
+            win = self.window()
+            if hasattr(win, "_navigate"):
+                win._navigate(-1)
+        elif event.key() == Qt.Key.Key_Right:
+            win = self.window()
+            if hasattr(win, "_navigate"):
+                win._navigate(1)
+        else:
+            super().keyPressEvent(event)
+
+    # ------------------------------------------------------------------
     # Hover tooltip
     # ------------------------------------------------------------------
     def _handle_hover_tooltip(self, event):
@@ -1250,6 +1271,8 @@ class MS1SingleSpectrumWindow(QWidget):
         adduct,
         mz_tolerance,
         formula,
+        all_spectra=None,
+        current_index=0,
         parent=None,
     ):
         super().__init__(parent)
@@ -1272,6 +1295,8 @@ class MS1SingleSpectrumWindow(QWidget):
         self.relative_mode = False
         self.reference_mz = self.target_mz
         self.show_isotope = False
+        self.all_spectra = all_spectra or []
+        self.current_index = current_index
 
         # Widget references
         self.chart_view = None
@@ -1310,10 +1335,10 @@ class MS1SingleSpectrumWindow(QWidget):
             header_parts.append(f"Scan: {scan_id}")
         if filter_str:
             header_parts.append(f"Filter: {filter_str}")
-        header_label = QLabel("  |  ".join(header_parts))
-        header_label.setStyleSheet("QLabel { margin: 2px; padding: 5px; font-size: 12px; background: #f0f4f8; border: 1px solid #c0ccd8; border-radius: 3px; }")
-        header_label.setFixedHeight(32)
-        root.addWidget(header_label)
+        self.header_label = QLabel("  |  ".join(header_parts))
+        self.header_label.setStyleSheet("QLabel { margin: 2px; padding: 5px; font-size: 12px; background: #f0f4f8; border: 1px solid #c0ccd8; border-radius: 3px; }")
+        self.header_label.setWordWrap(True)
+        root.addWidget(self.header_label)
 
         # ── Controls ──────────────────────────────────────────────────
         ctrl = QHBoxLayout()
@@ -1367,6 +1392,14 @@ class MS1SingleSpectrumWindow(QWidget):
         self.ref_mz_spin.valueChanged.connect(self._on_ref_mz_changed)
         ctrl.addWidget(self.ref_mz_spin)
 
+        ctrl.addWidget(_make_vline())
+
+        self.auto_scale_y_chk = QCheckBox("Auto-scale Y")
+        self.auto_scale_y_chk.setChecked(True)
+        self.auto_scale_y_chk.setToolTip("Automatically scale the Y-axis to the tallest peak in the visible X range")
+        self.auto_scale_y_chk.toggled.connect(self._on_auto_scale_y_toggled)
+        ctrl.addWidget(self.auto_scale_y_chk)
+
         ctrl.addStretch()
         root.addLayout(ctrl)
 
@@ -1376,8 +1409,23 @@ class MS1SingleSpectrumWindow(QWidget):
         self._chart_container_layout.setContentsMargins(0, 0, 0, 0)
         root.addWidget(chart_container, stretch=1)
 
-        # ── Close button ──────────────────────────────────────────────
+        # ── Navigation + Close ────────────────────────────────────────
         btn_row = QHBoxLayout()
+        self.prev_btn = QPushButton("← Previous")
+        self.prev_btn.setToolTip("Previous MS1 scan (same polarity)")
+        self.prev_btn.clicked.connect(lambda: self._navigate(-1))
+        btn_row.addWidget(self.prev_btn)
+
+        self.scan_counter_label = QLabel()
+        self.scan_counter_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.scan_counter_label.setMinimumWidth(100)
+        btn_row.addWidget(self.scan_counter_label)
+
+        self.next_btn = QPushButton("Next →")
+        self.next_btn.setToolTip("Next MS1 scan (same polarity)")
+        self.next_btn.clicked.connect(lambda: self._navigate(1))
+        btn_row.addWidget(self.next_btn)
+
         btn_row.addStretch()
         close_btn = QPushButton("Close")
         close_btn.clicked.connect(self.close)
@@ -1386,6 +1434,7 @@ class MS1SingleSpectrumWindow(QWidget):
 
         # Build the initial chart
         self._rebuild_chart()
+        self._update_nav_buttons()
 
     # ------------------------------------------------------------------
     # Control callbacks
@@ -1416,6 +1465,87 @@ class MS1SingleSpectrumWindow(QWidget):
         self.reference_mz = value
         if self.relative_mode:
             self._rebuild_chart()
+
+    def _on_auto_scale_y_toggled(self, checked):
+        if self.chart_view is not None:
+            self.chart_view.auto_scale_y = checked
+            if checked:
+                self.chart_view.auto_scale_y_axis()
+
+    def _update_nav_buttons(self):
+        """Enable/disable Prev/Next buttons and update the scan counter label."""
+        n = len(self.all_spectra)
+        self.prev_btn.setEnabled(n > 1 and self.current_index > 0)
+        self.next_btn.setEnabled(n > 1 and self.current_index < n - 1)
+        self.scan_counter_label.setText(f"Scan {self.current_index + 1} of {n}" if n > 0 else "")
+
+    def keyPressEvent(self, event):
+        """Navigate scans with the left/right arrow keys."""
+        if event.key() == Qt.Key.Key_Left:
+            self._navigate(-1)
+        elif event.key() == Qt.Key.Key_Right:
+            self._navigate(1)
+        else:
+            super().keyPressEvent(event)
+
+    def _navigate(self, delta: int):
+        """Load the spectrum at current_index + delta, updating all state and UI."""
+        new_idx = self.current_index + delta
+        if new_idx < 0 or new_idx >= len(self.all_spectra):
+            return
+        self.current_index = new_idx
+        spec = self.all_spectra[new_idx]
+        # Update data
+        self.spectrum_data = spec
+        self.raw_mz = np.array(spec.get("mz", []), dtype=float)
+        self.intensity_arr = np.array(spec.get("intensity", []), dtype=float)
+        # Update header label
+        display_name = self.filename.split(".")[0] if "." in self.filename else self.filename
+        rt_val = spec.get("rt", 0.0)
+        scan_id = spec.get("scan_id", "")
+        filter_str = spec.get("filter_string", "")
+        header_parts = [
+            f"<b>{display_name}</b>",
+            f"Group: {self.group}",
+            f"RT: {rt_val:.4f} min",
+            f"Compound: <b>{self.compound_name}</b>",
+            f"Adduct: {self.adduct}",
+            f"Target m/z: {self.target_mz:.4f}",
+        ]
+        if self.formula:
+            header_parts.append(f"Formula: {self.formula}")
+        if scan_id:
+            header_parts.append(f"Scan: {scan_id}")
+        if filter_str:
+            header_parts.append(f"Filter: {filter_str}")
+        self.header_label.setText("  |  ".join(header_parts))
+        # Capture current axis ranges so they can be restored after the rebuild
+        saved_x_range = None
+        saved_y_range = None
+        if self.chart_view is not None:
+            try:
+                x_ax = self.chart_view.chart().axes(Qt.Orientation.Horizontal)
+                y_ax = self.chart_view.chart().axes(Qt.Orientation.Vertical)
+                if x_ax and y_ax:
+                    saved_x_range = (x_ax[0].min(), x_ax[0].max())
+                    saved_y_range = (y_ax[0].min(), y_ax[0].max())
+            except Exception:
+                pass
+        # Rebuild chart (preserves relative_mode, show_isotope, etc.)
+        self._rebuild_chart()
+        # Restore X range (always) and Y range (only when auto-scale is off)
+        if saved_x_range is not None and self.chart_view is not None:
+            try:
+                x_ax = self.chart_view.chart().axes(Qt.Orientation.Horizontal)
+                y_ax = self.chart_view.chart().axes(Qt.Orientation.Vertical)
+                if x_ax:
+                    x_ax[0].setRange(saved_x_range[0], saved_x_range[1])
+                if y_ax and saved_y_range is not None and not self.auto_scale_y_chk.isChecked():
+                    y_ax[0].setRange(saved_y_range[0], saved_y_range[1])
+            except Exception:
+                pass
+            self.chart_view.update_top_signal_labels()
+        self._update_nav_buttons()
 
     # ------------------------------------------------------------------
     # Chart construction / rebuilding
@@ -1468,6 +1598,7 @@ class MS1SingleSpectrumWindow(QWidget):
         )
         self.chart_view.setRenderHint(QPainter.RenderHint.Antialiasing)
         self.chart_view.top_n = self.top_n_spin.value()
+        self.chart_view.auto_scale_y = self.auto_scale_y_chk.isChecked()
         self._chart_container_layout.addWidget(self.chart_view)
 
         self.chart_view.auto_scale_y_axis()

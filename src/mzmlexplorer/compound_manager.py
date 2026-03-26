@@ -88,7 +88,6 @@ class CompoundManager:
         # RT columns are now optional and will default to 0-100 min if not provided
         required_columns = [
             "Name",
-            "Common_adducts",
         ]
         missing_columns = [col for col in required_columns if col not in compounds_data.columns]
 

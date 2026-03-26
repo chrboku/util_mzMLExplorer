@@ -32,6 +32,7 @@ from PyQt6.QtWidgets import (
     QScrollArea,
     QAbstractItemView,
     QWidgetAction,
+    QTabWidget,
 )
 from PyQt6.QtCore import Qt, QTimer, QSettings, QEvent
 from PyQt6.QtGui import (
@@ -59,6 +60,60 @@ import json
 import toml
 import concurrent.futures
 import re
+
+# fmt: off
+# Full adduct library used both for the compounds template and the custom EIC dialog.
+ADDUCTS_TEMPLATE_DATA = [
+    ## Pos mode
+    {"Adduct": "[M+H]+",            "ElementsAdded": "H"     , "ElementsLost": ""    , "Mass_change": None        , "Charge":  1, "Multiplier": 1},
+    {"Adduct": "[M+NH4]+",          "ElementsAdded": "NH4"   , "ElementsLost": ""    , "Mass_change": None        , "Charge":  1, "Multiplier": 1},
+    {"Adduct": "[M+Na]+",           "ElementsAdded": "Na"    , "ElementsLost": ""    , "Mass_change": None        , "Charge":  1, "Multiplier": 1},
+    {"Adduct": "[M+IsoProp+H]+",    "ElementsAdded": ""      , "ElementsLost": ""    , "Mass_change": 61.0653400  , "Charge":  1, "Multiplier": 1},
+    {"Adduct": "[M+CH3OH+H]+",      "ElementsAdded": "CH3OHH", "ElementsLost": ""    , "Mass_change": None        , "Charge":  1, "Multiplier": 1},
+    {"Adduct": "[M+K]+",            "ElementsAdded": "K"     , "ElementsLost": ""    , "Mass_change": None        , "Charge":  1, "Multiplier": 1},
+    {"Adduct": "[M+ACN+H]+",        "ElementsAdded": ""      , "ElementsLost": ""    , "Mass_change": 42.0338230  , "Charge":  1, "Multiplier": 1},
+    {"Adduct": "[M+2Na-H]+",        "ElementsAdded": "Na2"   , "ElementsLost": "H"   , "Mass_change": None        , "Charge":  1, "Multiplier": 1},
+    {"Adduct": "[M+ACN+Na]+",       "ElementsAdded": ""      , "ElementsLost": ""    , "Mass_change": 64.0157650  , "Charge":  1, "Multiplier": 1},
+    {"Adduct": "[M+2K-H]+",         "ElementsAdded": "K2"    , "ElementsLost": "H"   , "Mass_change": None        , "Charge":  1, "Multiplier": 1},
+    {"Adduct": "[M+DMSO+H]+",       "ElementsAdded": ""      , "ElementsLost": ""    , "Mass_change": 79.0212200  , "Charge":  1, "Multiplier": 1},
+    {"Adduct": "[M+2ACN+H]+",       "ElementsAdded": ""      , "ElementsLost": ""    , "Mass_change": 83.0603700  , "Charge":  1, "Multiplier": 1},
+    {"Adduct": "[M+IsoProp+Na+H]+", "ElementsAdded": ""      , "ElementsLost": ""    , "Mass_change": 84.0551100  , "Charge":  1, "Multiplier": 1},
+    {"Adduct": "[2M+H]+",           "ElementsAdded": "H"     , "ElementsLost": ""    , "Mass_change": None        , "Charge":  1, "Multiplier": 2},
+    {"Adduct": "[2M+NH4]+",         "ElementsAdded": "NH4"   , "ElementsLost": ""    , "Mass_change": None        , "Charge":  1, "Multiplier": 2},
+    {"Adduct": "[2M+Na]+",          "ElementsAdded": "Na"    , "ElementsLost": ""    , "Mass_change": None        , "Charge":  1, "Multiplier": 2},
+    {"Adduct": "[2M+K]+",           "ElementsAdded": "K"     , "ElementsLost": ""    , "Mass_change": None        , "Charge":  1, "Multiplier": 2},
+    {"Adduct": "[2M+ACN+H]+",       "ElementsAdded": ""      , "ElementsLost": ""    , "Mass_change": 42.0338230  , "Charge":  1, "Multiplier": 2},
+    {"Adduct": "[2M+ACN+Na]+",      "ElementsAdded": ""      , "ElementsLost": ""    , "Mass_change": 64.0157650  , "Charge":  1, "Multiplier": 2},
+    {"Adduct": "[M+2H]++",          "ElementsAdded": "H2"    , "ElementsLost": ""    , "Mass_change": None        , "Charge":  2, "Multiplier": 1},
+    {"Adduct": "[M+H+NH4]++",       "ElementsAdded": "NH4H"  , "ElementsLost": ""    , "Mass_change": None        , "Charge":  2, "Multiplier": 1},
+    {"Adduct": "[M+H+Na]++",        "ElementsAdded": "NaH"   , "ElementsLost": ""    , "Mass_change": None        , "Charge":  2, "Multiplier": 1},
+    {"Adduct": "[M+H+K]++",         "ElementsAdded": "KH"    , "ElementsLost": ""    , "Mass_change": None        , "Charge":  2, "Multiplier": 1},
+    {"Adduct": "[M+ACN+2H]++",      "ElementsAdded": ""      , "ElementsLost": ""    , "Mass_change": 21.5205500  , "Charge":  2, "Multiplier": 1},
+    {"Adduct": "[M+2Na]++",         "ElementsAdded": "Na2"   , "ElementsLost": ""    , "Mass_change": None        , "Charge":  2, "Multiplier": 1},
+    {"Adduct": "[M+2ACN+2H]++",     "ElementsAdded": ""      , "ElementsLost": ""    , "Mass_change": 42.0338230  , "Charge":  2, "Multiplier": 1},
+    {"Adduct": "[M+3ACN+2H]++",     "ElementsAdded": ""      , "ElementsLost": ""    , "Mass_change": 62.5470970  , "Charge":  2, "Multiplier": 1},
+    {"Adduct": "[M+3H]+++",         "ElementsAdded": "H3"    , "ElementsLost": ""    , "Mass_change": None        , "Charge":  3, "Multiplier": 1},
+    {"Adduct": "[M+2H+Na]+++",      "ElementsAdded": "NaH2"  , "ElementsLost": ""    , "Mass_change": None        , "Charge":  3, "Multiplier": 1},
+    {"Adduct": "[M+H+2Na]+++",      "ElementsAdded": "Na2H"  , "ElementsLost": ""    , "Mass_change": None        , "Charge":  3, "Multiplier": 1},
+    {"Adduct": "[M+3Na]+++",        "ElementsAdded": "Na3"   , "ElementsLost": ""    , "Mass_change": None        , "Charge":  3, "Multiplier": 1},
+    ## Neg mode
+    {"Adduct": "[M+Na-2H]-",        "ElementsAdded": "Na"    , "ElementsLost": "H2"  , "Mass_change": None        , "Charge": -1, "Multiplier": 1},
+    {"Adduct": "[M+K-2H]-",         "ElementsAdded": "K"     , "ElementsLost": "H2"  , "Mass_change": None        , "Charge": -1, "Multiplier": 1},
+    {"Adduct": "[M+Hac-H]-",        "ElementsAdded": ""      , "ElementsLost": ""    , "Mass_change": 59.0138510  , "Charge": -1, "Multiplier": 1},
+    {"Adduct": "[M+Br]-",           "ElementsAdded": "Br"    , "ElementsLost": ""    , "Mass_change": None        , "Charge": -1, "Multiplier": 1},
+    {"Adduct": "[M+TFA-H]-",        "ElementsAdded": ""      , "ElementsLost": ""    , "Mass_change": 112.985586  , "Charge": -1, "Multiplier": 1},
+    {"Adduct": "[M-H]-",            "ElementsAdded": ""      , "ElementsLost": "H"   , "Mass_change": None        , "Charge": -1, "Multiplier": 1},
+    {"Adduct": "[M+Cl]-",           "ElementsAdded": "Cl"    , "ElementsLost": ""    , "Mass_change": None        , "Charge": -1, "Multiplier": 1},
+    {"Adduct": "[M+FA-H]-",         "ElementsAdded": ""      , "ElementsLost": ""    , "Mass_change": 44.9982010  , "Charge": -1, "Multiplier": 1},
+    {"Adduct": "[M-H2O-H]-",        "ElementsAdded": ""      , "ElementsLost": "H2OH", "Mass_change": -19.018390  , "Charge": -1, "Multiplier": 1},
+    {"Adduct": "[2M-H]-",           "ElementsAdded": ""      , "ElementsLost": "H"   , "Mass_change": -1.0072760  , "Charge": -1, "Multiplier": 2},
+    {"Adduct": "[2M+FA-H]-",        "ElementsAdded": ""      , "ElementsLost": ""    , "Mass_change": 44.9982010  , "Charge": -1, "Multiplier": 2},
+    {"Adduct": "[2M+Hac-H]-",       "ElementsAdded": ""      , "ElementsLost": ""    , "Mass_change": 59.0138510  , "Charge": -1, "Multiplier": 2},
+    {"Adduct": "[3M-H]-",           "ElementsAdded": ""      , "ElementsLost": "H"   , "Mass_change": 1.00727600  , "Charge": -1, "Multiplier": 3},
+    {"Adduct": "[M-2H]--",          "ElementsAdded": ""      , "ElementsLost": "H2"  , "Mass_change": -1.0072760  , "Charge": -2, "Multiplier": 1},
+    {"Adduct": "[M-3H]---",         "ElementsAdded": ""      , "ElementsLost": "H3"  , "Mass_change": -1.0072760  , "Charge": -3, "Multiplier": 1},
+]
+# fmt: on
 
 
 class CompoundStructurePopup(QWidget):
@@ -162,6 +217,336 @@ class CompoundStructurePopup(QWidget):
         self.show()
 
 
+class CustomEICDialog(QDialog):
+    """Dialog for quickly plotting an EIC trace for a custom formula, mass, SMILES or m/z value."""
+
+    def __init__(self, adducts_data, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Show Custom EIC Trace")
+        self.setMinimumWidth(500)
+        self._adducts_data = adducts_data
+        self._result_compound_data = None
+        self._result_adduct = None
+        self._result_mz = None
+        self._result_polarity = None
+        self._setup_ui()
+        self._connect_signals()
+        # Trigger initial validation
+        self._validate_tab1()
+        self._validate_tab2()
+
+    # ------------------------------------------------------------------
+    # UI construction
+    # ------------------------------------------------------------------
+
+    def _setup_ui(self):
+        layout = QVBoxLayout(self)
+
+        self.tabs = QTabWidget()
+
+        # ---- Tab 1: Formula / SMILES / Mass ----
+        tab1 = QWidget()
+        form1 = QFormLayout(tab1)
+        form1.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        form1.setContentsMargins(12, 12, 12, 12)
+        form1.setVerticalSpacing(8)
+
+        self.formula_edit = QLineEdit()
+        self.formula_edit.setPlaceholderText("e.g. C6H12O6")
+        form1.addRow("Chemical Formula:", self.formula_edit)
+
+        self.smiles_edit = QLineEdit()
+        self.smiles_edit.setPlaceholderText("Optional – validated with RDKit when filled")
+        form1.addRow("SMILES:", self.smiles_edit)
+
+        self.mass_spin = QDoubleSpinBox()
+        self.mass_spin.setRange(0.0, 100000.0)
+        self.mass_spin.setDecimals(6)
+        self.mass_spin.setSuffix(" Da")
+        self.mass_spin.setValue(0.0)
+        self.mass_spin.setSpecialValueText("(derive from formula)")
+        self.mass_spin.setToolTip("Enter a monoisotopic neutral mass directly. Leave at 0 to derive it automatically from the chemical formula above.")
+        form1.addRow("Neutral Mass:", self.mass_spin)
+
+        self.adduct_combo1 = QComboBox()
+        self._fill_adducts_combo(self.adduct_combo1)
+        form1.addRow("Adduct:", self.adduct_combo1)
+
+        self.mz_preview_label = QLabel("(enter formula or mass + adduct to preview m/z)")
+        self.mz_preview_label.setStyleSheet("color: gray; font-style: italic;")
+        form1.addRow("Calculated m/z:", self.mz_preview_label)
+
+        self.polarity_preview_label = QLabel("")
+        self.polarity_preview_label.setStyleSheet("color: gray; font-style: italic;")
+        form1.addRow("Polarity:", self.polarity_preview_label)
+
+        self.validation_label1 = QLabel("")
+        self.validation_label1.setWordWrap(True)
+        form1.addRow("", self.validation_label1)
+
+        self.tabs.addTab(tab1, "Formula / SMILES / Mass")
+
+        # ---- Tab 2: m/z value ----
+        tab2 = QWidget()
+        form2 = QFormLayout(tab2)
+        form2.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        form2.setContentsMargins(12, 12, 12, 12)
+        form2.setVerticalSpacing(8)
+
+        self.mz_spin = QDoubleSpinBox()
+        self.mz_spin.setRange(0.001, 100000.0)
+        self.mz_spin.setDecimals(6)
+        self.mz_spin.setSuffix(" m/z")
+        self.mz_spin.setValue(200.0)
+        form2.addRow("m/z value:", self.mz_spin)
+
+        self.polarity_combo = QComboBox()
+        self.polarity_combo.addItem("Positive", "positive")
+        self.polarity_combo.addItem("Negative", "negative")
+        form2.addRow("Polarity:", self.polarity_combo)
+
+        self.tabs.addTab(tab2, "m/z value")
+
+        layout.addWidget(self.tabs)
+
+        # Buttons
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+        self.ok_btn = QPushButton("Show EIC")
+        self.ok_btn.setEnabled(False)
+        self.ok_btn.setDefault(True)
+        cancel_btn = QPushButton("Cancel")
+        btn_layout.addWidget(self.ok_btn)
+        btn_layout.addWidget(cancel_btn)
+        layout.addLayout(btn_layout)
+
+        self.ok_btn.clicked.connect(self._on_accept)
+        cancel_btn.clicked.connect(self.reject)
+
+    def _fill_adducts_combo(self, combo):
+        """Populate an adduct combo-box from the adducts table."""
+        if self._adducts_data is not None and not self._adducts_data.empty:
+            adducts = self._adducts_data["Adduct"].tolist()
+        else:
+            adducts = [row["Adduct"] for row in ADDUCTS_TEMPLATE_DATA]
+        for adduct in adducts:
+            combo.addItem(adduct)
+
+    # ------------------------------------------------------------------
+    # Signal connections / validation
+    # ------------------------------------------------------------------
+
+    def _connect_signals(self):
+        self.formula_edit.textChanged.connect(self._validate_tab1)
+        self.smiles_edit.textChanged.connect(self._validate_tab1)
+        self.mass_spin.valueChanged.connect(self._validate_tab1)
+        self.adduct_combo1.currentIndexChanged.connect(self._validate_tab1)
+        self.mz_spin.valueChanged.connect(self._validate_tab2)
+        self.polarity_combo.currentIndexChanged.connect(self._validate_tab2)
+        self.tabs.currentChanged.connect(self._on_tab_changed)
+
+    def _get_adduct_polarity(self, adduct: str):
+        """Return 'positive', 'negative', or None for the given adduct string."""
+        # Deduce from trailing character first (most reliable)
+        stripped = adduct.rstrip()
+        if stripped.endswith("+"):
+            return "positive"
+        if stripped.endswith("-"):
+            return "negative"
+        # Fall back to adducts table
+        if self._adducts_data is not None and not self._adducts_data.empty:
+            row = self._adducts_data[self._adducts_data["Adduct"] == adduct]
+            if not row.empty:
+                try:
+                    charge = int(row.iloc[0]["Charge"])
+                    return "positive" if charge > 0 else "negative"
+                except Exception:
+                    pass
+        return None
+
+    def _validate_tab1(self):
+        """Live-validate the Formula/SMILES/Mass tab and update feedback labels."""
+        from .utils import calculate_molecular_mass, parse_molecular_formula, adduct_mass_change
+
+        formula = self.formula_edit.text().strip()
+        smiles = self.smiles_edit.text().strip()
+        mass_override = self.mass_spin.value()
+        adduct = self.adduct_combo1.currentText()
+
+        errors = []
+        warnings = []
+        neutral_mass = None
+
+        # --- Validate formula ---
+        if formula:
+            try:
+                parse_molecular_formula(formula)
+                neutral_mass = calculate_molecular_mass(formula)
+                self.formula_edit.setStyleSheet("QLineEdit { border: 1.5px solid #3a3; }")
+            except Exception as exc:
+                errors.append(f"Invalid formula: {exc}")
+                self.formula_edit.setStyleSheet("QLineEdit { border: 1.5px solid red; }")
+        else:
+            self.formula_edit.setStyleSheet("")
+
+        # --- Validate SMILES ---
+        if smiles:
+            try:
+                from rdkit import Chem
+
+                mol = Chem.MolFromSmiles(smiles)
+                if mol is None:
+                    errors.append("SMILES is invalid (RDKit could not parse it)")
+                    self.smiles_edit.setStyleSheet("QLineEdit { border: 1.5px solid red; }")
+                else:
+                    self.smiles_edit.setStyleSheet("QLineEdit { border: 1.5px solid #3a3; }")
+                    # Cross-check with formula when both are present and formula is valid
+                    if formula and neutral_mass is not None:
+                        try:
+                            from rdkit.Chem import rdMolDescriptors
+                            from .FormulaTools import formulaTools
+
+                            rdkit_formula_str = rdMolDescriptors.CalcMolFormula(mol)
+                            ft = formulaTools()
+                            rdkit_elems = {k: v for k, v in ft.parseFormula(rdkit_formula_str).items() if k[0].isalpha()}
+                            formula_elems = {k: v for k, v in ft.parseFormula(formula).items() if k[0].isalpha()}
+                            if rdkit_elems != formula_elems:
+                                warnings.append(f"Formula/SMILES mismatch: formula implies {formula}, SMILES implies {rdkit_formula_str}")
+                        except Exception:
+                            pass
+            except ImportError:
+                warnings.append("RDKit not available – SMILES cannot be validated")
+                self.smiles_edit.setStyleSheet("")
+        else:
+            self.smiles_edit.setStyleSheet("")
+
+        # --- Use mass override when formula is absent or invalid ---
+        if neutral_mass is None and mass_override > 0.0:
+            neutral_mass = mass_override
+
+        # --- Calculate preview m/z ---
+        mz_value = None
+        polarity = None
+        if neutral_mass is not None and adduct:
+            if self._adducts_data is not None and not self._adducts_data.empty:
+                adduct_row = self._adducts_data[self._adducts_data["Adduct"] == adduct]
+                if not adduct_row.empty:
+                    try:
+                        mass_change, charge, multiplier = adduct_mass_change(adduct_row.iloc[0])
+                        mz_value = (multiplier * neutral_mass + mass_change) / abs(charge)
+                        polarity = self._get_adduct_polarity(adduct)
+                    except Exception as exc:
+                        warnings.append(f"m/z calculation error: {exc}")
+            else:
+                warnings.append("No adducts table loaded – cannot calculate m/z")
+
+        # --- Update preview labels ---
+        if mz_value is not None:
+            self.mz_preview_label.setText(f"{mz_value:.6f}")
+            self.mz_preview_label.setStyleSheet("color: #1a7a1a; font-weight: bold;")
+        else:
+            self.mz_preview_label.setText("(enter formula or mass + adduct to preview m/z)")
+            self.mz_preview_label.setStyleSheet("color: gray; font-style: italic;")
+
+        if polarity is not None:
+            self.polarity_preview_label.setText(polarity.capitalize())
+            self.polarity_preview_label.setStyleSheet("color: #1a1a9a; font-weight: bold;" if polarity == "positive" else "color: #9a1a1a; font-weight: bold;")
+        else:
+            self.polarity_preview_label.setText("")
+
+        # --- Feedback message ---
+        if errors:
+            self.validation_label1.setText("\u274c " + "; ".join(errors))
+            self.validation_label1.setStyleSheet("color: red;")
+        elif warnings:
+            self.validation_label1.setText("\u26a0\ufe0f " + "; ".join(warnings))
+            self.validation_label1.setStyleSheet("color: #b86000;")
+        else:
+            self.validation_label1.setText("")
+
+        # Enable OK only when on this tab and m/z could be computed without blocking errors
+        if self.tabs.currentIndex() == 0:
+            self.ok_btn.setEnabled(bool(not errors and mz_value is not None))
+
+    def _validate_tab2(self):
+        """Live-validate the m/z tab."""
+        valid = self.mz_spin.value() > 0.0
+        if self.tabs.currentIndex() == 1:
+            self.ok_btn.setEnabled(valid)
+
+    def _on_tab_changed(self, index):
+        if index == 0:
+            self._validate_tab1()
+        else:
+            self._validate_tab2()
+
+    # ------------------------------------------------------------------
+    # Accept handler
+    # ------------------------------------------------------------------
+
+    def _on_accept(self):
+        """Collect results and close the dialog."""
+        from .utils import calculate_molecular_mass, parse_molecular_formula, adduct_mass_change
+
+        if self.tabs.currentIndex() == 0:
+            # ---- Tab 1 ----
+            formula = self.formula_edit.text().strip()
+            mass_override = self.mass_spin.value()
+            adduct = self.adduct_combo1.currentText()
+
+            neutral_mass = None
+            if formula:
+                try:
+                    neutral_mass = calculate_molecular_mass(formula)
+                except Exception:
+                    pass
+            if neutral_mass is None and mass_override > 0.0:
+                neutral_mass = mass_override
+
+            adduct_row = self._adducts_data[self._adducts_data["Adduct"] == adduct]
+            mass_change, charge, multiplier = adduct_mass_change(adduct_row.iloc[0])
+            mz_value = (multiplier * neutral_mass + mass_change) / abs(charge)
+            polarity = self._get_adduct_polarity(adduct)
+
+            name = formula if formula else f"Mass {neutral_mass:.4f} Da"
+            self._result_compound_data = {
+                "Name": name,
+                "ChemicalFormula": formula if formula else None,
+                "Mass": neutral_mass,
+                "RT_min": 50.0,
+                "RT_start_min": 0.0,
+                "RT_end_min": 100.0,
+            }
+            self._result_adduct = adduct
+            self._result_mz = mz_value
+            self._result_polarity = polarity
+        else:
+            # ---- Tab 2 ----
+            mz_value = self.mz_spin.value()
+            polarity = self.polarity_combo.currentData()
+            pol_sign = "+" if polarity == "positive" else "-"
+            self._result_compound_data = {
+                "Name": f"Custom m/z {mz_value:.6f}",
+                "RT_min": 50.0,
+                "RT_start_min": 0.0,
+                "RT_end_min": 100.0,
+            }
+            self._result_adduct = f"[custom]{pol_sign}"
+            self._result_mz = mz_value
+            self._result_polarity = polarity
+
+        self.accept()
+
+    def get_result(self):
+        """Return (compound_data, adduct, mz_value, polarity) after the dialog was accepted."""
+        return (
+            self._result_compound_data,
+            self._result_adduct,
+            self._result_mz,
+            self._result_polarity,
+        )
+
+
 class MzMLExplorerMainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -228,6 +613,12 @@ class MzMLExplorerMainWindow(QMainWindow):
         right_panel = QGroupBox("Compounds")
         right_panel.setAcceptDrops(True)
         right_layout = QVBoxLayout(right_panel)
+
+        # Custom EIC trace button
+        custom_eic_btn = QPushButton("Show Custom EIC Trace")
+        custom_eic_btn.setToolTip("Open a dialog to plot an EIC for a custom formula, mass, SMILES or m/z value")
+        custom_eic_btn.clicked.connect(self.show_custom_eic_dialog)
+        right_layout.addWidget(custom_eic_btn)
 
         # Add filter line
         filter_layout = QHBoxLayout()
@@ -572,56 +963,7 @@ class MzMLExplorerMainWindow(QMainWindow):
             compounds_template_df = pd.DataFrame(compounds_template_data)
 
             # Create adducts template
-            # fmt: off
-            adducts_template_data = [
-                {"Adduct": "[M+H]+",            "Mass_change": 1.00727600, "Charge":  1, "Multiplier": 1},
-                {"Adduct": "[M+NH4]+",          "Mass_change": 18.0338230, "Charge":  1, "Multiplier": 1},
-                {"Adduct": "[M+Na]+",           "Mass_change": 22.9892180, "Charge":  1, "Multiplier": 1},
-                {"Adduct": "[M+IsoProp+H]+",    "Mass_change": 61.0653400, "Charge":  1, "Multiplier": 1},
-                {"Adduct": "[M-H]-",            "Mass_change": -1.0072760, "Charge": -1, "Multiplier": 1},
-                {"Adduct": "[M+Cl]-",           "Mass_change": 34.9694020, "Charge": -1, "Multiplier": 1},
-                {"Adduct": "[M+FA-H]-",         "Mass_change": 44.9982010, "Charge": -1, "Multiplier": 1},
-                {"Adduct": "[M-H2O-H]-",        "Mass_change": -19.018390, "Charge": -1, "Multiplier": 1},
-                {"Adduct": "[M+3H]+++",         "Mass_change": 1.00727600, "Charge":  3, "Multiplier": 1},
-                {"Adduct": "[M+2H+Na]+++",      "Mass_change": 8.33459000, "Charge":  3, "Multiplier": 1},
-                {"Adduct": "[M+H+2Na]+++",      "Mass_change": 15.7661900, "Charge":  3, "Multiplier": 1},
-                {"Adduct": "[M+3Na]+++",        "Mass_change": 22.9892180, "Charge":  3, "Multiplier": 1},
-                {"Adduct": "[M+2H]++",          "Mass_change": 1.00727600, "Charge":  2, "Multiplier": 1},
-                {"Adduct": "[M+H+NH4]++",       "Mass_change": 9.52055000, "Charge":  2, "Multiplier": 1},
-                {"Adduct": "[M+H+Na]++",        "Mass_change": 11.9982470, "Charge":  2, "Multiplier": 1},
-                {"Adduct": "[M+H+K]++",         "Mass_change": 19.9852170, "Charge":  2, "Multiplier": 1},
-                {"Adduct": "[M+ACN+2H]++",      "Mass_change": 21.5205500, "Charge":  2, "Multiplier": 1},
-                {"Adduct": "[M+2Na]++",         "Mass_change": 22.9892180, "Charge":  2, "Multiplier": 1},
-                {"Adduct": "[M+2ACN+2H]++",     "Mass_change": 42.0338230, "Charge":  2, "Multiplier": 1},
-                {"Adduct": "[M+3ACN+2H]++",     "Mass_change": 62.5470970, "Charge":  2, "Multiplier": 1},
-                {"Adduct": "[M+CH3OH+H]+",      "Mass_change": 33.0334890, "Charge":  1, "Multiplier": 1},
-                {"Adduct": "[M+K]+",            "Mass_change": 38.9631580, "Charge":  1, "Multiplier": 1},
-                {"Adduct": "[M+ACN+H]+",        "Mass_change": 42.0338230, "Charge":  1, "Multiplier": 1},
-                {"Adduct": "[M+2Na-H]+",        "Mass_change": 44.9711600, "Charge":  1, "Multiplier": 1},
-                {"Adduct": "[M+ACN+Na]+",       "Mass_change": 64.0157650, "Charge":  1, "Multiplier": 1},
-                {"Adduct": "[M+2K-H]+",         "Mass_change": 76.9190400, "Charge":  1, "Multiplier": 1},
-                {"Adduct": "[M+DMSO+H]+",       "Mass_change": 79.0212200, "Charge":  1, "Multiplier": 1},
-                {"Adduct": "[M+2ACN+H]+",       "Mass_change": 83.0603700, "Charge":  1, "Multiplier": 1},
-                {"Adduct": "[M+IsoProp+Na+H]+", "Mass_change": 84.0551100, "Charge":  1, "Multiplier": 1},
-                {"Adduct": "[2M+H]+",           "Mass_change": 1.00727600, "Charge":  1, "Multiplier": 2},
-                {"Adduct": "[2M+NH4]+",         "Mass_change": 18.0338230, "Charge":  1, "Multiplier": 2},
-                {"Adduct": "[2M+Na]+",          "Mass_change": 22.9892180, "Charge":  1, "Multiplier": 2},
-                {"Adduct": "[2M+K]+",           "Mass_change": 38.9631580, "Charge":  1, "Multiplier": 2},
-                {"Adduct": "[2M+ACN+H]+",       "Mass_change": 42.0338230, "Charge":  1, "Multiplier": 2},
-                {"Adduct": "[2M+ACN+Na]+",      "Mass_change": 64.0157650, "Charge":  1, "Multiplier": 2},
-                {"Adduct": "[M-3H]---",         "Mass_change": -1.0072760, "Charge": -3, "Multiplier": 1},
-                {"Adduct": "[M-2H]--",          "Mass_change": -1.0072760, "Charge": -2, "Multiplier": 1},
-                {"Adduct": "[M+Na-2H]-",        "Mass_change": 20.9746660, "Charge": -1, "Multiplier": 1},
-                {"Adduct": "[M+K-2H]-",         "Mass_change": 36.9486060, "Charge": -1, "Multiplier": 1},
-                {"Adduct": "[M+Hac-H]-",        "Mass_change": 59.0138510, "Charge": -1, "Multiplier": 1},
-                {"Adduct": "[M+Br]-",           "Mass_change": 78.9188850, "Charge": -1, "Multiplier": 1},
-                {"Adduct": "[M+TFA-H]-",        "Mass_change": 112.985586, "Charge": -1, "Multiplier": 1},
-                {"Adduct": "[2M-H]-",           "Mass_change": -1.0072760, "Charge": -1, "Multiplier": 2},
-                {"Adduct": "[2M+FA-H]-",        "Mass_change": 44.9982010, "Charge": -1, "Multiplier": 2},
-                {"Adduct": "[2M+Hac-H]-",       "Mass_change": 59.0138510, "Charge": -1, "Multiplier": 2},
-                {"Adduct": "[3M-H]-",           "Mass_change": 1.00727600, "Charge": -1, "Multiplier": 3},
-            ]
-            # fmt: on
+            adducts_template_data = ADDUCTS_TEMPLATE_DATA
 
             adducts_template_df = pd.DataFrame.from_dict(adducts_template_data)
 
@@ -1649,6 +1991,25 @@ class MzMLExplorerMainWindow(QMainWindow):
 
         # Otherwise, treat as name regex pattern
         return "name", filter_text
+
+    def show_custom_eic_dialog(self):
+        """Open the 'Show Custom EIC Trace' dialog."""
+        # Always start from the full template list so the combo is never empty.
+        # Append any extra adducts from a loaded compounds file that are not
+        # already covered by the template.
+        base_df = pd.DataFrame(ADDUCTS_TEMPLATE_DATA)
+        loaded = self.compound_manager.adducts_data
+        if not loaded.empty:
+            template_names = set(base_df["Adduct"].tolist())
+            extra = loaded[~loaded["Adduct"].isin(template_names)]
+            if not extra.empty:
+                base_df = pd.concat([base_df, extra], ignore_index=True)
+        adducts_data = base_df
+
+        dialog = CustomEICDialog(adducts_data, parent=self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            compound_data, adduct, mz_value, polarity = dialog.get_result()
+            self.show_eic_window(compound_data, adduct, mz_value=mz_value, polarity=polarity)
 
     def show_eic_window(self, compound, adduct, mz_value=None, polarity=None):
         """Show EIC window for the selected compound and adduct"""

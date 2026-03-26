@@ -503,6 +503,260 @@ class InteractiveEICWidget(QWidget):
         self.canvas.draw()
 
 
+class SampleEICWidget(QWidget):
+    """EIC plot widget for a single sample showing all adducts overlaid"""
+
+    def __init__(
+        self,
+        compound,
+        sample_filename,
+        sample_filepath,
+        adducts_data,
+        file_manager,
+        defaults=None,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self.compound = compound
+        self.sample_filename = sample_filename
+        self.sample_filepath = sample_filepath
+        self.adducts_data = adducts_data  # list of (adduct, mz_value, polarity)
+        self.file_manager = file_manager
+        self.defaults = defaults or {}
+
+        self.setup_ui()
+        self.load_data()
+
+    def setup_ui(self):
+        """Setup the UI for this sample EIC widget"""
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(5, 5, 5, 5)
+        layout.setSpacing(3)
+
+        # Header with sample name
+        self.header_label = QLabel(self.sample_filename)
+        self.header_label.setStyleSheet("""
+            QLabel { 
+                background-color: #f0f4f0; 
+                padding: 3px; 
+                margin: 1px;
+                border: 1px solid #aaccaa;
+                border-radius: 3px;
+                font-weight: bold;
+            }
+        """)
+        self.header_label.setMaximumHeight(25)
+        layout.addWidget(self.header_label)
+
+        # Create matplotlib figure
+        self.figure = Figure(figsize=(4, 2.5), dpi=80)
+        self.figure.patch.set_facecolor("white")
+        self.canvas = FigureCanvas(self.figure)
+        self.canvas.setParent(self)
+
+        self.toolbar = NavigationToolbar(self.canvas, self)
+        self.toolbar.setMaximumHeight(25)
+        self.toolbar.setStyleSheet("""
+            QToolBar { 
+                border: none; 
+                background-color: #f8f8f8;
+                spacing: 2px;
+            }
+            QToolBar QToolButton { 
+                border: 1px solid #ccc;
+                border-radius: 2px;
+                padding: 2px;
+                margin: 1px;
+                background-color: white;
+            }
+            QToolBar QToolButton:hover {
+                background-color: #e8e8e8;
+            }
+        """)
+        for action in self.toolbar.actions():
+            if action.text() in ["Configure subplots", "Save", "Forward", "Back"]:
+                action.setVisible(False)
+
+        layout.addWidget(self.toolbar)
+        layout.addWidget(self.canvas)
+
+        self.setMinimumSize(300, 250)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+    def load_data(self):
+        """Load and plot EIC data for all adducts"""
+        try:
+            eic_data = self._extract_eic_data()
+            self.plot_eic(eic_data)
+        except Exception as e:
+            print(f"Error loading sample EIC data for {self.sample_filename}: {str(e)}")
+            import traceback
+
+            traceback.print_exc()
+            self.plot_empty(f"Error: {str(e)}")
+
+    def _extract_eic_data(self):
+        """Extract EIC for each adduct from this sample"""
+        mz_tolerance_ppm = self.defaults.get("mz_tolerance_ppm", 5.0)
+        calculation_method = self.defaults.get("calculation_method", "Sum of all signals")
+
+        adduct_results = {}
+        for adduct, mz_value, polarity in self.adducts_data:
+            if mz_value is None:
+                continue
+            mz_tolerance_da = (mz_value * mz_tolerance_ppm) / 1e6
+            try:
+                rt_values, intensity_values = self.file_manager.extract_eic(
+                    filepath=self.sample_filepath,
+                    target_mz=mz_value,
+                    mz_tolerance=mz_tolerance_da,
+                    rt_start=None,
+                    rt_end=None,
+                    calculation_method=calculation_method,
+                    polarity=polarity,
+                )
+                if len(rt_values) > 0 and len(intensity_values) > 0:
+                    adduct_results[adduct] = {
+                        "rt": rt_values,
+                        "intensity": intensity_values,
+                        "mz_value": mz_value,
+                    }
+            except Exception as e:
+                print(f"ERROR extracting {adduct} from {self.sample_filename}: {str(e)}")
+                continue
+        return adduct_results
+
+    def plot_eic(self, eic_data):
+        """Plot EICs of all adducts overlaid for this sample"""
+        self.figure.clear()
+        ax = self.figure.add_subplot(111)
+
+        if not eic_data:
+            ax.text(
+                0.5,
+                0.5,
+                "No data available",
+                transform=ax.transAxes,
+                ha="center",
+                va="center",
+                fontsize=9,
+            )
+        else:
+            # Use tab10 + tab20b colours for up to 20 adducts
+            base_colors = list(plt.cm.tab10.colors) + list(plt.cm.tab20b.colors)
+            all_rt_values = []
+            plots_made = 0
+
+            for idx, (adduct, data) in enumerate(eic_data.items()):
+                color = base_colors[idx % len(base_colors)]
+                if len(data["rt"]) > 0 and len(data["intensity"]) > 0:
+                    all_rt_values.extend(data["rt"])
+                    ax.plot(
+                        data["rt"],
+                        data["intensity"],
+                        label=adduct,
+                        color=color,
+                        linewidth=1,
+                    )
+                    plots_made += 1
+
+            if plots_made == 0:
+                ax.text(
+                    0.5,
+                    0.5,
+                    "Data extracted but no intensities > 0",
+                    transform=ax.transAxes,
+                    ha="center",
+                    va="center",
+                    fontsize=9,
+                )
+            else:
+                ax.set_xlabel("Retention Time (min)", fontsize=8)
+                ax.set_ylabel("Intensity", fontsize=8)
+                ax.grid(True, alpha=0.3)
+                ax.tick_params(labelsize=7)
+                ax.ticklabel_format(style="scientific", axis="y", scilimits=(0, 0))
+                ax.legend(fontsize=6, loc="upper right")
+                self._set_auto_zoom(ax, eic_data, all_rt_values)
+
+        self.figure.tight_layout(pad=0.5)
+        self.canvas.draw()
+
+    def _set_auto_zoom(self, ax, eic_data, all_rt_values):
+        """Set automatic zoom to compound RT range with intelligent y-axis scaling"""
+        rt_start = self.compound.get("RT_start_min")
+        rt_end = self.compound.get("RT_end_min")
+        rt_center = self.compound.get("RT_min")
+
+        is_full_range = rt_start == 0.0 and rt_end == 100.0
+
+        if rt_start is not None and rt_end is not None and not is_full_range:
+            rt_margin = (rt_end - rt_start) * 0.1
+            zoom_start = max(0, rt_start - rt_margin)
+            zoom_end = rt_end + rt_margin
+            rt_window_start = rt_start
+            rt_window_end = rt_end
+        elif rt_center is not None and not is_full_range:
+            window_width = 2.0
+            zoom_start = max(0, rt_center - window_width)
+            zoom_end = rt_center + window_width
+            rt_window_start = rt_center - 1.0
+            rt_window_end = rt_center + 1.0
+        else:
+            if all_rt_values:
+                data_rt_min = min(all_rt_values)
+                data_rt_max = max(all_rt_values)
+                rt_range = data_rt_max - data_rt_min
+                margin = max(0.5, rt_range * 0.1)
+                zoom_start = max(0, data_rt_min - margin)
+                zoom_end = data_rt_max + margin
+                rt_window_start = data_rt_min
+                rt_window_end = data_rt_max
+            else:
+                return
+
+        max_intensity_in_window = 0
+        min_intensity_in_window = float("inf")
+
+        for adduct, data in eic_data.items():
+            if len(data["rt"]) > 0 and len(data["intensity"]) > 0:
+                rt_mask = (data["rt"] >= rt_window_start) & (data["rt"] <= rt_window_end)
+                if np.any(rt_mask):
+                    intensities = data["intensity"][rt_mask]
+                    if len(intensities) > 0:
+                        max_intensity_in_window = max(max_intensity_in_window, intensities.max())
+                        min_intensity_in_window = min(min_intensity_in_window, intensities.min())
+
+        try:
+            ax.set_xlim(zoom_start, zoom_end)
+            if max_intensity_in_window > 0:
+                y_margin = max_intensity_in_window * 0.2
+                y_max = max_intensity_in_window + y_margin
+                if min_intensity_in_window != float("inf"):
+                    y_min = min(0, min_intensity_in_window * 1.1) if min_intensity_in_window < 0 else 0
+                else:
+                    y_min = 0
+                ax.set_ylim(y_min, y_max)
+
+            if rt_start is not None and rt_end is not None and not is_full_range:
+                ax.axvspan(rt_start, rt_end, alpha=0.1, color="gray", zorder=0)
+            elif rt_center is not None and not is_full_range:
+                ax.axvline(rt_center, alpha=0.3, color="red", linestyle="--", linewidth=1, zorder=0)
+        except Exception as e:
+            print(f"Error setting zoom: {e}")
+
+    def plot_empty(self, message="No data"):
+        """Plot empty placeholder"""
+        self.figure.clear()
+        ax = self.figure.add_subplot(111)
+        ax.text(0.5, 0.5, message, transform=ax.transAxes, ha="center", va="center", fontsize=9)
+        ax.set_xlabel("Retention Time (min)", fontsize=8)
+        ax.set_ylabel("Intensity", fontsize=8)
+        ax.tick_params(labelsize=7)
+        self.figure.tight_layout(pad=0.5)
+        self.canvas.draw()
+
+
 class MultiAdductWindow(QWidget):
     """Window for displaying multiple adduct EICs"""
 
@@ -636,18 +890,13 @@ class MultiAdductWindow(QWidget):
         """)
         layout.addWidget(header_label)
 
-        # Scroll area for EIC plots in matrix layout
-        scroll_area = QScrollArea()
-        scroll_widget = QWidget()
-
-        # Create a grid layout with 3 columns
-        grid_layout = QGridLayout(scroll_widget)
-        grid_layout.setSpacing(10)
-
         # Calculate max intensities for all adducts and sort by descending abundance
         # Show a progress dialog during the (potentially slow) extraction step
         valid_adducts = [(a, mz, pol) for a, mz, pol in self.adducts_data if mz is not None]
-        total = len(valid_adducts)
+        files_data = self.file_manager.get_files_data()
+        n_adducts = len(valid_adducts)
+        n_samples = len(files_data)
+        total = n_adducts
         progress = QProgressDialog("Extracting EIC data…", None, 0, max(total, 1), self.parent())
         progress.setWindowTitle("Multi-Adduct EIC – Please Wait")
         progress.setWindowModality(Qt.WindowModality.ApplicationModal)
@@ -669,8 +918,30 @@ class MultiAdductWindow(QWidget):
 
         # Sort by maximum intensity in descending order
         adducts_with_intensity.sort(key=lambda x: x[3], reverse=True)
+        sorted_adducts = [(a, mz, pol) for a, mz, pol, _ in adducts_with_intensity]
 
-        # Add EIC widgets for each adduct in order of descending abundance
+        # ── Scroll area that holds both sections ──────────────────────────────
+        scroll_area = QScrollArea()
+        outer_widget = QWidget()
+        outer_layout = QVBoxLayout(outer_widget)
+        outer_layout.setSpacing(8)
+
+        # ── Section 1: EICs per adduct ────────────────────────────────────────
+        adduct_section_label = QLabel("<b>EICs per Adduct</b> (all samples overlaid, sorted by abundance)")
+        adduct_section_label.setStyleSheet("""
+            QLabel {
+                background-color: #dce8f4;
+                padding: 4px 6px;
+                border-left: 4px solid #4a90e2;
+                font-size: 11px;
+            }
+        """)
+        outer_layout.addWidget(adduct_section_label)
+
+        adduct_grid_widget = QWidget()
+        grid_layout = QGridLayout(adduct_grid_widget)
+        grid_layout.setSpacing(10)
+
         row = 0
         col = 0
         valid_adducts_count = 0
@@ -685,23 +956,70 @@ class MultiAdductWindow(QWidget):
                 self.defaults,
                 self,
             )
-
-            # Set fixed size for matrix layout (increased height for navigation toolbar)
             eic_widget.setMinimumSize(350, 280)
             eic_widget.setMaximumSize(500, 380)
-
             grid_layout.addWidget(eic_widget, row, col)
-
             valid_adducts_count += 1
             col += 1
-
-            # Move to next row after 3 columns
             if col >= 3:
                 col = 0
                 row += 1
 
+        outer_layout.addWidget(adduct_grid_widget)
+
+        # ── Separator ────────────────────────────────────────────────────────
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setFrameShadow(QFrame.Shadow.Sunken)
+        outer_layout.addWidget(sep)
+
+        # ── Section 2: EICs per sample ────────────────────────────────────────
+        sample_section_label = QLabel("<b>EICs per Sample</b> (all adducts overlaid)")
+        sample_section_label.setStyleSheet("""
+            QLabel {
+                background-color: #dcf4e4;
+                padding: 4px 6px;
+                border-left: 4px solid #4a90e2;
+                font-size: 11px;
+            }
+        """)
+        outer_layout.addWidget(sample_section_label)
+
+        sample_grid_widget = QWidget()
+        sample_grid_layout = QGridLayout(sample_grid_widget)
+        sample_grid_layout.setSpacing(10)
+
+        s_row = 0
+        s_col = 0
+        sample_count = 0
+
+        for _, file_row in files_data.iterrows():
+            filename = file_row["filename"]
+            filepath = file_row["Filepath"]
+
+            sample_widget = SampleEICWidget(
+                self.compound,
+                filename,
+                filepath,
+                sorted_adducts,
+                self.file_manager,
+                self.defaults,
+                self,
+            )
+            sample_widget.setMinimumSize(350, 280)
+            sample_widget.setMaximumSize(500, 380)
+            sample_grid_layout.addWidget(sample_widget, s_row, s_col)
+            sample_count += 1
+            s_col += 1
+            if s_col >= 3:
+                s_col = 0
+                s_row += 1
+
+        outer_layout.addWidget(sample_grid_widget)
+        outer_layout.addStretch(1)
+
         # Set scroll area properties
-        scroll_area.setWidget(scroll_widget)
+        scroll_area.setWidget(outer_widget)
         scroll_area.setWidgetResizable(True)
         scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
@@ -709,7 +1027,7 @@ class MultiAdductWindow(QWidget):
 
         # Status bar
         if valid_adducts_count > 0:
-            status_text = f"Showing {valid_adducts_count} adducts in {row + 1} rows (sorted by descending abundance in RT window)"
+            status_text = f"Showing {valid_adducts_count} adducts (sorted by descending abundance) and {sample_count} samples"
         else:
             status_text = "No adducts available"
 

@@ -35,7 +35,10 @@ from PyQt6.QtWidgets import (
     QWidgetAction,
     QSizePolicy,
     QDoubleSpinBox,
+    QSpinBox,
     QLineEdit,
+    QCheckBox,
+    QProgressBar,
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QPointF, QMargins
 from PyQt6.QtCharts import QChart, QChartView, QLineSeries, QValueAxis
@@ -45,10 +48,274 @@ from .utils import calculate_cosine_similarity, calculate_similarity_statistics
 from .FormulaTools import FragmentAnnotator
 
 
+class FragmentEICWorker(QThread):
+    """Background worker that extracts per-fragment EIC traces.
+
+    Searches ALL MS2 spectra in the file that share the same precursor m/z
+    and polarity, so the resulting traces span the full chromatographic run
+    rather than just the small RT window shown in MSMSViewerWindow.
+
+    Priority order for data source:
+      1. file_manager in-memory cache (fast, no I/O).
+      2. Direct pymzml file read (only when cache not available).
+      3. Fallback: the pre-built *all_similar_spectra* list.
+    """
+
+    finished = pyqtSignal(dict)
+    error = pyqtSignal(str)
+
+    def __init__(
+        self,
+        fragment_mz_list,
+        all_similar_spectra=None,
+        mz_tolerance_ppm=10.0,
+        file_manager=None,
+        filepath=None,
+        precursor_mz=None,
+        polarity=None,
+        precursor_tolerance=0.01,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self.fragment_mz_list = np.asarray(fragment_mz_list, dtype=float)
+        self.all_similar_spectra = list(all_similar_spectra) if all_similar_spectra else []
+        self.mz_tolerance_ppm = float(mz_tolerance_ppm)
+        self.file_manager = file_manager
+        self.filepath = filepath
+        self.precursor_mz = precursor_mz
+        self.polarity = polarity
+        self.precursor_tolerance = float(precursor_tolerance)
+
+    def _gather_spectra(self):
+        """Return a list of {rt, mz, intensity} dicts for all matching MS2 scans."""
+        spectra = []
+
+        # --- 1. Try in-memory cache first (thread-safe read) ---
+        if self.file_manager is not None and self.filepath and self.file_manager.keep_in_memory:
+            cached = self.file_manager.cached_data.get(self.filepath)
+            if isinstance(cached, dict) and "ms2" in cached:
+                for spec in cached["ms2"]:
+                    pmz = spec.get("precursor_mz")
+                    if pmz is None:
+                        continue
+                    if self.precursor_mz is not None and abs(pmz - self.precursor_mz) > self.precursor_tolerance:
+                        continue
+                    spec_pol = spec.get("polarity")
+                    if self.polarity and spec_pol and spec_pol != self.polarity:
+                        continue
+                    spectra.append(
+                        {
+                            "rt": float(spec["scan_time"]),
+                            "mz": spec["mz"],
+                            "intensity": spec["intensity"],
+                        }
+                    )
+                return spectra
+
+        # --- 2. Read directly from file in background thread ---
+        if self.filepath and os.path.isfile(self.filepath):
+            try:
+                import pymzml  # local import – only needed here
+
+                reader = pymzml.run.Reader(self.filepath)
+                for spectrum in reader:
+                    if spectrum.ms_level != 2:
+                        continue
+                    try:
+                        pmz = spectrum.selected_precursors[0]["mz"] if spectrum.selected_precursors else None
+                        if pmz is None:
+                            continue
+                        if self.precursor_mz is not None and abs(pmz - self.precursor_mz) > self.precursor_tolerance:
+                            continue
+                        if self.file_manager is not None:
+                            spec_pol = self.file_manager._get_spectrum_polarity(spectrum)
+                        else:
+                            spec_pol = None
+                        if self.polarity and spec_pol and spec_pol != self.polarity:
+                            continue
+                        spectra.append(
+                            {
+                                "rt": spectrum.scan_time_in_minutes(),
+                                "mz": spectrum.mz,
+                                "intensity": spectrum.i,
+                            }
+                        )
+                    except Exception:
+                        continue
+                return spectra
+            except Exception as exc:
+                print(f"FragmentEICWorker: file read failed ({exc}), using fallback")
+
+        # --- 3. Fallback: the pre-built list (may only cover the RT window) ---
+        return self.all_similar_spectra
+
+    def run(self):
+        try:
+            spectra = self._gather_spectra()
+            if not spectra:
+                self.finished.emit({})
+                return
+
+            result = {}
+            for frag_mz in self.fragment_mz_list:
+                rt_list = []
+                int_list = []
+                for spec in spectra:
+                    spec_rt = float(spec.get("rt", spec.get("scan_time", 0.0)))
+                    spec_mz = np.asarray(spec["mz"], dtype=float)
+                    spec_int = np.asarray(spec["intensity"], dtype=float)
+                    tol_da = frag_mz * self.mz_tolerance_ppm / 1e6
+                    mask = np.abs(spec_mz - frag_mz) <= tol_da
+                    intensity = float(np.max(spec_int[mask])) if np.any(mask) else 0.0
+                    rt_list.append(spec_rt)
+                    int_list.append(intensity)
+
+                if rt_list:
+                    order = np.argsort(rt_list)
+                    result[float(frag_mz)] = (
+                        np.array(rt_list)[order],
+                        np.array(int_list)[order],
+                    )
+
+            self.finished.emit(result)
+        except Exception as exc:
+            self.error.emit(str(exc))
+
+
+# ---------------------------------------------------------------------------
+class InteractiveEICChartView(QChartView):
+    """QChartView with left-drag pan, right-drag zoom, wheel zoom and
+    double-click-to-reset — suitable for the fragment EIC panel."""
+
+    def __init__(self, chart, parent=None):
+        super().__init__(chart, parent)
+        self.setRenderHint(QPainter.RenderHint.Antialiasing)
+        self.setRubberBand(QChartView.RubberBand.NoRubberBand)
+        self.setMouseTracking(True)
+
+        self._panning = False
+        self._zooming = False
+        self._pan_start = QPointF()
+        self._zoom_start = QPointF()
+        self._start_x_range = None
+        self._start_y_range = None
+        self._zoom_anchor_x = 0.0
+        self._zoom_anchor_y = 0.0
+        self._full_x_range = None  # set by _draw_fragment_eic_plot for reset
+        self._full_y_range = None
+
+    def set_full_range(self, x_min, x_max, y_min, y_max):
+        """Store the default range so double-click can restore it."""
+        self._full_x_range = (x_min, x_max)
+        self._full_y_range = (y_min, y_max)
+
+    def _x_axis(self):
+        axes = self.chart().axes(Qt.Orientation.Horizontal)
+        return axes[0] if axes else None
+
+    def _y_axis(self):
+        axes = self.chart().axes(Qt.Orientation.Vertical)
+        return axes[0] if axes else None
+
+    def mousePressEvent(self, event):
+        xa, ya = self._x_axis(), self._y_axis()
+        if xa is None or ya is None:
+            super().mousePressEvent(event)
+            return
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._panning = True
+            self._pan_start = event.position()
+            self._start_x_range = (xa.min(), xa.max())
+            self._start_y_range = (ya.min(), ya.max())
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+        elif event.button() == Qt.MouseButton.RightButton:
+            self._zooming = True
+            self._zoom_start = event.position()
+            self._start_x_range = (xa.min(), xa.max())
+            self._start_y_range = (ya.min(), ya.max())
+            pa = self.chart().plotArea()
+            rx = max(0.0, min(1.0, (event.position().x() - pa.left()) / pa.width()))
+            ry = max(0.0, min(1.0, (event.position().y() - pa.top()) / pa.height()))
+            self._zoom_anchor_x = self._start_x_range[0] + rx * (self._start_x_range[1] - self._start_x_range[0])
+            self._zoom_anchor_y = self._start_y_range[0] + (1.0 - ry) * (self._start_y_range[1] - self._start_y_range[0])
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        xa, ya = self._x_axis(), self._y_axis()
+        if xa is None or ya is None:
+            return
+        if self._panning and self._start_x_range:
+            pa = self.chart().plotArea()
+            dx = event.position().x() - self._pan_start.x()
+            dy = event.position().y() - self._pan_start.y()
+            ox = -dx * (self._start_x_range[1] - self._start_x_range[0]) / pa.width()
+            oy = dy * (self._start_y_range[1] - self._start_y_range[0]) / pa.height()
+            xa.setRange(self._start_x_range[0] + ox, self._start_x_range[1] + ox)
+            ya.setRange(self._start_y_range[0] + oy, self._start_y_range[1] + oy)
+        elif self._zooming and self._start_x_range:
+            dx = event.position().x() - self._zoom_start.x()
+            dy = event.position().y() - self._zoom_start.y()
+            s = 0.005
+            xf = max(0.1, min(10.0, 1.0 - dx * s))
+            yf = max(0.1, min(10.0, 1.0 + dy * s))
+            al = self._zoom_anchor_x - self._start_x_range[0]
+            ar = self._start_x_range[1] - self._zoom_anchor_x
+            ab = self._zoom_anchor_y - self._start_y_range[0]
+            at = self._start_y_range[1] - self._zoom_anchor_y
+            xa.setRange(self._zoom_anchor_x - al * xf, self._zoom_anchor_x + ar * xf)
+            ya.setRange(self._zoom_anchor_y - ab * yf, self._zoom_anchor_y + at * yf)
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._panning = False
+            self.setCursor(Qt.CursorShape.ArrowCursor)
+        elif event.button() == Qt.MouseButton.RightButton:
+            self._zooming = False
+        super().mouseReleaseEvent(event)
+
+    def mouseDoubleClickEvent(self, event):
+        """Reset to the full data range stored by set_full_range()."""
+        if event.button() == Qt.MouseButton.LeftButton and self._full_x_range and self._full_y_range:
+            xa, ya = self._x_axis(), self._y_axis()
+            if xa and ya:
+                xa.setRange(*self._full_x_range)
+                ya.setRange(*self._full_y_range)
+        super().mouseDoubleClickEvent(event)
+
+    def wheelEvent(self, event):
+        xa, ya = self._x_axis(), self._y_axis()
+        if xa is None or ya is None:
+            return
+        zf = 1.15 if event.angleDelta().y() > 0 else 1.0 / 1.15
+        pa = self.chart().plotArea()
+        rx = (event.position().x() - pa.left()) / pa.width()
+        ry = (event.position().y() - pa.top()) / pa.height()
+        xr, yr = xa.max() - xa.min(), ya.max() - ya.min()
+        cx = xa.min() + rx * xr
+        cy = ya.min() + (1.0 - ry) * yr
+        nxr, nyr = xr / zf, yr / zf
+        xa.setRange(cx - rx * nxr, cx + (1.0 - rx) * nxr)
+        ya.setRange(cy - (1.0 - ry) * nyr, cy + ry * nyr)
+
+
 class MSMSPopupWindow(QWidget):
     """Popup window for displaying a single MSMS spectrum in a larger view"""
 
-    def __init__(self, spectrum_data, filename, group, parent=None, compound_formula=None, adduct=None, adduct_info=None, compound_smiles=None):
+    def __init__(
+        self,
+        spectrum_data,
+        filename,
+        group,
+        parent=None,
+        compound_formula=None,
+        adduct=None,
+        adduct_info=None,
+        compound_smiles=None,
+        filepath=None,
+        file_manager=None,
+        all_similar_spectra=None,
+    ):
         super().__init__(parent)
         self.spectrum_data = spectrum_data
         self.filename = filename
@@ -57,11 +324,20 @@ class MSMSPopupWindow(QWidget):
         self.adduct = adduct
         self.adduct_info = adduct_info  # dict/Series with ElementsAdded, ElementsLost, Charge, …
         self.compound_smiles = compound_smiles
+        self.filepath = filepath
+        self.file_manager = file_manager
+        self.all_similar_spectra = list(all_similar_spectra) if all_similar_spectra else []
         self.selected_mz = None  # Track selected m/z for highlighting
+
+        # Fragment EIC state
+        self._eic_data = {}  # {frag_mz: (rt_arr, int_arr)}
+        self._eic_series = {}  # {frag_mz: QLineSeries}
+        self._eic_frag_colors = {}  # {frag_mz: QColor}
+        self._eic_worker = None
 
         self.setWindowTitle(f"MSMS Spectrum - {filename}")
         self.setWindowFlags(Qt.WindowType.Window)  # Make it a separate window
-        self.resize(1200, 800)
+        self.resize(1400, 800)
 
         self.setup_ui()
 
@@ -112,24 +388,32 @@ class MSMSPopupWindow(QWidget):
         header_widget.setMaximumHeight(140)
         layout.addWidget(header_widget)
 
-        # Create splitter for table and chart (horizontal layout)
+        # Main horizontal splitter: table | MSMS chart | fragment EIC panel
         splitter = QSplitter(Qt.Orientation.Horizontal)
 
         # Create table for m/z and intensity values (left side)
         self.create_data_table()
         splitter.addWidget(self.table_widget)
 
-        # Create large MSMS chart with interactive capabilities (right side)
+        # Create large MSMS chart with interactive capabilities (centre)
         chart = self.create_large_msms_chart()
         self.chart_view = InteractiveMSMSChartView(chart)
         self.chart_view.spectrum_data = self.spectrum_data  # Enable hover tooltip
-        self.chart_view.setMinimumSize(600, 400)
+        self.chart_view.setMinimumSize(400, 300)
         splitter.addWidget(self.chart_view)
 
-        # Set splitter proportions (30% table, 70% chart)
-        splitter.setSizes([300, 700])
+        # Fragment EIC panel (right, ~20 % of window width)
+        self._eic_panel = self._build_eic_panel()
+        splitter.addWidget(self._eic_panel)
+
+        # Proportions: table 25 %, MSMS chart 55 %, EIC panel 20 %
+        splitter.setSizes([300, 820, 280])
 
         layout.addWidget(splitter)
+
+        # Kick off EIC extraction if we have the necessary data
+        if self.all_similar_spectra:
+            self._start_fragment_eic_extraction()
 
         # Annotation controls and close button
         button_layout = QHBoxLayout()
@@ -165,6 +449,39 @@ class MSMSPopupWindow(QWidget):
         close_button.clicked.connect(self.close)
         button_layout.addWidget(close_button)
         layout.addLayout(button_layout)
+
+        # Copy-to-clipboard buttons
+        copy_layout = QHBoxLayout()
+        copy_lbl = QLabel("Copy:")
+        copy_lbl.setStyleSheet("color: #555; font-size: 10px;")
+        copy_layout.addWidget(copy_lbl)
+
+        copy_frag_tsv_btn = QPushButton("Copy Fragment table to TSV")
+        copy_frag_tsv_btn.setToolTip("Copy the fragment table (as currently displayed) as a tab-separated values table\nsuitable for pasting into Excel.")
+        copy_frag_tsv_btn.clicked.connect(self._copy_fragment_table_tsv)
+        copy_layout.addWidget(copy_frag_tsv_btn)
+
+        copy_frag_r_btn = QPushButton("Copy Fragment table to R")
+        copy_frag_r_btn.setToolTip(
+            "Copy the fragment table as an R data.frame() expression. \nNote: paste it into a file and source the file, otherwise \nthe REP with the limit of 4096 characters will fail \nto correctly parse the command."
+        )
+        copy_frag_r_btn.clicked.connect(self._copy_fragment_table_r)
+        copy_layout.addWidget(copy_frag_r_btn)
+
+        copy_eic_tsv_btn = QPushButton("Copy EIC data to TSV")
+        copy_eic_tsv_btn.setToolTip("Copy the fragment EIC data (as currently shown in the right panel)\nas a long-format tab-separated table suitable for pasting into Excel.")
+        copy_eic_tsv_btn.clicked.connect(self._copy_eic_tsv)
+        copy_layout.addWidget(copy_eic_tsv_btn)
+
+        copy_eic_r_btn = QPushButton("Copy EIC data to R")
+        copy_eic_r_btn.setToolTip(
+            "Copy the fragment EIC data as an R data.frame() expression. \nNote: paste it into a file and source the file, otherwise \nthe REP with the limit of 4096 characters will fail \nto correctly parse the command."
+        )
+        copy_eic_r_btn.clicked.connect(self._copy_eic_r)
+        copy_layout.addWidget(copy_eic_r_btn)
+
+        copy_layout.addStretch()
+        layout.addLayout(copy_layout)
 
     def _render_structure(self):
         """Render self.compound_smiles into self._structure_label using RDKit.
@@ -396,6 +713,9 @@ class MSMSPopupWindow(QWidget):
             self.selected_mz = None
             self.update_chart_highlighting()
 
+        # Also update EIC highlighting
+        self._update_eic_highlight()
+
     def update_chart_highlighting(self):
         """Update the chart to highlight the selected m/z peak"""
         chart = self.chart_view.chart()
@@ -464,6 +784,468 @@ class MSMSPopupWindow(QWidget):
             if highlight_series.count() > 0:
                 highlight_series.attachAxis(x_axis)
                 highlight_series.attachAxis(y_axis)
+
+    # ------------------------------------------------------------------
+    # Fragment EIC panel
+    # ------------------------------------------------------------------
+
+    def _build_eic_panel(self):
+        """Create the right-hand fragment EIC panel widget."""
+        panel = QWidget()
+        panel.setMinimumWidth(120)
+        vbox = QVBoxLayout(panel)
+        vbox.setContentsMargins(4, 4, 4, 4)
+        vbox.setSpacing(4)
+
+        # ---- Controls row 1: normalize + interpolate zeros ----
+        ctrl_row1 = QHBoxLayout()
+        self._eic_normalize_cb = QCheckBox("Normalize")
+        self._eic_normalize_cb.setChecked(True)
+        self._eic_normalize_cb.setToolTip("When checked each fragment EIC is normalized to its most\nabundant signal within the shown RT window.")
+        self._eic_normalize_cb.stateChanged.connect(self._draw_fragment_eic_plot)
+        ctrl_row1.addWidget(self._eic_normalize_cb)
+
+        self._eic_interp_zeros_cb = QCheckBox("Interp. zeros")
+        self._eic_interp_zeros_cb.setChecked(False)
+        self._eic_interp_zeros_cb.setToolTip(
+            "When checked, zero-intensity points that lie between two non-zero\n"
+            "points are replaced by linearly interpolated values.\n"
+            "Leading/trailing zeros (before the first or after the last detection)\n"
+            "are kept as-is."
+        )
+        self._eic_interp_zeros_cb.stateChanged.connect(self._draw_fragment_eic_plot)
+        ctrl_row1.addWidget(self._eic_interp_zeros_cb)
+        ctrl_row1.addStretch()
+        vbox.addLayout(ctrl_row1)
+
+        # ---- Controls row 2: RT window + top-N ----
+        ctrl_row2 = QHBoxLayout()
+        rt_lbl = QLabel("RT ±")
+        self._eic_rt_window_sb = QDoubleSpinBox()
+        self._eic_rt_window_sb.setRange(0.05, 30.0)
+        self._eic_rt_window_sb.setValue(1.0)
+        self._eic_rt_window_sb.setSingleStep(0.25)
+        self._eic_rt_window_sb.setDecimals(2)
+        self._eic_rt_window_sb.setSuffix(" min")
+        self._eic_rt_window_sb.setFixedWidth(90)
+        self._eic_rt_window_sb.setToolTip("Half-width of the retention time window centred on this\nspectrum's RT that is shown in the fragment EIC plot.")
+        self._eic_rt_window_sb.valueChanged.connect(self._draw_fragment_eic_plot)
+        ctrl_row2.addWidget(rt_lbl)
+        ctrl_row2.addWidget(self._eic_rt_window_sb)
+
+        topn_lbl = QLabel("Top N:")
+        self._eic_top_n_sb = QSpinBox()
+        self._eic_top_n_sb.setRange(0, 999)
+        self._eic_top_n_sb.setValue(0)
+        self._eic_top_n_sb.setSpecialValueText("all")
+        self._eic_top_n_sb.setFixedWidth(60)
+        self._eic_top_n_sb.setToolTip("Show only the N most-abundant fragment EICs\n(ranked by peak intensity in the un-normalized EIC).\nSet to 0 to show all fragments.")
+        self._eic_top_n_sb.valueChanged.connect(self._draw_fragment_eic_plot)
+        ctrl_row2.addWidget(topn_lbl)
+        ctrl_row2.addWidget(self._eic_top_n_sb)
+
+        ppm_lbl = QLabel("Bin ±")
+        self._eic_ppm_sb = QDoubleSpinBox()
+        self._eic_ppm_sb.setRange(0.1, 500.0)
+        self._eic_ppm_sb.setValue(10.0)
+        self._eic_ppm_sb.setSingleStep(1.0)
+        self._eic_ppm_sb.setDecimals(1)
+        self._eic_ppm_sb.setSuffix(" ppm")
+        self._eic_ppm_sb.setFixedWidth(90)
+        self._eic_ppm_sb.setToolTip("m/z tolerance used when searching for a fragment signal\nin each MS² scan.  Changing this re-triggers the extraction.")
+        self._eic_ppm_sb.valueChanged.connect(self._start_fragment_eic_extraction)
+        ctrl_row2.addWidget(ppm_lbl)
+        ctrl_row2.addWidget(self._eic_ppm_sb)
+        ctrl_row2.addStretch()
+        vbox.addLayout(ctrl_row2)
+
+        # ---- Progress / status label ----
+        self._eic_status_label = QLabel("Extracting fragment EICs…")
+        self._eic_status_label.setStyleSheet("color: #666; font-size: 10px;")
+        vbox.addWidget(self._eic_status_label)
+
+        # ---- Qt Chart ----
+        self._eic_chart = QChart()
+        self._eic_chart.setMargins(QMargins(0, 0, 0, 0))
+        self._eic_chart.layout().setContentsMargins(0, 0, 0, 0)
+        self._eic_chart.legend().setVisible(False)
+        self._eic_chart.setTitle("")
+
+        self._eic_x_axis = QValueAxis()
+        self._eic_x_axis.setTitleText("RT (min)")
+        self._eic_x_axis.setLabelFormat("%.2f")
+        self._eic_x_axis.setTickCount(5)
+        self._eic_chart.addAxis(self._eic_x_axis, Qt.AlignmentFlag.AlignBottom)
+
+        self._eic_y_axis = QValueAxis()
+        self._eic_y_axis.setTitleText("Intensity")
+        self._eic_y_axis.setLabelFormat("%.2e")
+        self._eic_y_axis.setTickCount(5)
+        self._eic_y_axis.setRange(0, 100)
+        self._eic_chart.addAxis(self._eic_y_axis, Qt.AlignmentFlag.AlignLeft)
+
+        self._eic_chart_view = InteractiveEICChartView(self._eic_chart)
+        self._eic_chart_view.setRenderHint(QPainter.RenderHint.Antialiasing)
+        self._eic_chart_view.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self._eic_chart_view.setToolTip("Left-drag: pan  |  Right-drag: zoom  |  Scroll: zoom  |  Double-click: reset view")
+        vbox.addWidget(self._eic_chart_view, stretch=1)
+
+        return panel
+
+    def _start_fragment_eic_extraction(self):
+        """Start background extraction of EIC traces for all fragments."""
+        mz_array = np.array(self.spectrum_data["mz"], dtype=float)
+        if len(mz_array) == 0:
+            self._eic_status_label.setText("No fragments to show.")
+            return
+
+        precursor_mz = float(self.spectrum_data.get("precursor_mz") or 0.0)
+        polarity = self.spectrum_data.get("polarity")
+
+        self._eic_status_label.setText(f"Extracting EICs for {len(mz_array)} fragments…")
+
+        if self._eic_worker is not None:
+            self._eic_worker.quit()
+            self._eic_worker.wait()
+
+        self._eic_worker = FragmentEICWorker(
+            mz_array,
+            all_similar_spectra=self.all_similar_spectra,
+            mz_tolerance_ppm=self._eic_ppm_sb.value(),
+            file_manager=self.file_manager,
+            filepath=self.filepath,
+            precursor_mz=precursor_mz if precursor_mz > 0 else None,
+            polarity=polarity,
+            precursor_tolerance=0.01,
+            parent=self,
+        )
+        self._eic_worker.finished.connect(self._on_fragment_eic_ready)
+        self._eic_worker.error.connect(lambda msg: self._eic_status_label.setText(f"Error: {msg}"))
+        self._eic_worker.start()
+
+    def _on_fragment_eic_ready(self, result):
+        """Receive extracted EIC data and render the plot."""
+        self._eic_data = result
+        n_frags = len(result)
+        # Count unique RT points (proxy for number of spectra scanned)
+        n_pts = len(next(iter(result.values()))[0]) if result else 0
+        if n_frags:
+            self._eic_status_label.setText(f"{n_frags} fragment EICs | {n_pts} spectra")
+        else:
+            self._eic_status_label.setText("No matching fragments found in file.")
+        self._draw_fragment_eic_plot()
+
+    # Tab-20 palette as QColor objects (matches matplotlib's default colour cycle)
+    _EIC_PALETTE = [
+        QColor(0x1F, 0x77, 0xB4),
+        QColor(0xAE, 0xC7, 0xE8),
+        QColor(0xFF, 0x7F, 0x0E),
+        QColor(0xFF, 0xBB, 0x78),
+        QColor(0x2C, 0xA0, 0x2C),
+        QColor(0x98, 0xDF, 0x8A),
+        QColor(0xD6, 0x27, 0x28),
+        QColor(0xFF, 0x98, 0x96),
+        QColor(0x94, 0x67, 0xBD),
+        QColor(0xC5, 0xB0, 0xD5),
+        QColor(0x8C, 0x56, 0x4B),
+        QColor(0xC4, 0x9C, 0x94),
+        QColor(0xE3, 0x77, 0xC2),
+        QColor(0xF7, 0xB6, 0xD2),
+        QColor(0x7F, 0x7F, 0x7F),
+        QColor(0xC7, 0xC7, 0xC7),
+        QColor(0xBC, 0xBD, 0x22),
+        QColor(0xDB, 0xDB, 0x8D),
+        QColor(0x17, 0xBE, 0xCF),
+        QColor(0x9E, 0xDA, 0xE5),
+    ]
+
+    def _get_eic_colors(self, n):
+        """Return *n* QColor objects cycling through the tab-20 palette."""
+        palette = self._EIC_PALETTE
+        return [palette[i % len(palette)] for i in range(n)]
+
+    @staticmethod
+    def _interpolate_zeros(rt_arr, int_arr):
+        """Linearly interpolate zero-intensity gaps that lie between two non-zero
+        detections.  Leading and trailing zeros (no detection on that side) are
+        left untouched.
+        """
+        arr = int_arr.astype(float).copy()
+        nonzero_idx = np.where(arr > 0)[0]
+        if len(nonzero_idx) < 2:
+            return arr
+        first_nz, last_nz = nonzero_idx[0], nonzero_idx[-1]
+        inner = np.where((arr == 0.0) & (np.arange(len(arr)) > first_nz) & (np.arange(len(arr)) < last_nz))[0]
+        if len(inner):
+            arr[inner] = np.interp(rt_arr[inner], rt_arr[nonzero_idx], arr[nonzero_idx])
+        return arr
+
+    def _draw_fragment_eic_plot(self):
+        """Rebuild the Qt EIC chart from the current _eic_data."""
+        if not self._eic_data:
+            return
+
+        normalize = self._eic_normalize_cb.isChecked()
+        interp_zeros = self._eic_interp_zeros_cb.isChecked()
+        rt_center = float(self.spectrum_data.get("rt", 0.0))
+        rt_half = self._eic_rt_window_sb.value()
+        rt_min = rt_center - rt_half
+        rt_max = rt_center + rt_half
+        top_n = self._eic_top_n_sb.value()  # 0 means "show all"
+
+        # Remove all old series (axes remain attached to the chart)
+        self._eic_chart.removeAllSeries()
+        self._eic_series = {}
+        self._eic_frag_colors = {}
+
+        sorted_mz = sorted(self._eic_data.keys())
+
+        # --- top-N filtering (by peak intensity in the un-normalized full EIC) ---
+        if top_n > 0 and len(sorted_mz) > top_n:
+            peak_intensities = {mz: float(np.max(self._eic_data[mz][1])) if len(self._eic_data[mz][1]) else 0.0 for mz in sorted_mz}
+            sorted_mz = sorted(sorted_mz, key=lambda m: peak_intensities[m], reverse=True)[:top_n]
+            sorted_mz = sorted(sorted_mz)  # restore m/z order for colour consistency
+
+        colors = self._get_eic_colors(len(sorted_mz))
+
+        y_max_global = 0.0
+        series_info = []  # (frag_mz, series, base_color, is_selected)
+
+        for base_color, frag_mz in zip(colors, sorted_mz):
+            rt_arr, int_arr = self._eic_data[frag_mz]
+
+            # Restrict to the visible RT window
+            mask = (rt_arr >= rt_min) & (rt_arr <= rt_max)
+            rt_win = rt_arr[mask]
+            int_win = int_arr[mask]
+
+            if len(rt_win) == 0:
+                continue
+
+            # Optional zero-interpolation
+            if interp_zeros:
+                int_win = self._interpolate_zeros(rt_win, int_win)
+
+            if normalize:
+                peak = float(np.max(int_win)) if np.max(int_win) > 0 else 1.0
+                int_win = int_win / peak * 100.0
+
+            y_max_global = max(y_max_global, float(np.max(int_win)))
+
+            is_selected = self.selected_mz is not None and abs(frag_mz - self.selected_mz) < 0.02
+
+            series = QLineSeries()
+            series.setName(f"{frag_mz:.4f}")
+
+            for rt_val, int_val in zip(rt_win, int_win):
+                series.append(float(rt_val), float(int_val))
+
+            series_info.append((frag_mz, series, QColor(base_color), is_selected))
+
+        # Add non-selected series first so the selected one renders on top
+        y_top = y_max_global * 1.1 if y_max_global > 0 else 100.0
+
+        for frag_mz, series, base_color, is_selected in series_info:
+            if is_selected:
+                continue
+            draw_color = QColor(base_color)
+            draw_color.setAlpha(100)
+            pen = QPen(draw_color)
+            pen.setWidth(1)
+            series.setPen(pen)
+            self._eic_chart.addSeries(series)
+            series.attachAxis(self._eic_x_axis)
+            series.attachAxis(self._eic_y_axis)
+            self._eic_series[frag_mz] = series
+            self._eic_frag_colors[frag_mz] = base_color
+
+        # Now add the selected series last (on top)
+        for frag_mz, series, base_color, is_selected in series_info:
+            if not is_selected:
+                continue
+            draw_color = QColor(base_color)
+            draw_color.setAlpha(255)
+            pen = QPen(draw_color)
+            pen.setWidth(3)
+            series.setPen(pen)
+            self._eic_chart.addSeries(series)
+            series.attachAxis(self._eic_x_axis)
+            series.attachAxis(self._eic_y_axis)
+            self._eic_series[frag_mz] = series
+            self._eic_frag_colors[frag_mz] = base_color
+
+        # Vertical marker at the current spectrum's RT
+        rt_marker = QLineSeries()
+        marker_pen = QPen(QColor(0, 0, 0, 140))
+        marker_pen.setWidth(1)
+        marker_pen.setStyle(Qt.PenStyle.DashLine)
+        rt_marker.setPen(marker_pen)
+        rt_marker.append(rt_center, 0.0)
+        rt_marker.append(rt_center, y_top)
+        self._eic_chart.addSeries(rt_marker)
+        rt_marker.attachAxis(self._eic_x_axis)
+        rt_marker.attachAxis(self._eic_y_axis)
+
+        # Update axis ranges
+        self._eic_x_axis.setRange(rt_min, rt_max)
+        self._eic_y_axis.setRange(0, y_top)
+        self._eic_y_axis.setTitleText("Rel. Intensity (%)" if normalize else "Intensity")
+        lbl_fmt = "%.0f" if normalize else "%.2e"
+        self._eic_y_axis.setLabelFormat(lbl_fmt)
+
+        # Store full range so the interactive view can reset on double-click
+        self._eic_chart_view.set_full_range(rt_min, rt_max, 0, y_top)
+
+        # Legend only when there are few enough fragments to be legible
+        self._eic_chart.legend().setVisible(0 < len(self._eic_series) <= 10)
+
+    def _update_eic_highlight(self):
+        """Redraw the EIC chart with the current selection highlighted on top."""
+        self._draw_fragment_eic_plot()
+
+    # ------------------------------------------------------------------
+    # Helpers shared by copy methods
+    # ------------------------------------------------------------------
+
+    def _fragment_table_rows(self):
+        """Return (headers, rows) for the fragment table in current display order.
+
+        *headers* is a list of column-header strings.
+        *rows* is a list of lists of display strings, one inner list per row.
+        """
+        tw = self.table_widget
+        col_count = tw.columnCount()
+        headers = [tw.horizontalHeaderItem(c).text() for c in range(col_count)]
+        vh = tw.verticalHeader()
+        rows = []
+        for visual_row in range(tw.rowCount()):
+            logical_row = vh.logicalIndex(visual_row)
+            row_data = []
+            for col in range(col_count):
+                item = tw.item(logical_row, col)
+                row_data.append(item.text() if item else "")
+            rows.append(row_data)
+        return headers, rows
+
+    def _compute_visible_eic_rows(self):
+        """Return a list of (frag_mz, rt, intensity) tuples reflecting exactly
+        what is currently displayed in the EIC panel:
+        RT-window filter, top-N filter, zero-interpolation and normalisation
+        are all applied.
+        """
+        if not self._eic_data:
+            return []
+
+        normalize = self._eic_normalize_cb.isChecked()
+        interp_zeros = self._eic_interp_zeros_cb.isChecked()
+        rt_center = float(self.spectrum_data.get("rt", 0.0))
+        rt_half = self._eic_rt_window_sb.value()
+        rt_min = rt_center - rt_half
+        rt_max = rt_center + rt_half
+        top_n = self._eic_top_n_sb.value()
+
+        sorted_mz = sorted(self._eic_data.keys())
+        if top_n > 0 and len(sorted_mz) > top_n:
+            peak_intensities = {mz: float(np.max(self._eic_data[mz][1])) if len(self._eic_data[mz][1]) else 0.0 for mz in sorted_mz}
+            sorted_mz = sorted(sorted(sorted_mz, key=lambda m: peak_intensities[m], reverse=True)[:top_n])
+
+        rows = []
+        for frag_mz in sorted_mz:
+            rt_arr, int_arr = self._eic_data[frag_mz]
+            mask = (rt_arr >= rt_min) & (rt_arr <= rt_max)
+            rt_win = rt_arr[mask]
+            int_win = int_arr[mask]
+            if len(rt_win) == 0:
+                continue
+            if interp_zeros:
+                int_win = self._interpolate_zeros(rt_win, int_win)
+            if normalize:
+                peak = float(np.max(int_win)) if np.max(int_win) > 0 else 1.0
+                int_win = int_win / peak * 100.0
+            for rt_val, int_val in zip(rt_win, int_win):
+                rows.append((float(frag_mz), float(rt_val), float(int_val)))
+        return rows
+
+    # ------------------------------------------------------------------
+    # Copy-to-clipboard methods
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _r_escape(s):
+        """Escape a Python string for use inside an R double-quoted string."""
+        return s.replace("\\", "\\\\").replace('"', '\\"')
+
+    def _copy_fragment_table_tsv(self):
+        """Copy the fragment table (as displayed) to clipboard as TSV."""
+        headers, rows = self._fragment_table_rows()
+        lines = ["\t".join(headers)]
+        for row in rows:
+            lines.append("\t".join(row))
+        QApplication.clipboard().setText("\n".join(lines))
+
+    def _copy_fragment_table_r(self):
+        """Copy the fragment table (as displayed) to clipboard as an R data.frame."""
+        headers, rows = self._fragment_table_rows()
+        if not rows:
+            QApplication.clipboard().setText("# No fragment data available.")
+            return
+
+        col_count = len(headers)
+
+        # Decide type per column: numeric if every non-empty value parses as float
+        def is_numeric_col(col_idx):
+            for row in rows:
+                val = row[col_idx].strip()
+                if val == "":
+                    continue
+                try:
+                    float(val)
+                except ValueError:
+                    return False
+            return True
+
+        numeric_flags = [is_numeric_col(c) for c in range(col_count)]
+
+        col_lines = []
+        for c, (hdr, is_num) in enumerate(zip(headers, numeric_flags)):
+            col_name = hdr.replace("/", "").replace(".", "").replace(" ", "_").replace(".", ".").replace("(", "").replace(")", "").replace("%", "pct")
+            values = [row[c] for row in rows]
+            if is_num:
+                r_vals = ", ".join(v if v.strip() else "NA" for v in values)
+            else:
+                r_vals = ", ".join(f'"{self._r_escape(v)}"' for v in values)
+            col_lines.append(f"  {col_name} = c({r_vals})")
+
+        r_code = "fragments <- data.frame(\n" + ",\n".join(col_lines) + ",\n  stringsAsFactors = FALSE\n)"
+        QApplication.clipboard().setText(r_code)
+
+    def _copy_eic_tsv(self):
+        """Copy the EIC data (as currently displayed) to clipboard as long-format TSV."""
+        rows = self._compute_visible_eic_rows()
+        normalize = self._eic_normalize_cb.isChecked()
+        intensity_header = "rel_intensity_pct" if normalize else "intensity"
+        lines = [f"mz\trt_min\t{intensity_header}"]
+        for frag_mz, rt_val, int_val in rows:
+            lines.append(f"{frag_mz:.6f}\t{rt_val:.6f}\t{int_val:.6g}")
+        if len(lines) == 1:
+            lines.append("# No EIC data available.")
+        QApplication.clipboard().setText("\n".join(lines))
+
+    def _copy_eic_r(self):
+        """Copy the EIC data (as currently displayed) to clipboard as R data.frame."""
+        rows = self._compute_visible_eic_rows()
+        if not rows:
+            QApplication.clipboard().setText("# No EIC data available.")
+            return
+        normalize = self._eic_normalize_cb.isChecked()
+        intensity_col = "rel_intensity_pct" if normalize else "intensity"
+        mz_vals = ", ".join(f"{r[0]:.6f}" for r in rows)
+        rt_vals = ", ".join(f"{r[1]:.6f}" for r in rows)
+        int_vals = ", ".join(f"{r[2]:.6g}" for r in rows)
+        r_code = f"eic <- data.frame(\n  mz = c({mz_vals}),\n  rt_min = c({rt_vals}),\n  {intensity_col} = c({int_vals}),\n  stringsAsFactors = FALSE\n)"
+        QApplication.clipboard().setText(r_code)
+
+    # ------------------------------------------------------------------
 
     def create_large_msms_chart(self):
         """Create a large MSMS spectrum chart"""
@@ -561,6 +1343,9 @@ class InteractiveMSMSChartView(QChartView):
         self.adduct = None
         self.adduct_info = None
         self.compound_smiles = None
+        self.filepath = None
+        self.file_manager = None
+        self.all_similar_spectra = None
 
         # Mouse interaction state
         self.is_panning = False
@@ -897,6 +1682,9 @@ class InteractiveMSMSChartView(QChartView):
                     adduct=self.adduct,
                     adduct_info=self.adduct_info,
                     compound_smiles=self.compound_smiles,
+                    filepath=self.filepath,
+                    file_manager=self.file_manager,
+                    all_similar_spectra=self.all_similar_spectra,
                 )
                 self._popup_windows.append(popup)
                 popup.destroyed.connect(lambda _, p=popup: self._popup_windows.remove(p) if p in self._popup_windows else None)
@@ -1029,7 +1817,8 @@ class MSMSViewerWindow(QWidget):
 
             # Add spectra horizontally for this file (sorted by intensity)
             for col, spectrum_data in enumerate(spectra):
-                chart_widget = self.create_msms_chart(spectrum_data, filename, group)
+                chart_widget = self.create_msms_chart(spectrum_data, filename, group, filepath=filepath)
+                chart_widget.all_similar_spectra = spectra  # all spectra for this file / precursor
                 grid_layout.addWidget(chart_widget, row, col)
 
             row += 1
@@ -1308,7 +2097,7 @@ class MSMSViewerWindow(QWidget):
 
         return overview_widget
 
-    def create_msms_chart(self, spectrum_data, filename, group):
+    def create_msms_chart(self, spectrum_data, filename, group, filepath=None):
         """Create a chart widget for a single MSMS spectrum"""
         # Create chart
         chart = QChart()
@@ -1390,6 +2179,9 @@ class MSMSViewerWindow(QWidget):
         chart_view.adduct = self.adduct
         chart_view.adduct_info = self.adduct_info
         chart_view.compound_smiles = self.compound_smiles
+        chart_view.filepath = filepath
+        chart_view.file_manager = self.file_manager
+        # all_similar_spectra will be set by the caller
         chart.legend().setVisible(False)
 
         return chart_view

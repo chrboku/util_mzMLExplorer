@@ -16,11 +16,12 @@ from PyQt6.QtWidgets import (
     QScrollArea,
     QGridLayout,
     QFrame,
+    QMenu,
 )
 from PyQt6.QtCore import Qt, QPointF
 from PyQt6.QtCharts import QChart, QChartView, QLineSeries, QValueAxis
 from PyQt6.QtGui import QPen, QColor, QPainter, QMouseEvent
-from .window_shared import ClickableLabel
+from .window_shared import ClickableLabel, ANNOTATION_COLOR_PRESETS
 from .utils import parse_molecular_formula
 
 
@@ -151,14 +152,15 @@ class MS1ViewerWindow(QWidget):
             file_label = ClickableLabel(file_header_text)
             file_label.setStyleSheet("""
                 QLabel { 
-                    background-color: #e8f4fd; 
+                    background-color: #e8f0fe; 
                     padding: 4px; 
                     margin: 1px;
-                    border: 1px solid #7ab3d4;
+                    border: 1px solid #dadce0;
                     border-radius: 2px;
+                    color: #202124;
                 }
                 QLabel:hover {
-                    background-color: #c5e4f5;
+                    background-color: #d2e3fc;
                 }
             """)
             file_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
@@ -568,7 +570,14 @@ class InteractiveMS1ChartView(QChartView):
         # Hover overlay state
         self.tooltip_label = None
         self._hover_mz = None
+        self._hover_intensity = 0.0
         self._hover_series = None  # Firebrick stick drawn over the hovered peak
+        self._press_pos = None
+        self._pinned_annotations: list = []  # [(mz, intensity, color), ...]
+        self._ann_labels: list = []
+        self._right_press_start = None
+        self._right_click_mz: float | None = None
+        self._right_click_intensity: float = 0.0
 
         # Top signal labels
         self.signal_labels = []  # List to store QLabel widgets for top signals
@@ -608,12 +617,15 @@ class InteractiveMS1ChartView(QChartView):
 
         # Always reposition top-signal labels (positions depend on current X and Y ranges)
         self.update_top_signal_labels()
+        if self._pinned_annotations:
+            self._redraw_annotation_labels()
 
     def mousePressEvent(self, event: QMouseEvent):
         """Handle mouse press events"""
         if event.button() == Qt.MouseButton.LeftButton:
             self.is_panning = True
             self.pan_start_pos = event.position()
+            self._press_pos = event.position()
             self.last_mouse_pos = event.position()
 
             # Store current ranges
@@ -625,6 +637,9 @@ class InteractiveMS1ChartView(QChartView):
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
 
         elif event.button() == Qt.MouseButton.RightButton:
+            self._right_press_start = event.position()
+            self._right_click_mz = self._hover_mz
+            self._right_click_intensity = self._hover_intensity
             self.is_zooming = True
             self.zoom_start_pos = event.position()
             self.last_mouse_pos = event.position()
@@ -669,9 +684,19 @@ class InteractiveMS1ChartView(QChartView):
     def mouseReleaseEvent(self, event: QMouseEvent):
         """Handle mouse release events"""
         if event.button() == Qt.MouseButton.LeftButton:
+            if self._press_pos is not None and self._hover_mz is not None:
+                dp = event.position() - self._press_pos
+                if dp.x() ** 2 + dp.y() ** 2 < 25.0:
+                    self._toggle_pin(self._hover_mz, self._hover_intensity, "#1a73e8")
+            self._press_pos = None
             self.is_panning = False
         elif event.button() == Qt.MouseButton.RightButton:
             self.is_zooming = False
+            if self._right_press_start is not None:
+                dp = event.position() - self._right_press_start
+                if dp.x() ** 2 + dp.y() ** 2 < 25.0 and self._right_click_mz is not None:
+                    self._show_annotate_context_menu(event, self._right_click_mz, self._right_click_intensity)
+            self._right_press_start = None
 
         self.setCursor(Qt.CursorShape.ArrowCursor)
         super().mouseReleaseEvent(event)
@@ -836,6 +861,7 @@ class InteractiveMS1ChartView(QChartView):
         if best_mz is not None and best_dist <= PIXEL_THRESHOLD:
             if best_mz != self._hover_mz:
                 self._hover_mz = best_mz
+                self._hover_intensity = best_intensity
 
                 # Remove old firebrick series
                 if self._hover_series is not None:
@@ -863,8 +889,9 @@ class InteractiveMS1ChartView(QChartView):
                     self.tooltip_label = QLabel(self)
                     self.tooltip_label.setStyleSheet("""
                         QLabel {
-                            background-color: white;
-                            border: 1px solid #555;
+                            background-color: rgba(60, 64, 67, 220);
+                            color: #ffffff;
+                            border: none;
                             border-radius: 3px;
                             padding: 2px 6px;
                             font-size: 11px;
@@ -917,8 +944,9 @@ class InteractiveMS1ChartView(QChartView):
             self.tooltip_label = QLabel(self)
             self.tooltip_label.setStyleSheet("""
                 QLabel {
-                    background-color: white;
-                    border: 1px solid #666;
+                    background-color: rgba(60, 64, 67, 220);
+                    color: #ffffff;
+                    border: none;
                     border-radius: 4px;
                     padding: 4px;
                 }
@@ -1001,7 +1029,7 @@ class InteractiveMS1ChartView(QChartView):
                 label.setText(f"{mz:.4f}")
                 label.setStyleSheet("""
                     QLabel {
-                        background-color: rgba(46, 134, 171, 128);
+                        background-color: rgba(26, 115, 232, 160);
                         color: white;
                         border-radius: 3px;
                         padding: 2px 4px;
@@ -1030,6 +1058,51 @@ class InteractiveMS1ChartView(QChartView):
         super().resizeEvent(event)
         # Update labels after resize
         self.update_top_signal_labels()
+        if self._pinned_annotations:
+            self._redraw_annotation_labels()
+
+    def _toggle_pin(self, mz: float, intensity: float, color: str = "#1a73e8"):
+        """Pin or unpin a permanent m/z label at the given peak."""
+        for i, (m, *_) in enumerate(self._pinned_annotations):
+            if abs(m - mz) < 1e-9:
+                self._pinned_annotations.pop(i)
+                lbl = self._ann_labels.pop(i)
+                lbl.deleteLater()
+                return
+        self._pinned_annotations.append((mz, intensity, color))
+        lbl = QLabel(f"{mz:.5f}", self)
+        lbl.setStyleSheet(f"color: {color}; background-color: rgba(255,255,255,200); border: none; border-radius: 2px; font-size: 11px; font-weight: bold; padding: 1px 4px;")
+        lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        lbl.adjustSize()
+        self._ann_labels.append(lbl)
+        lbl.show()
+        self._redraw_annotation_labels()
+
+    def _show_annotate_context_menu(self, event, mz: float, intensity: float):
+        """Show Annotate colour submenu for a peak."""
+        menu = QMenu(self)
+        ann_menu = menu.addMenu("Annotate")
+        for name, color_str in ANNOTATION_COLOR_PRESETS:
+            act = ann_menu.addAction(name)
+            act.triggered.connect(lambda _c=False, m=mz, i=intensity, c=color_str: self._toggle_pin(m, i, c))
+        menu.exec(event.globalPosition().toPoint())
+
+    def _redraw_annotation_labels(self):
+        """Reposition all pinned annotation labels to match current chart coordinates."""
+        x_axes = self.chart().axes(Qt.Orientation.Horizontal)
+        x_axis = x_axes[0] if x_axes else None
+        for lbl, (mz, intensity, _color) in zip(self._ann_labels, self._pinned_annotations):
+            tip_pos = self.chart().mapToPosition(QPointF(float(mz), float(intensity)))
+            lx = int(tip_pos.x()) - lbl.width() // 2
+            ly = int(tip_pos.y()) - lbl.height() - 6
+            lx = max(0, min(lx, self.width() - lbl.width()))
+            if ly < 0:
+                ly = int(tip_pos.y()) + 6
+            lbl.move(lx, ly)
+            if x_axis is not None and x_axis.min() <= mz <= x_axis.max():
+                lbl.show()
+            else:
+                lbl.hide()
 
 
 class InteractiveMS1SingleChartView(InteractiveMS1ChartView):
@@ -1127,6 +1200,7 @@ class InteractiveMS1SingleChartView(InteractiveMS1ChartView):
 
             if best_plot_mz != self._hover_mz:
                 self._hover_mz = best_plot_mz
+                self._hover_intensity = best_intensity
 
                 if self._hover_series is not None:
                     self.chart().removeSeries(self._hover_series)
@@ -1152,8 +1226,9 @@ class InteractiveMS1SingleChartView(InteractiveMS1ChartView):
                     self.tooltip_label = QLabel(self)
                     self.tooltip_label.setStyleSheet("""
                         QLabel {
-                            background-color: rgba(255, 255, 255, 220);
-                            border: 1px solid #555;
+                            background-color: rgba(60, 64, 67, 220);
+                            color: #ffffff;
+                            border: none;
                             border-radius: 3px;
                             padding: 2px 6px;
                             font-size: 11px;
@@ -1164,9 +1239,9 @@ class InteractiveMS1SingleChartView(InteractiveMS1ChartView):
                 # Tooltip text
                 if self.relative_mode:
                     raw_mz = float(self.raw_mz_array[best_idx])
-                    tooltip_text = f"Δm/z: {best_plot_mz:+.4f} Da  |  m/z: {raw_mz:.4f}  |  Int: {best_intensity:.4g}"
+                    tooltip_text = f"Δm/z: {best_plot_mz:+.5f} Da | m/z: {raw_mz:.f} | Int: {best_intensity:.4g}"
                 else:
-                    tooltip_text = f"m/z: {best_plot_mz:.4f}  |  Int: {best_intensity:.4g}"
+                    tooltip_text = f"m/z: {best_plot_mz:.5f} | Int: {best_intensity:.4g}"
                 self.tooltip_label.setText(tooltip_text)
                 self.tooltip_label.adjustSize()
 
@@ -1180,6 +1255,24 @@ class InteractiveMS1SingleChartView(InteractiveMS1ChartView):
             self.tooltip_label.show()
         else:
             self._hide_tooltip()
+
+    def _toggle_pin(self, mz: float, intensity: float, color: str = "#1a73e8"):
+        """Pin or unpin a label; use \u0394m/z notation in relative mode."""
+        for i, (m, *_) in enumerate(self._pinned_annotations):
+            if abs(m - mz) < 1e-9:
+                self._pinned_annotations.pop(i)
+                lbl = self._ann_labels.pop(i)
+                lbl.deleteLater()
+                return
+        self._pinned_annotations.append((mz, intensity, color))
+        label_text = f"\u0394{mz:+.5f}" if self.relative_mode else f"{mz:.5f}"
+        lbl = QLabel(label_text, self)
+        lbl.setStyleSheet(f"color: {color}; background-color: rgba(255,255,255,200); border: none; border-radius: 2px; font-size: 11px; font-weight: bold; padding: 1px 4px;")
+        lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        lbl.adjustSize()
+        self._ann_labels.append(lbl)
+        lbl.show()
+        self._redraw_annotation_labels()
 
     # ------------------------------------------------------------------
     # Top-N signal labels
@@ -1222,7 +1315,7 @@ class InteractiveMS1SingleChartView(InteractiveMS1ChartView):
             label.setText(label_text)
             label.setStyleSheet("""
                 QLabel {
-                    background-color: rgba(46, 134, 171, 128);
+                    background-color: rgba(26, 115, 232, 160);
                     color: white;
                     border-radius: 3px;
                     padding: 2px 4px;
@@ -1336,7 +1429,7 @@ class MS1SingleSpectrumWindow(QWidget):
         if filter_str:
             header_parts.append(f"Filter: {filter_str}")
         self.header_label = QLabel("  |  ".join(header_parts))
-        self.header_label.setStyleSheet("QLabel { margin: 2px; padding: 5px; font-size: 12px; background: #f0f4f8; border: 1px solid #c0ccd8; border-radius: 3px; }")
+        self.header_label.setStyleSheet("QLabel { margin: 2px; padding: 5px; font-size: 12px; background: #f1f3f4; border: 1px solid #dadce0; border-radius: 3px; }")
         self.header_label.setWordWrap(True)
         root.addWidget(self.header_label)
 

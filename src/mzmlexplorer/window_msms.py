@@ -11,9 +11,9 @@ import time
 import numpy as np
 from typing import Dict, Tuple, Optional, List
 from natsort import natsorted, natsort_keygen
-from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
-from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
-from matplotlib.figure import Figure
+from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas  # noqa: F401 (kept for compatibility)
+from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar  # noqa: F401
+from matplotlib.figure import Figure  # noqa: F401
 from PyQt6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -43,7 +43,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QPointF, QMargins
 from PyQt6.QtCharts import QChart, QChartView, QLineSeries, QValueAxis
 from PyQt6.QtGui import QPen, QColor, QPainter, QMouseEvent, QAction, QBrush
-from .window_shared import BarDelegate, NumericTableWidgetItem
+from .window_shared import CollapsibleBox, ANNOTATION_COLOR_PRESETS, BarDelegate, NumericTableWidgetItem
 from .utils import calculate_cosine_similarity, calculate_similarity_statistics
 from .FormulaTools import FragmentAnnotator
 
@@ -335,7 +335,7 @@ class MSMSPopupWindow(QWidget):
         self._eic_frag_colors = {}  # {frag_mz: QColor}
         self._eic_worker = None
 
-        self.setWindowTitle(f"MSMS Spectrum - {filename}")
+        self.setWindowTitle(f"MSMS Spectrum — {filename} | Group: {self.group}")
         self.setWindowFlags(Qt.WindowType.Window)  # Make it a separate window
         self.resize(1400, 800)
 
@@ -344,49 +344,6 @@ class MSMSPopupWindow(QWidget):
     def setup_ui(self):
         """Setup the popup window UI"""
         layout = QVBoxLayout(self)
-
-        # Header with spectrum information
-        precursor_intensity = self.spectrum_data.get("precursor_intensity", 0)
-        intensity_text = f"{precursor_intensity:.1e}" if precursor_intensity > 0 else "N/A"
-
-        scan_id = self.spectrum_data.get("scan_id", "")
-        filter_str = self.spectrum_data.get("filter_string", "")
-        header_text = f"<b>File:</b> {self.filename}<br><b>Group:</b> {self.group}<br><b>RT:</b> {self.spectrum_data['rt']:.4f} min<br><b>Precursor m/z:</b> {self.spectrum_data['precursor_mz']:.4f}<br><b>Precursor Intensity:</b> {intensity_text}"
-        if scan_id:
-            header_text += f"<br><b>Scan:</b> {scan_id}"
-        if filter_str:
-            header_text += f"<br><b>Filter:</b> {filter_str}"
-        if self.compound_formula:
-            header_text += f"<br><b>Formula:</b> {self.compound_formula}"
-
-        # Info header: text on the left, compound structure on the right
-        header_widget = QWidget()
-        header_widget.setStyleSheet("""
-            QWidget {
-                background-color: #f0f0f0;
-                border: 1px solid #ccc;
-                border-radius: 3px;
-            }
-        """)
-        header_h_layout = QHBoxLayout(header_widget)
-        header_h_layout.setContentsMargins(5, 5, 5, 5)
-        header_h_layout.setSpacing(8)
-
-        header_label = QLabel(header_text)
-        header_label.setStyleSheet("background: transparent; border: none;")
-        header_h_layout.addWidget(header_label, stretch=1)
-
-        # Structure image on the right (transparent background)
-        self._structure_label = QLabel()
-        self._structure_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._structure_label.setFixedSize(160, 120)
-        self._structure_label.setStyleSheet("background: transparent; border: none;")
-        self._render_structure()
-        if self.compound_smiles:
-            header_h_layout.addWidget(self._structure_label)
-
-        header_widget.setMaximumHeight(140)
-        layout.addWidget(header_widget)
 
         # Main horizontal splitter: table | MSMS chart | fragment EIC panel
         splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -412,7 +369,7 @@ class MSMSPopupWindow(QWidget):
         layout.addWidget(splitter)
 
         # Kick off EIC extraction if we have the necessary data
-        if self.all_similar_spectra:
+        if self.all_similar_spectra or self.filepath:
             self._start_fragment_eic_extraction()
 
         # Annotation controls and close button
@@ -453,7 +410,7 @@ class MSMSPopupWindow(QWidget):
         # Copy-to-clipboard buttons
         copy_layout = QHBoxLayout()
         copy_lbl = QLabel("Copy:")
-        copy_lbl.setStyleSheet("color: #555; font-size: 10px;")
+        copy_lbl.setStyleSheet("color: #5f6368; font-size: 10px;")
         copy_layout.addWidget(copy_lbl)
 
         copy_frag_tsv_btn = QPushButton("Copy Fragment table to TSV")
@@ -861,7 +818,7 @@ class MSMSPopupWindow(QWidget):
 
         # ---- Progress / status label ----
         self._eic_status_label = QLabel("Extracting fragment EICs…")
-        self._eic_status_label.setStyleSheet("color: #666; font-size: 10px;")
+        self._eic_status_label.setStyleSheet("color: #5f6368; font-size: 10px;")
         vbox.addWidget(self._eic_status_label)
 
         # ---- Qt Chart ----
@@ -1048,8 +1005,7 @@ class MSMSPopupWindow(QWidget):
         for frag_mz, series, base_color, is_selected in series_info:
             if is_selected:
                 continue
-            draw_color = QColor(base_color)
-            draw_color.setAlpha(100)
+            draw_color = QColor(0, 0, 0, 60)  # transparent black
             pen = QPen(draw_color)
             pen.setWidth(1)
             series.setPen(pen)
@@ -1063,8 +1019,7 @@ class MSMSPopupWindow(QWidget):
         for frag_mz, series, base_color, is_selected in series_info:
             if not is_selected:
                 continue
-            draw_color = QColor(base_color)
-            draw_color.setAlpha(255)
+            draw_color = QColor(0, 0, 0, 255)  # solid black
             pen = QPen(draw_color)
             pen.setWidth(3)
             series.setPen(pen)
@@ -1373,8 +1328,9 @@ class InteractiveMSMSChartView(QChartView):
         self.hover_label = QLabel(self)
         self.hover_label.setStyleSheet("""
             QLabel {
-                background-color: rgba(255, 255, 255, 220);
-                border: 1px solid #555;
+                background-color: rgba(60, 64, 67, 220);
+                color: #ffffff;
+                border: none;
                 border-radius: 3px;
                 padding: 2px 6px;
                 font-size: 11px;
@@ -1383,7 +1339,14 @@ class InteractiveMSMSChartView(QChartView):
         self.hover_label.hide()
         self.hover_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self._hover_mz = None
+        self._hover_norm_int = 0.0
         self._hover_series = None  # Firebrick stick drawn over the hovered peak
+        self._press_pos = None
+        self._pinned_annotations: list = []  # [(mz, norm_int, color), ...]
+        self._ann_labels: list = []
+        self._right_press_start = None
+        self._right_click_mz: float | None = None
+        self._right_click_norm_int: float = 0.0
 
     def mousePressEvent(self, event):
         """Handle mouse press events"""
@@ -1391,6 +1354,7 @@ class InteractiveMSMSChartView(QChartView):
             # Left click: start panning
             self.is_panning = True
             self.pan_start_pos = event.position()
+            self._press_pos = event.position()
             self.last_mouse_pos = event.position()
 
             # Store current ranges
@@ -1403,6 +1367,9 @@ class InteractiveMSMSChartView(QChartView):
 
         elif event.button() == Qt.MouseButton.RightButton:
             # Right click: start zooming
+            self._right_press_start = event.position()
+            self._right_click_mz = self._hover_mz
+            self._right_click_norm_int = self._hover_norm_int
             self.is_zooming = True
             self.zoom_start_pos = event.position()
             self.last_mouse_pos = event.position()
@@ -1438,6 +1405,8 @@ class InteractiveMSMSChartView(QChartView):
         if not self.is_panning and not self.is_zooming:
             self._update_hover_tooltip(event)
 
+        if self._pinned_annotations:
+            self._redraw_annotation_labels()
         super().mouseMoveEvent(event)
 
     def _update_hover_tooltip(self, event):
@@ -1492,6 +1461,7 @@ class InteractiveMSMSChartView(QChartView):
         if best_mz is not None and best_dist <= PIXEL_THRESHOLD:
             if best_mz != self._hover_mz:
                 self._hover_mz = best_mz
+                self._hover_norm_int = best_norm_int
 
                 if self._hover_series is not None:
                     self.chart().removeSeries(self._hover_series)
@@ -1535,9 +1505,19 @@ class InteractiveMSMSChartView(QChartView):
     def mouseReleaseEvent(self, event):
         """Handle mouse release events"""
         if event.button() == Qt.MouseButton.LeftButton:
+            if self._press_pos is not None and self._hover_mz is not None:
+                dp = event.position() - self._press_pos
+                if dp.x() ** 2 + dp.y() ** 2 < 25.0:
+                    self._toggle_pin(self._hover_mz, self._hover_norm_int, "#0064c8")
+            self._press_pos = None
             self.is_panning = False
         elif event.button() == Qt.MouseButton.RightButton:
             self.is_zooming = False
+            if self._right_press_start is not None:
+                dp = event.position() - self._right_press_start
+                if dp.x() ** 2 + dp.y() ** 2 < 25.0 and self._right_click_mz is not None:
+                    self._show_annotate_context_menu(event, self._right_click_mz, self._right_click_norm_int)
+            self._right_press_start = None
 
         self.setCursor(Qt.CursorShape.ArrowCursor)
         super().mouseReleaseEvent(event)
@@ -1550,6 +1530,54 @@ class InteractiveMSMSChartView(QChartView):
         self.hover_label.hide()
         self._hover_mz = None
         super().leaveEvent(event)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self._pinned_annotations:
+            self._redraw_annotation_labels()
+
+    def _toggle_pin(self, mz: float, norm_int: float, color: str = "#0064c8"):
+        """Pin or unpin a permanent m/z label at the given peak."""
+        for i, (m, *_) in enumerate(self._pinned_annotations):
+            if abs(m - mz) < 1e-9:
+                self._pinned_annotations.pop(i)
+                lbl = self._ann_labels.pop(i)
+                lbl.deleteLater()
+                return
+        self._pinned_annotations.append((mz, norm_int, color))
+        lbl = QLabel(f"{mz:.5f}", self)
+        lbl.setStyleSheet(f"color: {color}; background-color: rgba(255,255,255,200); border: none; border-radius: 2px; font-size: 11px; font-weight: bold; padding: 1px 4px;")
+        lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        lbl.adjustSize()
+        self._ann_labels.append(lbl)
+        lbl.show()
+        self._redraw_annotation_labels()
+
+    def _show_annotate_context_menu(self, event, mz: float, norm_int: float):
+        """Show Annotate colour submenu for a peak."""
+        menu = QMenu(self)
+        ann_menu = menu.addMenu("Annotate")
+        for name, color_str in ANNOTATION_COLOR_PRESETS:
+            act = ann_menu.addAction(name)
+            act.triggered.connect(lambda _c=False, m=mz, n=norm_int, c=color_str: self._toggle_pin(m, n, c))
+        menu.exec(event.globalPosition().toPoint())
+
+    def _redraw_annotation_labels(self):
+        """Reposition all pinned annotation labels to match current chart coordinates."""
+        x_axes = self.chart().axes(Qt.Orientation.Horizontal)
+        x_axis = x_axes[0] if x_axes else None
+        for lbl, (mz, norm_int, _color) in zip(self._ann_labels, self._pinned_annotations):
+            tip_pos = self.chart().mapToPosition(QPointF(mz, norm_int))
+            lx = int(tip_pos.x()) - lbl.width() // 2
+            ly = int(tip_pos.y()) - lbl.height() - 6
+            lx = max(0, min(lx, self.width() - lbl.width()))
+            if ly < 0:
+                ly = int(tip_pos.y()) + 6
+            lbl.move(lx, ly)
+            if x_axis is not None and x_axis.min() <= mz <= x_axis.max():
+                lbl.show()
+            else:
+                lbl.hide()
 
     def wheelEvent(self, event):
         """Handle mouse wheel events for zooming"""
@@ -1583,6 +1611,9 @@ class InteractiveMSMSChartView(QChartView):
         # Apply new ranges
         x_axis.setRange(new_x_min, new_x_max)
         y_axis.setRange(new_y_min, new_y_max)
+
+        if self._pinned_annotations:
+            self._redraw_annotation_labels()
 
     def _handle_panning(self, event):
         """Handle panning interaction"""
@@ -1746,7 +1777,7 @@ class MSMSViewerWindow(QWidget):
         total_spectra = sum(len(data["spectra"]) for data in self.msms_spectra.values())
         type_tag = f" | Filter: {self.filter_type}" if self.filter_type else ""
         self.setWindowTitle(
-            f"MSMS: {self.compound_name} ({self.adduct}) | m/z {self.target_mz:.4f} | RT {self.rt_center:.2f}\u00b1{self.rt_window * 60:.0f} s{type_tag} | {len(self.msms_spectra)} files | {total_spectra} spectra"
+            f"MSMS: {self.compound_name} ({self.adduct}) | m/z {self.target_mz:.5f} | RT {self.rt_center:.2f}\u00b1{self.rt_window * 60:.0f} s{type_tag} | {len(self.msms_spectra)} files | {total_spectra} spectra"
         )
         self.setGeometry(100, 100, 1800, 1000)
 
@@ -1800,14 +1831,14 @@ class MSMSViewerWindow(QWidget):
                 r, g, b, a = c.red(), c.green(), c.blue(), c.alpha()
                 bg_css = f"rgba({r},{g},{b},{a})"
             else:
-                bg_css = "#f0f0f0"
+                bg_css = "#f1f3f4"
 
             file_label.setStyleSheet(f"""
                 QLabel {{
                     background-color: {bg_css};
                     padding: 2px 4px;
                     margin: 0px;
-                    border-bottom: 1px solid #ccc;
+                    border-bottom: 1px solid #dadce0;
                 }}
             """)
             file_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
@@ -2228,15 +2259,17 @@ class MSMSViewerWindow(QWidget):
         menu = QMenu(self)
         menu.setStyleSheet("""
             QMenu {
-                background-color: white;
-                border: 1px solid #ccc;
-                padding: 5px;
+                background-color: #ffffff;
+                border: 1px solid #dadce0;
+                padding: 4px 0;
             }
             QMenu::item {
-                padding: 5px 20px;
+                padding: 5px 20px 5px 12px;
+                color: #202124;
             }
             QMenu::item:selected {
-                background-color: #e0e0e0;
+                background-color: #e8f0fe;
+                color: #1a73e8;
             }
         """)
 
@@ -2260,7 +2293,7 @@ class MSMSViewerWindow(QWidget):
             info_text += f"Intensity = {file2_spectra[0].get('precursor_intensity', 0):.2e}<br>"
 
         info_section.setText(info_text)
-        info_section.setStyleSheet("padding: 10px; background-color: #f9f9f9;")
+        info_section.setStyleSheet("padding: 10px; background-color: #f3f3f3; color: #202124;")
         info_section.setWordWrap(True)
 
         # Add the info label as a widget action
@@ -2565,7 +2598,7 @@ class EnhancedMirrorPlotWindow(QWidget):
             if scan_id is not None:
                 parts.append(f"scan: <b>{scan_id}</b>")
             if fs:
-                parts.append(f"<span style='color:#555;font-size:10px'>{fs}</span>")
+                parts.append(f"<span style='color:#5f6368;font-size:10px'>{fs}</span>")
             return " &nbsp;|&nbsp; ".join(parts)
 
         score_line = f"{self.method} score: <b>{self.similarity:.4f}</b> &nbsp;|&nbsp; tolerance: {self.mz_tolerance:.4f} Da &nbsp;|&nbsp; matched: <b>{n_matched}</b> &nbsp; only-A: <b>{n_only_a}</b> &nbsp; only-B: <b>{n_only_b}</b>"
@@ -2579,23 +2612,10 @@ class EnhancedMirrorPlotWindow(QWidget):
         splitter = QSplitter(Qt.Orientation.Horizontal)
         outer.addWidget(splitter, 1)  # stretch=1 → takes all remaining space
 
-        # ---- left: mirror plot ----
-        plot_w = QWidget()
-        plot_l = QVBoxLayout(plot_w)
-        plot_l.setContentsMargins(0, 0, 0, 0)
-        plot_l.setSpacing(0)
-        self._fig = Figure(figsize=(7, 5), tight_layout=True)
-        self._canvas = FigureCanvas(self._fig)
-        self._ax = self._fig.add_subplot(111)
-        toolbar = NavigationToolbar(self._canvas, plot_w)
-        plot_l.addWidget(toolbar)
-        plot_l.addWidget(self._canvas)
-        splitter.addWidget(plot_w)
-
-        # ---- right: fragment table ----
+        # ---- left: fragment table ----
         tbl_w = QWidget()
         tbl_l = QVBoxLayout(tbl_w)
-        tbl_l.setContentsMargins(4, 0, 0, 0)
+        tbl_l.setContentsMargins(0, 0, 4, 0)
         tbl_l.setSpacing(2)
 
         hint = QLabel(
@@ -2683,63 +2703,100 @@ class EnhancedMirrorPlotWindow(QWidget):
         self._table.cellClicked.connect(self._on_row_clicked)
         tbl_l.addWidget(self._table, 1)  # stretch=1 → fills remaining height
         splitter.addWidget(tbl_w)
-        splitter.setSizes([680, 540])
 
-        self._draw_plot()
+        # ---- right: mirror plot (Qt Chart) ----
+        self._chart = QChart()
+        self._chart.setMargins(QMargins(0, 0, 0, 0))
+        self._chart.legend().setVisible(True)
+        self._chart.legend().setAlignment(Qt.AlignmentFlag.AlignBottom)
+        self._chart_view = InteractiveEICChartView(self._chart)
+        self._chart_view.setRenderHint(QPainter.RenderHint.Antialiasing)
+        splitter.addWidget(self._chart_view)
+
+        splitter.setSizes([540, 680])
+
+        self._build_chart()
 
     # ------------------------------------------------------------------
-    def _draw_plot(self):
-        """Redraw the mirror plot, highlighting selected peaks in firebrick."""
-        ax = self._ax
-        ax.clear()
+    def _build_chart(self):
+        """Rebuild the Qt Chart mirror plot, highlighting selected peaks."""
+        chart = self._chart
+        chart.removeAllSeries()
+        for ax in list(chart.axes()):
+            chart.removeAxis(ax)
 
-        _NORMAL_COLOR = "#1565c0"
-        _HL_COLOR = "firebrick"
+        _COL_A = QColor("#1565c0")  # blue for spectrum A
+        _COL_B = QColor("#0d7a2f")  # green for spectrum B
+        _COL_HL = QColor("firebrick")
+
+        series_a_norm = QLineSeries()
+        series_a_norm.setName(f"↑ {self.title_a}")
+        series_a_norm.setPen(QPen(_COL_A, 1.5))
+
+        series_a_hl = QLineSeries()
+        series_a_hl.setName("selected")
+        series_a_hl.setPen(QPen(_COL_HL, 2.5))
+
+        series_b_norm = QLineSeries()
+        series_b_norm.setName(f"↓ {self.title_b}")
+        series_b_norm.setPen(QPen(_COL_B, 1.5))
+
+        series_b_hl = QLineSeries()
+        series_b_hl.setName("")
+        series_b_hl.setPen(QPen(_COL_HL, 2.5))
+
+        all_mz: list = []
 
         for i in range(len(self._mz_a)):
-            hl = i in self._highlight_a
-            ax.vlines(
-                float(self._mz_a[i]),
-                0.0,
-                float(self._rel_a[i]),
-                colors=_HL_COLOR if hl else _NORMAL_COLOR,
-                linewidth=2.4 if hl else 1.4,
-                alpha=0.95 if hl else 0.85,
-            )
+            mz = float(self._mz_a[i])
+            rel_i = float(self._rel_a[i])
+            all_mz.append(mz)
+            s = series_a_hl if i in self._highlight_a else series_a_norm
+            s.append(mz, 0.0)
+            s.append(mz, rel_i)
+            s.append(mz, 0.0)
 
         for i in range(len(self._mz_b)):
-            hl = i in self._highlight_b
-            ax.vlines(
-                float(self._mz_b[i]),
-                0.0,
-                -float(self._rel_b[i]),
-                colors=_HL_COLOR if hl else _NORMAL_COLOR,
-                linewidth=2.4 if hl else 1.4,
-                alpha=0.95 if hl else 0.85,
-            )
+            mz = float(self._mz_b[i])
+            rel_i = -float(self._rel_b[i])
+            all_mz.append(mz)
+            s = series_b_hl if i in self._highlight_b else series_b_norm
+            s.append(mz, 0.0)
+            s.append(mz, rel_i)
+            s.append(mz, 0.0)
 
-        ax.axhline(0.0, color="black", linewidth=0.8)
+        # Baseline at y = 0
+        baseline = QLineSeries()
+        baseline.setName("")
+        baseline.setPen(QPen(QColor("#202124"), 0.8))
+        if all_mz:
+            baseline.append(min(all_mz) - 2.0, 0.0)
+            baseline.append(max(all_mz) + 2.0, 0.0)
 
-        ticks = np.arange(-100, 101, 25)
-        ax.set_yticks(ticks)
-        ax.set_yticklabels([str(abs(int(t))) for t in ticks])
-        ax.set_ylim(-110, 110)
-        ax.set_xlabel("m/z", fontsize=11)
-        ax.set_ylabel("Relative Intensity (%)", fontsize=11)
-        ax.set_title(f"{self.method}  ·  score: {self.similarity:.4f}", fontsize=11)
-        ax.grid(True, alpha=0.2)
+        for s in [series_a_norm, series_b_norm, series_a_hl, series_b_hl, baseline]:
+            chart.addSeries(s)
 
-        from matplotlib.patches import Patch
+        x_axis = QValueAxis()
+        x_axis.setTitleText("m/z")
+        y_axis = QValueAxis()
+        y_axis.setRange(-110.0, 110.0)
+        y_axis.setTitleText("Relative intensity (%)")
+        y_axis.setLabelFormat("%.0f")
+        chart.addAxis(x_axis, Qt.AlignmentFlag.AlignBottom)
+        chart.addAxis(y_axis, Qt.AlignmentFlag.AlignLeft)
 
-        legend_handles = [
-            Patch(facecolor=_NORMAL_COLOR, label=f"↑ {self.title_a}"),
-            Patch(facecolor=_NORMAL_COLOR, label=f"↓ {self.title_b}"),
-        ]
-        if self._highlight_a or self._highlight_b:
-            legend_handles.append(Patch(facecolor=_HL_COLOR, label="selected"))
-        ax.legend(handles=legend_handles, loc="upper right", fontsize=9)
-        self._fig.tight_layout()
-        self._canvas.draw_idle()
+        for s in [series_a_norm, series_b_norm, series_a_hl, series_b_hl, baseline]:
+            s.attachAxis(x_axis)
+            s.attachAxis(y_axis)
+
+        if all_mz:
+            margin = max((max(all_mz) - min(all_mz)) * 0.05, 1.0)
+            x_axis.setRange(min(all_mz) - margin, max(all_mz) + margin)
+
+        chart.setTitle(f"{self.method}  ·  score: {self.similarity:.4f}")
+        # store full range for double-click reset
+        if all_mz:
+            self._chart_view.set_full_range(x_axis.min(), x_axis.max(), -110.0, 110.0)
 
     # ------------------------------------------------------------------
     def _on_row_clicked(self, row: int, col: int):
@@ -2763,4 +2820,4 @@ class EnhancedMirrorPlotWindow(QWidget):
         r = self._rows[int(orig_idx)]
         self._highlight_a = {r["idx_a"]} if r["idx_a"] is not None else set()
         self._highlight_b = {r["idx_b"]} if r["idx_b"] is not None else set()
-        self._draw_plot()
+        self._build_chart()

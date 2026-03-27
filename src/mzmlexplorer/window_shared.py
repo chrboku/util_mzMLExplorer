@@ -15,6 +15,18 @@ from PyQt6.QtCore import Qt, pyqtSignal, QRect
 from PyQt6.QtGui import QPainter, QColor
 
 
+# Colour presets for click-to-annotate labels (name, CSS colour string)
+ANNOTATION_COLOR_PRESETS = [
+    ("Blue", "#1a73e8"),
+    ("Red", "#b22222"),
+    ("Green", "#2ca02c"),
+    ("Orange", "#e65c00"),
+    ("Yellow", "#c6a800"),
+    ("Black", "#202124"),
+    ("Purple", "#7b1fa2"),
+]
+
+
 class ClickableLabel(QLabel):
     """QLabel that emits a *clicked* signal when left-clicked."""
 
@@ -150,21 +162,11 @@ class CollapsibleBox(QWidget):
     def __init__(self, title="", parent=None):
         super().__init__(parent)
 
-        self.toggle_button = QPushButton(title)
+        self._base_title = title
+        self.toggle_button = QPushButton("▶  " + title)
         self.toggle_button.setCheckable(True)
         self.toggle_button.setChecked(False)
-        self.toggle_button.setStyleSheet("""
-            QPushButton {
-                text-align: left;
-                padding: 5px;
-                border: 1px solid #ccc;
-                background-color: #f0f0f0;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #e0e0e0;
-            }
-        """)
+        self.toggle_button.setProperty("role", "collapsibleHeader")
         self.toggle_button.clicked.connect(self.toggle_content)
 
         self.content_area = QWidget()
@@ -182,6 +184,8 @@ class CollapsibleBox(QWidget):
         """Toggle visibility of content area"""
         is_visible = self.content_area.isVisible()
         self.content_area.setVisible(not is_visible)
+        prefix = "▼  " if not is_visible else "▶  "
+        self.toggle_button.setText(prefix + self._base_title)
 
     def add_widget(self, widget):
         """Add a widget to the content area"""

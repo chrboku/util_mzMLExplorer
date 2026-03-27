@@ -748,7 +748,7 @@ class EICWindow(QWidget):
 
         # Toggle button – always visible on the left edge
         self.panel_toggle_btn = QPushButton()
-        self.panel_toggle_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogDetailedView))
+        self.panel_toggle_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogListView))
         self.panel_toggle_btn.setToolTip("Show / Hide Properties Panel")
         self.panel_toggle_btn.setFixedWidth(32)
         self.panel_toggle_btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
@@ -1199,23 +1199,24 @@ class EICWindow(QWidget):
 
         # Create the table
         self.group_settings_table = QTableWidget()
-        self.group_settings_table.setColumnCount(4)
-        self.group_settings_table.setHorizontalHeaderLabels(["Scaling", "Plot", "Neg.", "Line Width"])
+        self.group_settings_table.setColumnCount(5)
+        self.group_settings_table.setHorizontalHeaderLabels(["Group", "Scaling", "Plot", "Neg.", "Line Width"])
 
         # Configure table appearance
         self.group_settings_table.setAlternatingRowColors(True)
         self.group_settings_table.setSortingEnabled(True)
         self.group_settings_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         self.group_settings_table.horizontalHeader().setStretchLastSection(False)
-        self.group_settings_table.verticalHeader().setVisible(True)
+        self.group_settings_table.verticalHeader().setVisible(False)
         self.group_settings_table.setMaximumHeight(800)
         self.group_settings_table.setMinimumHeight(340)
 
         # Set initial column widths
-        self.group_settings_table.setColumnWidth(0, 95)  # Scaling column
-        self.group_settings_table.setColumnWidth(1, 30)  # Plot checkbox column
-        self.group_settings_table.setColumnWidth(2, 30)  # Negative checkbox column
-        self.group_settings_table.setColumnWidth(3, 80)  # Line Width column
+        self.group_settings_table.setColumnWidth(0, 110)  # Group name column
+        self.group_settings_table.setColumnWidth(1, 95)  # Scaling column
+        self.group_settings_table.setColumnWidth(2, 30)  # Plot checkbox column
+        self.group_settings_table.setColumnWidth(3, 30)  # Negative checkbox column
+        self.group_settings_table.setColumnWidth(4, 80)  # Line Width column
 
         # Add table to collapsible box
         self.group_settings_box.add_widget(self.group_settings_table)
@@ -1266,27 +1267,27 @@ class EICWindow(QWidget):
 
         # Populate table rows
         for row, group in enumerate(sorted_groups):
-            # Set row header (group name) with group color
-            header_item = QTableWidgetItem(group)
-
-            # Get and apply the group color
+            # Column 0: Group name as a regular cell so setForeground() works
+            group_item = QTableWidgetItem(group)
+            group_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
             group_color = self._get_group_color(group)
             if group_color:
-                # group_color is already a QColor, create QBrush from it
-                header_item.setForeground(QColor(group_color))
+                group_item.setForeground(QColor(group_color))
+                _gf = group_item.font()
+                _gf.setBold(True)
+                group_item.setFont(_gf)
+            table.setItem(row, 0, group_item)
 
-            table.setVerticalHeaderItem(row, header_item)
-
-            # Column 0: Scaling factor (QDoubleSpinBox)
+            # Column 1: Scaling factor (QDoubleSpinBox)
             scaling_spin = QDoubleSpinBox()
             scaling_spin.setRange(0.00001, 100000.0)
             scaling_spin.setValue(self.group_settings[group]["scaling"])
             scaling_spin.setDecimals(5)
             scaling_spin.setSingleStep(0.1)
             scaling_spin.valueChanged.connect(lambda value, g=group: self.on_group_setting_changed(g, "scaling", value))
-            table.setCellWidget(row, 0, scaling_spin)
+            table.setCellWidget(row, 1, scaling_spin)
 
-            # Column 1: Plot checkbox
+            # Column 2: Plot checkbox
             plot_checkbox = QCheckBox()
             plot_checkbox.setChecked(self.group_settings[group]["plot"])
             plot_checkbox.stateChanged.connect(lambda state, g=group: self.on_group_setting_changed(g, "plot", state == Qt.CheckState.Checked.value))
@@ -1296,9 +1297,9 @@ class EICWindow(QWidget):
             checkbox_layout.addWidget(plot_checkbox)
             checkbox_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
             checkbox_layout.setContentsMargins(0, 0, 0, 0)
-            table.setCellWidget(row, 1, checkbox_widget)
+            table.setCellWidget(row, 2, checkbox_widget)
 
-            # Column 2: Negative intensities checkbox
+            # Column 3: Negative intensities checkbox
             negative_checkbox = QCheckBox()
             negative_checkbox.setChecked(self.group_settings[group]["negative"])
             negative_checkbox.stateChanged.connect(lambda state, g=group: self.on_group_setting_changed(g, "negative", state == Qt.CheckState.Checked.value))
@@ -1308,16 +1309,16 @@ class EICWindow(QWidget):
             neg_checkbox_layout.addWidget(negative_checkbox)
             neg_checkbox_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
             neg_checkbox_layout.setContentsMargins(0, 0, 0, 0)
-            table.setCellWidget(row, 2, neg_checkbox_widget)
+            table.setCellWidget(row, 3, neg_checkbox_widget)
 
-            # Column 3: Line width (QDoubleSpinBox)
+            # Column 4: Line width (QDoubleSpinBox)
             width_spin = QDoubleSpinBox()
             width_spin.setRange(0.5, 10.0)
             width_spin.setValue(self.group_settings[group]["line_width"])
             width_spin.setDecimals(1)
             width_spin.setSingleStep(0.5)
             width_spin.valueChanged.connect(lambda value, g=group: self.on_group_setting_changed(g, "line_width", value))
-            table.setCellWidget(row, 3, width_spin)
+            table.setCellWidget(row, 4, width_spin)
 
     def _populate_grouping_columns(self):
         """Populate the grouping column selector with available columns"""
@@ -2551,9 +2552,10 @@ class EICWindow(QWidget):
             group_item = QTableWidgetItem(stats["group"])
             group_color = self._get_group_color(stats["group"])
             if group_color:
-                gc = QColor(group_color)
-                gc.setAlphaF(0.5)
-                group_item.setBackground(gc)
+                group_item.setForeground(QColor(group_color))
+                _sf = group_item.font()
+                _sf.setBold(True)
+                group_item.setFont(_sf)
             self.summary_stats_table.setItem(row, 0, group_item)
 
             # Statistical values (formatted to scientific notation)
@@ -2878,9 +2880,10 @@ class EICWindow(QWidget):
             _grp_color = self._get_group_color(gr["group"])
             grp_cell = QTableWidgetItem(gr["group"])
             if _grp_color:
-                _gc = QColor(_grp_color)
-                _gc.setAlphaF(0.5)
-                grp_cell.setBackground(_gc)
+                grp_cell.setForeground(QColor(_grp_color))
+                _gf3 = grp_cell.font()
+                _gf3.setBold(True)
+                grp_cell.setFont(_gf3)
             self.rt_group_table.setItem(row_idx, 0, grp_cell)
 
             for col_idx, key in enumerate(grp_col_keys, start=1):
@@ -3081,9 +3084,10 @@ class EICWindow(QWidget):
             _grp_color_g = self._get_group_color(gr["group"])
             grp_cell = QTableWidgetItem(gr["group"])
             if _grp_color_g:
-                _gc = QColor(_grp_color_g)
-                _gc.setAlphaF(0.5)
-                grp_cell.setBackground(_gc)
+                grp_cell.setForeground(QColor(_grp_color_g))
+                _gf2 = grp_cell.font()
+                _gf2.setBold(True)
+                grp_cell.setFont(_gf2)
             self.mz_group_table.setItem(row_idx, 0, grp_cell)
             _ppm_range_g = self.mz_tolerance_ppm_spin.value()
             for col_idx, key in enumerate(
@@ -5721,22 +5725,22 @@ class EICWindow(QWidget):
 
             # Add MSMS viewing options (unfiltered)
             if show_msms_closest:
-                msms_closest_action = QAction("View closest MSMS spectrum", self)
+                msms_closest_action = QAction("MSMS spectrum", self)
                 msms_closest_action.triggered.connect(lambda: self.view_closest_msms_spectrum(rt_value))
                 context_menu.addAction(msms_closest_action)
 
             if show_msms_3s:
-                msms_3s_action = QAction("View MSMS (±3 seconds)", self)
+                msms_3s_action = QAction("MSMS spectrum (±3 sec)", self)
                 msms_3s_action.triggered.connect(lambda: self.view_msms_spectra(rt_value, 3.0 / 60.0))
                 context_menu.addAction(msms_3s_action)
 
             if show_msms_6s:
-                msms_6s_action = QAction("View MSMS (±6 seconds)", self)
+                msms_6s_action = QAction("MSMS spectrum (±6 sec)", self)
                 msms_6s_action.triggered.connect(lambda: self.view_msms_spectra(rt_value, 6.0 / 60.0))
                 context_menu.addAction(msms_6s_action)
 
             if show_msms_9s:
-                msms_9s_action = QAction("View MSMS (±9 seconds)", self)
+                msms_9s_action = QAction("MSMS spectrum (±9 sec)", self)
                 msms_9s_action.triggered.connect(lambda: self.view_msms_spectra(rt_value, 9.0 / 60.0))
                 context_menu.addAction(msms_9s_action)
 

@@ -51,6 +51,8 @@ import pandas as pd
 from .compound_manager import CompoundManager
 from .file_manager import FileManager
 from .windows import EICWindow, MultiAdductWindow
+from .window_shared import CollapsibleBox
+from .window_file_explorer import MzMLFileExplorerWindow
 from .compound_import_dialog import (
     CompoundImportDialog,
     validate_formula_smiles_agreement,
@@ -1300,10 +1302,28 @@ class MzMLExplorerMainWindow(QMainWindow):
 
         # Get file information for display
         file_name = "Unknown"
+        filepath = None
         if self.files_table.columnCount() > 0:
             name_item = self.files_table.item(row, 0)
             if name_item:
                 file_name = name_item.text()
+            # Find the Filepath column
+            for col in range(self.files_table.columnCount()):
+                header = self.files_table.horizontalHeaderItem(col)
+                if header and header.text() == "Filepath":
+                    fp_item = self.files_table.item(row, col)
+                    if fp_item:
+                        filepath = fp_item.text()
+                    break
+
+        # Add explore file action
+        import os
+
+        if filepath and os.path.exists(filepath):
+            explore_action = QAction(f"Explore File: {file_name}", self)
+            explore_action.triggered.connect(lambda checked, fp=filepath: self._open_file_explorer(fp))
+            menu.addAction(explore_action)
+            menu.addSeparator()
 
         # Add remove file action
         remove_action = QAction(f"Remove File: {file_name}", self)
@@ -1312,6 +1332,15 @@ class MzMLExplorerMainWindow(QMainWindow):
 
         # Show menu at cursor position
         menu.exec(self.files_table.mapToGlobal(position))
+
+    def _open_file_explorer(self, filepath: str):
+        """Open the mzML file explorer window for the given file."""
+        win = MzMLFileExplorerWindow(filepath, self.file_manager, parent=None)
+        win.show()
+        if not hasattr(self, "_file_explorer_windows"):
+            self._file_explorer_windows = []
+        self._file_explorer_windows.append(win)
+        win.destroyed.connect(lambda _, w=win: self._file_explorer_windows.remove(w) if hasattr(self, "_file_explorer_windows") and w in self._file_explorer_windows else None)
 
     def remove_file_at_row(self, row):
         """Remove a file at the specified row"""
@@ -2312,11 +2341,11 @@ class MzMLExplorerMainWindow(QMainWindow):
         self.start_compound_file_monitoring(file_path)
 
     def load_stylesheet(self):
-        """Load the CSS stylesheet"""
+        """Load the CSS stylesheet and apply it to the entire application."""
         stylesheet_path = os.path.join(os.path.dirname(__file__), "style.css")
         if os.path.exists(stylesheet_path):
             with open(stylesheet_path, "r") as f:
-                self.setStyleSheet(f.read())
+                QApplication.instance().setStyleSheet(f.read())
 
     def closeEvent(self, event):
         """Clean up when closing the application"""
@@ -3129,62 +3158,6 @@ ggplot(peak_data, aes(x = group_name, y = peak_area)) +
                 QMessageBox.critical(self, "Save Error", f"Failed to save R code:\n{str(e)}")
 
 
-class CollapsibleSection(QWidget):
-    """A collapsible section widget with a title and content area"""
-
-    def __init__(self, title, parent=None):
-        super().__init__(parent)
-        self.title = title
-        self.is_expanded = True
-        self.init_ui()
-
-    def init_ui(self):
-        """Initialize the collapsible section UI"""
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
-
-        # Header button
-        self.header_button = QPushButton(f"▼ {self.title}")
-        self.header_button.setStyleSheet("""
-            QPushButton {
-                text-align: left;
-                padding: 8px;
-                border: 1px solid #ccc;
-                background-color: #f0f0f0;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #e0e0e0;
-            }
-        """)
-        self.header_button.clicked.connect(self.toggle_expansion)
-        layout.addWidget(self.header_button)
-
-        # Content frame
-        self.content_frame = QFrame()
-        self.content_frame.setFrameStyle(QFrame.Shape.Box)
-        self.content_frame.setStyleSheet("QFrame { border: 1px solid #ccc; border-top: none; }")
-        self.content_layout = QVBoxLayout(self.content_frame)
-        layout.addWidget(self.content_frame)
-
-    def toggle_expansion(self):
-        """Toggle the expansion state of the section"""
-        self.is_expanded = not self.is_expanded
-        self.content_frame.setVisible(self.is_expanded)
-        arrow = "▼" if self.is_expanded else "▶"
-        self.header_button.setText(f"{arrow} {self.title}")
-
-    def add_content(self, widget):
-        """Add a widget to the content area"""
-        self.content_layout.addWidget(widget)
-
-    def set_expanded(self, expanded):
-        """Set the expansion state"""
-        if self.is_expanded != expanded:
-            self.toggle_expansion()
-
-
 class UnifiedOptionsDialog(QDialog):
     """Unified dialog for all application options with collapsible sections"""
 
@@ -3212,27 +3185,31 @@ class UnifiedOptionsDialog(QDialog):
         content_layout = QVBoxLayout(content_widget)
 
         # Memory Settings Section
-        memory_section = CollapsibleSection("Memory Settings")
+        memory_section = CollapsibleBox("Memory Settings")
         memory_content = self.create_memory_settings_content()
-        memory_section.add_content(memory_content)
+        memory_section.add_widget(memory_content)
+        memory_section.set_expanded(True)
         content_layout.addWidget(memory_section)
 
         # EIC Defaults Section
-        eic_section = CollapsibleSection("EIC Window Defaults")
+        eic_section = CollapsibleBox("EIC Window Defaults")
         eic_content = self.create_eic_defaults_content()
-        eic_section.add_content(eic_content)
+        eic_section.add_widget(eic_content)
+        eic_section.set_expanded(True)
         content_layout.addWidget(eic_section)
 
         # MSMS Filter String Parsing Section
-        msms_filter_section = CollapsibleSection("MSMS Filter String Parsing")
+        msms_filter_section = CollapsibleBox("MSMS Filter String Parsing")
         msms_filter_content = self.create_msms_filter_content()
-        msms_filter_section.add_content(msms_filter_content)
+        msms_filter_section.add_widget(msms_filter_content)
+        msms_filter_section.set_expanded(True)
         content_layout.addWidget(msms_filter_section)
 
         # MSMS Similarity Scoring Section
-        msms_similarity_section = CollapsibleSection("MSMS Similarity Scoring")
+        msms_similarity_section = CollapsibleBox("MSMS Similarity Scoring")
         msms_similarity_content = self.create_msms_similarity_content()
-        msms_similarity_section.add_content(msms_similarity_content)
+        msms_similarity_section.add_widget(msms_similarity_content)
+        msms_similarity_section.set_expanded(True)
         content_layout.addWidget(msms_similarity_section)
 
         content_layout.addStretch()

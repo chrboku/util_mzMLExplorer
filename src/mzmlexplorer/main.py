@@ -1317,16 +1317,14 @@ class MzMLExplorerMainWindow(QMainWindow):
                     break
 
         # Add explore file action
-        import os
-
         if filepath and os.path.exists(filepath):
-            explore_action = QAction(f"Explore File: {file_name}", self)
+            explore_action = QAction(f"Explore File", self)
             explore_action.triggered.connect(lambda checked, fp=filepath: self._open_file_explorer(fp))
             menu.addAction(explore_action)
             menu.addSeparator()
 
         # Add remove file action
-        remove_action = QAction(f"Remove File: {file_name}", self)
+        remove_action = QAction(f"Remove File", self)
         remove_action.triggered.connect(lambda checked, r=row: self.remove_file_at_row(r))
         menu.addAction(remove_action)
 

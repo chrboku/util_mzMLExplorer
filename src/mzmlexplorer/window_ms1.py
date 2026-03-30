@@ -1239,7 +1239,7 @@ class InteractiveMS1SingleChartView(InteractiveMS1ChartView):
                 # Tooltip text
                 if self.relative_mode:
                     raw_mz = float(self.raw_mz_array[best_idx])
-                    tooltip_text = f"Δm/z: {best_plot_mz:+.5f} Da | m/z: {raw_mz:.f} | Int: {best_intensity:.4g}"
+                    tooltip_text = f"Δm/z: {best_plot_mz:+.5f} Da | m/z: {raw_mz:.0f} | Int: {best_intensity:.4g}"
                 else:
                     tooltip_text = f"m/z: {best_plot_mz:.5f} | Int: {best_intensity:.4g}"
                 self.tooltip_label.setText(tooltip_text)

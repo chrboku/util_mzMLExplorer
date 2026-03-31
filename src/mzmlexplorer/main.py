@@ -2088,12 +2088,12 @@ class MzMLExplorerMainWindow(QMainWindow):
         file_menu = menubar.addMenu("File")
 
         # Load Files action
-        load_files_action = QAction("Load mzML Files", self)
+        load_files_action = QAction("Load mzML File Table", self)
         load_files_action.triggered.connect(self.load_files)
         file_menu.addAction(load_files_action)
 
         # Load Compounds action
-        load_compounds_action = QAction("Load Compounds", self)
+        load_compounds_action = QAction("Load Compounds Table", self)
         load_compounds_action.triggered.connect(self.load_compounds)
         file_menu.addAction(load_compounds_action)
 
@@ -2112,7 +2112,7 @@ class MzMLExplorerMainWindow(QMainWindow):
         file_menu.addSeparator()
 
         # Generate Templates action
-        generate_templates_action = QAction("Generate Templates", self)
+        generate_templates_action = QAction("Generate Excel Templates", self)
         generate_templates_action.triggered.connect(self.generate_templates)
         file_menu.addAction(generate_templates_action)
 

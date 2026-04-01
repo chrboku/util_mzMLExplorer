@@ -1363,16 +1363,19 @@ class EICWindow(QWidget):
     def on_group_setting_changed(self, group, setting, value):
         """Handle changes to group settings.
 
-        For 'plot' and 'line_width' settings, the new value is also
-        propagated to every sample that belongs to this group so that
-        group visibility / line-width is the authority.  Changes to
-        individual sample settings never flow back the other way.
+        The new value is stored in group_settings and applied at render time,
+        using the same mechanism as the scaling factor: group membership is
+        determined from each EIC entry's metadata at render time, so no
+        propagation to individual sample_settings is needed.
+
+        For the 'plot' setting the value is additionally propagated to the
+        sample visibility checkboxes so the sample table stays in sync.
         """
         if group in self.group_settings:
             self.group_settings[group][setting] = value
 
-            # Propagate plot/line_width to matching samples (one-way)
-            if setting in ("plot", "line_width") and hasattr(self.file_manager, "files_data") and self.file_manager.files_data is not None:
+            # Propagate group visibility to the sample settings table (display only)
+            if setting == "plot" and hasattr(self.file_manager, "files_data") and self.file_manager.files_data is not None:
                 df = self.file_manager.files_data
                 group_col = self.grouping_column if self.grouping_column in df.columns else None
                 if group_col is not None:
@@ -5235,10 +5238,10 @@ class EICWindow(QWidget):
                 for x, y in zip(rt, intensity):
                     series.append(float(x), float(y))
 
-                # Apply group color with transparency and line width
-                # Per-sample line_width overrides the group line_width when set
-                _sample_lw = self.sample_settings.get(_fn, {}).get("line_width", None)
-                _effective_lw = _sample_lw if _sample_lw is not None else group_settings["line_width"]
+                # Apply group color with transparency and line width.
+                # Line width is taken directly from group_settings (same mechanism
+                # as scaling), so it always reflects the group table value.
+                _effective_lw = group_settings.get("line_width", 1.0)
                 if group_color:
                     color = QColor(group_color)
                     color.setAlpha(180)  # Make lines semi-transparent (0-255, 180 = ~70% opacity)

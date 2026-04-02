@@ -42,6 +42,7 @@ from PyQt6.QtWidgets import (
     QSizePolicy,
     QSlider,
     QDialog,
+    QProgressDialog,
     QScrollArea,
     QTextEdit,
     QStyle,
@@ -739,7 +740,9 @@ class EICWindow(QWidget):
 
     def init_ui(self):
         """Initialize the user interface"""
-        self.setWindowTitle(f"EIC: {self.compound_data['Name']} - {self.adduct}")
+        _pol_suffix = f" [{self.polarity}]" if self.polarity else ""
+        _mz_suffix = f"  m/z {format_mz(self.target_mz)}{_pol_suffix}" if self.target_mz else ""
+        self.setWindowTitle(f"EIC: {self.compound_data['Name']} - {self.adduct}{_mz_suffix}")
         self.setGeometry(200, 200, 1400, 800)
 
         layout = QHBoxLayout(self)
@@ -786,11 +789,6 @@ class EICWindow(QWidget):
         # Extraction parameters (contains Extract EIC button at bottom)
         control_panel = self.create_control_panel()
         layout.addWidget(control_panel)
-
-        # Progress bar (underneath the buttons)
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setVisible(False)
-        layout.addWidget(self.progress_bar)
 
         # Group settings table
         self.create_group_settings_table()
@@ -843,14 +841,20 @@ class EICWindow(QWidget):
             formula_info = f"<b>Mass:</b> {self.compound_data['Mass']} Da<br>"
 
         # Compound info
-        compound_info = QLabel(f"<b>Compound:</b> {self.compound_data['Name']}<br>{formula_info}<b>Adduct:</b> {self.adduct}<br><b>m/z:</b> {format_mz(self.target_mz)}")
+        _pol_str = f"<br><b>Polarity:</b> {self.polarity}" if self.polarity else ""
+        compound_info = QLabel(f"<b>Compound:</b> {self.compound_data['Name']}<br>{formula_info}<b>Adduct:</b> {self.adduct}<br><b>m/z:</b> {format_mz(self.target_mz)}{_pol_str}")
         layout.addWidget(compound_info)
 
-        # RT info
-        rt_info = QLabel(
-            f"<b>RT:</b> {format_retention_time(self.compound_data['RT_min'])}<br><b>RT Window:</b> {format_retention_time(self.compound_data['RT_start_min'])} - {format_retention_time(self.compound_data['RT_end_min'])}"
-        )
-        layout.addWidget(rt_info)
+        # RT info — only shown when the compound data contains RT fields
+        rt_min = self.compound_data.get("RT_min")
+        rt_start = self.compound_data.get("RT_start_min")
+        rt_end = self.compound_data.get("RT_end_min")
+        if rt_min is not None:
+            rt_text = f"<b>RT:</b> {format_retention_time(rt_min)}"
+            if rt_start is not None and rt_end is not None:
+                rt_text += f"<br><b>RT Window:</b> {format_retention_time(rt_start)} - {format_retention_time(rt_end)}"
+            rt_info = QLabel(rt_text)
+            layout.addWidget(rt_info)
 
         # SMILES structure display
         smiles = self.compound_data.get("SMILES") or self.compound_data.get("smiles")
@@ -4780,10 +4784,16 @@ class EICWindow(QWidget):
             QMessageBox.warning(self, "Warning", "Invalid m/z value!")
             return
 
-        # Show progress bar
-        self.progress_bar.setVisible(True)
-        self.progress_bar.setValue(0)
         self.extract_btn.setEnabled(False)
+
+        # Progress dialog
+        self._extraction_progress = QProgressDialog(f"Extracting EIC for m/z {self.target_mz:.4f}", "Cancel", 0, 100, self)
+        self._extraction_progress.setWindowTitle("EIC Extraction")
+        self._extraction_progress.setWindowModality(Qt.WindowModality.WindowModal)
+        self._extraction_progress.setMinimumDuration(0)
+        self._extraction_progress.setAutoClose(False)
+        self._extraction_progress.setAutoReset(False)
+        self._extraction_progress.setValue(0)
 
         # Start extraction in worker thread (always extract full RT range)
         self.extraction_worker = EICExtractionWorker(
@@ -4797,16 +4807,26 @@ class EICWindow(QWidget):
             polarity=self.polarity,
         )
 
-        self.extraction_worker.progress.connect(self.progress_bar.setValue)
+        self.extraction_worker.progress.connect(self._extraction_progress.setValue)
+        self._extraction_progress.canceled.connect(self._on_extraction_canceled)
         self.extraction_worker.finished.connect(self.on_extraction_finished)
         self.extraction_worker.error.connect(self.on_extraction_error)
 
         self.extraction_worker.start()
 
+    def _on_extraction_canceled(self):
+        """User pressed Cancel in the progress dialog."""
+        if hasattr(self, "extraction_worker") and self.extraction_worker.isRunning():
+            self.extraction_worker.quit()
+            self.extraction_worker.wait()
+        self._extraction_progress.close()
+        self.extract_btn.setEnabled(True)
+
     def on_extraction_finished(self, eic_data: dict):
         """Handle completion of EIC extraction"""
         self.eic_data = eic_data
-        self.progress_bar.setVisible(False)
+        self._extraction_progress.setValue(100)
+        self._extraction_progress.close()
         self.extract_btn.setEnabled(True)
 
         # Calculate group shifts
@@ -4828,7 +4848,7 @@ class EICWindow(QWidget):
 
     def on_extraction_error(self, error_message: str):
         """Handle EIC extraction error"""
-        self.progress_bar.setVisible(False)
+        self._extraction_progress.close()
         self.extract_btn.setEnabled(True)
         QMessageBox.critical(self, "Error", f"EIC extraction failed: {error_message}")
 
@@ -5048,8 +5068,8 @@ class EICWindow(QWidget):
         normalize = self.normalize_cb.isChecked()
 
         # Get RT window if cropping is enabled
-        rt_start = self.compound_data["RT_start_min"] if crop_rt else None
-        rt_end = self.compound_data["RT_end_min"] if crop_rt else None
+        rt_start = self.compound_data.get("RT_start_min") if crop_rt else None
+        rt_end = self.compound_data.get("RT_end_min") if crop_rt else None
 
         # Organize data by groups first
         groups_data = {}

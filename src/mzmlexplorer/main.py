@@ -1,3 +1,5 @@
+print("Loading mzML Explorer...")
+
 import sys
 import os
 from PyQt6.QtWidgets import (
@@ -1333,7 +1335,7 @@ class MzMLExplorerMainWindow(QMainWindow):
 
     def _open_file_explorer(self, filepath: str):
         """Open the mzML file explorer window for the given file."""
-        win = MzMLFileExplorerWindow(filepath, self.file_manager, parent=None)
+        win = MzMLFileExplorerWindow(filepath, self.file_manager, defaults=self.eic_defaults, parent=None)
         win.show()
         if not hasattr(self, "_file_explorer_windows"):
             self._file_explorer_windows = []

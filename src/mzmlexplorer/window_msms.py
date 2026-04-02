@@ -2440,6 +2440,289 @@ class MSMSViewerWindow(QWidget):
         event.accept()
 
 
+class MirrorPlotChartView(InteractiveEICChartView):
+    """Interactive chart view for the mirror (pairwise) MSMS plot.
+
+    Extends InteractiveEICChartView with:
+    - Hover: highlights the closest signal (A or B), shows its m/z label
+      above the peak tip, and selects the matching table row.
+    - Left-click on a peak: pins/unpins a permanent m/z annotation.
+    - Right-click on a peak: colour submenu (like InteractiveMSMSChartView).
+    - Pinned label for matched pairs shows both A and B m/z values.
+    """
+
+    _ROW_IDX_ROLE = Qt.ItemDataRole.UserRole + 1
+    _PIXEL_THRESHOLD = 20
+
+    def __init__(self, chart, parent=None):
+        super().__init__(chart, parent)
+
+        # Spectrum arrays — set by EnhancedMirrorPlotWindow after construction
+        self._mz_a: np.ndarray = np.array([], dtype=float)
+        self._rel_a: np.ndarray = np.array([], dtype=float)  # positive  (0–100)
+        self._mz_b: np.ndarray = np.array([], dtype=float)
+        self._rel_b: np.ndarray = np.array([], dtype=float)  # positive; displayed as negative
+
+        # Fragment rows and table widget refs
+        self._rows: list = []
+        self._table = None  # QTableWidget
+
+        # Hover state
+        self._hover_mz: float | None = None
+        self._hover_chart_y: float = 0.0
+        self._hover_series = None
+        self._press_pos: QPointF | None = None
+        self._right_press_start: QPointF | None = None
+        self._right_click_mz: float | None = None
+        self._right_click_chart_y: float = 0.0
+
+        # Hover tooltip label
+        self.hover_label = QLabel(self)
+        self.hover_label.setStyleSheet("QLabel {  background-color: rgba(60,64,67,220);  color: #ffffff;  border: none; border-radius: 3px;  padding: 2px 6px; font-size: 11px;}")
+        self.hover_label.hide()
+        self.hover_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+
+        # Pinned annotations: list of (mz, chart_y, color, label_text)
+        self._pinned_annotations: list = []
+        self._ann_labels: list = []
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _find_closest_peak(self, mx: float, my: float):
+        """Return (mz, chart_y, from_a) for peak whose stick is closest
+        to pixel (mx, my), or (None, 0.0, True) when nothing is within
+        _PIXEL_THRESHOLD pixels."""
+        best_mz = None
+        best_chart_y = 0.0
+        best_from_a = True
+        best_dist = float("inf")
+
+        for mz_arr, rel_arr, positive in (
+            (self._mz_a, self._rel_a, True),
+            (self._mz_b, self._rel_b, False),
+        ):
+            for mz_v, rel_v in zip(mz_arr, rel_arr):
+                chart_y = float(rel_v) if positive else -float(rel_v)
+                tip = self.chart().mapToPosition(QPointF(float(mz_v), chart_y))
+                base = self.chart().mapToPosition(QPointF(float(mz_v), 0.0))
+                tx, ty, bx, by = tip.x(), tip.y(), base.x(), base.y()
+                dx, dy = bx - tx, by - ty
+                seg_sq = dx * dx + dy * dy
+                t = max(0.0, min(1.0, ((mx - tx) * dx + (my - ty) * dy) / seg_sq)) if seg_sq > 0 else 0.0
+                dist = ((mx - tx - t * dx) ** 2 + (my - ty - t * dy) ** 2) ** 0.5
+                if dist < best_dist:
+                    best_dist = dist
+                    best_mz = float(mz_v)
+                    best_chart_y = chart_y
+                    best_from_a = positive
+
+        if best_mz is not None and best_dist <= self._PIXEL_THRESHOLD:
+            return best_mz, best_chart_y, best_from_a
+        return None, 0.0, True
+
+    def _row_for_peak(self, mz: float, from_a: bool):
+        """Return (row_dict, orig_row_idx) for the matching _rows entry."""
+        key = "mz_a" if from_a else "mz_b"
+        for idx, r in enumerate(self._rows):
+            row_mz = r.get(key)
+            if row_mz is not None and abs(float(row_mz) - mz) < 1e-6:
+                return r, idx
+        return None, -1
+
+    def _visual_row_for_orig(self, orig_idx: int) -> int:
+        """Find the visual (possibly sorted) table row with the given orig_idx."""
+        if self._table is None:
+            return -1
+        for vrow in range(self._table.rowCount()):
+            it = self._table.item(vrow, 0)
+            if it is not None and it.data(self._ROW_IDX_ROLE) == orig_idx:
+                return vrow
+        return -1
+
+    def _label_text(self, mz: float, row_dict, from_a: bool) -> str:
+        """Build label text; for matched pairs includes both A and B m/z."""
+        if row_dict is not None:
+            mz_a = row_dict.get("mz_a")
+            mz_b = row_dict.get("mz_b")
+            if mz_a is not None and mz_b is not None:
+                return f"{float(mz_a):.4f}\n{float(mz_b):.4f}"
+        side = "\u2191" if from_a else "\u2193"
+        return f"{side} {mz:.4f}"
+
+    def _place_label(self, lbl: QLabel, mz: float, chart_y: float):
+        """Position *lbl* just above the tip of the signal in screen space."""
+        tip = self.chart().mapToPosition(QPointF(mz, chart_y))
+        lx = int(tip.x()) - lbl.width() // 2
+        ly = int(tip.y()) - lbl.height() - 6
+        lx = max(0, min(lx, self.width() - lbl.width()))
+        if ly < 0:
+            ly = int(tip.y()) + 6
+        lbl.move(lx, ly)
+
+    # ------------------------------------------------------------------
+    # Mouse events (override base class where needed)
+    # ------------------------------------------------------------------
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._press_pos = event.position()
+        elif event.button() == Qt.MouseButton.RightButton:
+            self._right_press_start = event.position()
+            self._right_click_mz = self._hover_mz
+            self._right_click_chart_y = self._hover_chart_y
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        super().mouseMoveEvent(event)  # pan / zoom from base
+        if not self._panning and not self._zooming:
+            self._update_hover(event)
+        if self._pinned_annotations:
+            self._redraw_annotation_labels()
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            if self._press_pos is not None and self._hover_mz is not None:
+                dp = event.position() - self._press_pos
+                if dp.x() ** 2 + dp.y() ** 2 < 25.0:
+                    from_a = self._hover_chart_y >= 0
+                    row_dict, _ = self._row_for_peak(self._hover_mz, from_a)
+                    lbl_text = self._label_text(self._hover_mz, row_dict, from_a)
+                    self._toggle_pin(self._hover_mz, self._hover_chart_y, "#0064c8", lbl_text)
+            self._press_pos = None
+        elif event.button() == Qt.MouseButton.RightButton:
+            if self._right_press_start is not None:
+                dp = event.position() - self._right_press_start
+                if dp.x() ** 2 + dp.y() ** 2 < 25.0 and self._right_click_mz is not None:
+                    self._show_context_menu(event, self._right_click_mz, self._right_click_chart_y)
+            self._right_press_start = None
+        super().mouseReleaseEvent(event)
+
+    def leaveEvent(self, event):
+        self._clear_hover()
+        super().leaveEvent(event)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self._pinned_annotations:
+            self._redraw_annotation_labels()
+
+    # ------------------------------------------------------------------
+    # Hover logic
+    # ------------------------------------------------------------------
+
+    def _update_hover(self, event):
+        """Highlight the nearest peak, update the m/z label, select table row."""
+        plot_area = self.chart().plotArea()
+        if not plot_area.contains(event.position()):
+            self._clear_hover()
+            return
+
+        mz, chart_y, from_a = self._find_closest_peak(event.position().x(), event.position().y())
+        if mz is None:
+            self._clear_hover()
+            return
+
+        if mz != self._hover_mz:
+            self._hover_mz = mz
+            self._hover_chart_y = chart_y
+
+            # Replace hover series (firebrick stick)
+            if self._hover_series is not None:
+                self.chart().removeSeries(self._hover_series)
+                self._hover_series = None
+            s = QLineSeries()
+            pen = QPen(QColor(178, 34, 34))
+            pen.setWidth(3)
+            s.setPen(pen)
+            s.append(mz, 0.0)
+            s.append(mz, chart_y)
+            s.append(mz, 0.0)
+            self.chart().addSeries(s)
+            x_axes = self.chart().axes(Qt.Orientation.Horizontal)
+            y_axes = self.chart().axes(Qt.Orientation.Vertical)
+            if x_axes and y_axes:
+                s.attachAxis(x_axes[0])
+                s.attachAxis(y_axes[0])
+            # Hide the hover series from the legend
+            markers = self.chart().legend().markers(s)
+            if markers:
+                markers[0].setVisible(False)
+            self._hover_series = s
+
+            # Label text
+            row_dict, orig_idx = self._row_for_peak(mz, from_a)
+            self.hover_label.setText(self._label_text(mz, row_dict, from_a))
+            self.hover_label.adjustSize()
+
+            # Select matching table row
+            if orig_idx >= 0:
+                vrow = self._visual_row_for_orig(orig_idx)
+                if vrow >= 0 and self._table is not None:
+                    self._table.selectRow(vrow)
+                    self._table.scrollTo(self._table.model().index(vrow, 0))
+
+        self._place_label(self.hover_label, mz, chart_y)
+        self.hover_label.show()
+
+    def _clear_hover(self):
+        """Remove the hover highlight and hide the tooltip label."""
+        if self._hover_series is not None:
+            self.chart().removeSeries(self._hover_series)
+            self._hover_series = None
+        self._hover_mz = None
+        self.hover_label.hide()
+
+    # ------------------------------------------------------------------
+    # Pinned annotations
+    # ------------------------------------------------------------------
+
+    def _toggle_pin(self, mz: float, chart_y: float, color: str, label_text: str | None = None):
+        """Pin or unpin a permanent coloured m/z label at the peak."""
+        for i, (m, *_) in enumerate(self._pinned_annotations):
+            if abs(m - mz) < 1e-9:
+                self._pinned_annotations.pop(i)
+                lbl = self._ann_labels.pop(i)
+                lbl.deleteLater()
+                return
+        if label_text is None:
+            from_a = chart_y >= 0
+            row_dict, _ = self._row_for_peak(mz, from_a)
+            label_text = self._label_text(mz, row_dict, from_a)
+        self._pinned_annotations.append((mz, chart_y, color, label_text))
+        lbl = QLabel(label_text, self)
+        lbl.setStyleSheet(f"color: {color}; background-color: rgba(255,255,255,200); border: none; border-radius: 2px; font-size: 11px; font-weight: bold; padding: 1px 4px;")
+        lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        lbl.adjustSize()
+        self._ann_labels.append(lbl)
+        lbl.show()
+        self._redraw_annotation_labels()
+
+    def _show_context_menu(self, event, mz: float, chart_y: float):
+        """Context menu with Annotate → colour submenu."""
+        from_a = chart_y >= 0
+        row_dict, _ = self._row_for_peak(mz, from_a)
+        label_text = self._label_text(mz, row_dict, from_a)
+        menu = QMenu(self)
+        ann_menu = menu.addMenu("Annotate")
+        for name, color_str in ANNOTATION_COLOR_PRESETS:
+            act = ann_menu.addAction(name)
+            act.triggered.connect(lambda _c=False, m=mz, cy=chart_y, c=color_str, lt=label_text: self._toggle_pin(m, cy, c, lt))
+        menu.exec(event.globalPosition().toPoint())
+
+    def _redraw_annotation_labels(self):
+        """Reposition all pinned labels to match current chart coordinates."""
+        x_axes = self.chart().axes(Qt.Orientation.Horizontal)
+        x_axis = x_axes[0] if x_axes else None
+        for lbl, (mz, chart_y, _color, _text) in zip(self._ann_labels, self._pinned_annotations):
+            self._place_label(lbl, mz, chart_y)
+            if x_axis is not None and x_axis.min() <= mz <= x_axis.max():
+                lbl.show()
+            else:
+                lbl.hide()
+
+
 class EnhancedMirrorPlotWindow(QWidget):
     """Mirror plot + fragment comparison table for two MSMS spectra.
 
@@ -2640,6 +2923,7 @@ class EnhancedMirrorPlotWindow(QWidget):
         self._table.setHorizontalHeaderLabels(COL_HEADERS)
         self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self._table.setStyleSheet("QTableWidget::item:selected { background-color: firebrick; color: #ffffff; }")
         # NOTE: keep sorting disabled until after population — enabling it first
         # causes Qt to re-sort after every setItem(), scattering values into
         # wrong rows and leaving most cells empty.
@@ -2709,8 +2993,15 @@ class EnhancedMirrorPlotWindow(QWidget):
         self._chart.setMargins(QMargins(0, 0, 0, 0))
         self._chart.legend().setVisible(True)
         self._chart.legend().setAlignment(Qt.AlignmentFlag.AlignBottom)
-        self._chart_view = InteractiveEICChartView(self._chart)
+        self._chart_view = MirrorPlotChartView(self._chart)
         self._chart_view.setRenderHint(QPainter.RenderHint.Antialiasing)
+        # Bind spectrum data so hover/annotation know about the peaks
+        self._chart_view._mz_a = self._mz_a
+        self._chart_view._rel_a = self._rel_a
+        self._chart_view._mz_b = self._mz_b
+        self._chart_view._rel_b = self._rel_b
+        self._chart_view._rows = self._rows
+        self._chart_view._table = self._table
         splitter.addWidget(self._chart_view)
 
         splitter.setSizes([540, 680])
@@ -2820,4 +3111,9 @@ class EnhancedMirrorPlotWindow(QWidget):
         r = self._rows[int(orig_idx)]
         self._highlight_a = {r["idx_a"]} if r["idx_a"] is not None else set()
         self._highlight_b = {r["idx_b"]} if r["idx_b"] is not None else set()
+        # Clear the transient hover series before removeAllSeries() in _build_chart
+        self._chart_view._clear_hover()
         self._build_chart()
+        # Re-position any pinned annotation labels after the chart rebuild
+        if self._chart_view._pinned_annotations:
+            self._chart_view._redraw_annotation_labels()

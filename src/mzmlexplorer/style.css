@@ -147,7 +147,8 @@ QPushButton:disabled {
    Group boxes
 ------------------------------------------------------- */
 QGroupBox {
-    border: 1px solid #dadce0;
+    border: none;
+    border-left: 2px solid #dadce0;
     border-radius: 3px;
     margin-top: 12px;
     padding-top: 8px;
@@ -158,7 +159,7 @@ QGroupBox {
 QGroupBox::title {
     subcontrol-origin: margin;
     subcontrol-position: top left;
-    left: 8px;
+    left: 0px;
     top: -1px;
     padding: 0 4px;
     color: #202124;
@@ -327,7 +328,7 @@ QMenu::separator {
    Splitter handle
 ------------------------------------------------------- */
 QSplitter::handle {
-    background-color: #dadce0;
+    background-color: #32609E;
 }
 
 QSplitter::handle:horizontal {
@@ -339,7 +340,7 @@ QSplitter::handle:vertical {
 }
 
 QSplitter::handle:hover {
-    background-color: #32609E;
+    background-color: #1a73e8;
 }
 
 /* -------------------------------------------------------
@@ -375,14 +376,16 @@ QProgressBar {
     border: 1px solid #dadce0;
     border-radius: 3px;
     background-color: #f1f3f4;
-    text-align: center;
-    color: #202124;
+    text-align: right;
+    margin-right: 30px;
+    color: #3c3c3c;
     font-size: 11px;
 }
 
 QProgressBar::chunk {
     background-color: #32609E;
     border-radius: 2px;
+    color: #f1f3f4;
 }
 
 /* -------------------------------------------------------

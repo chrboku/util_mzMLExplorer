@@ -35,6 +35,7 @@ from PyQt6.QtGui import QPen, QColor, QPainter
 
 from .window_msms import MSMSPopupWindow
 from .window_shared import ANNOTATION_COLOR_PRESETS
+from .window_eic import EICWindow
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -106,6 +107,19 @@ class _SpectrumChartView(QChartView):
         self._open_msms_fn = None
         self._right_press_start = None  # tracks right-button press for click vs drag
 
+        # Spectrum data for EIC extraction
+        self._spec_data = None
+        self._file_manager = None
+        self._eic_defaults = None
+        self._eic_windows = []  # keep references to prevent GC
+
+        # TIC hover state
+        self._tic_hover_rt: float | None = None
+        self._scan_select_fn = None  # callable(rt: float) set by _ChartPanel.set_tic
+
+        # TIC scan-selection marker series
+        self._scan_marker_series: list = []  # faint firebrick verticals for pinned scans
+
         self._hover_label = QLabel(self)
         self._hover_label.setStyleSheet("""
             QLabel {
@@ -124,6 +138,30 @@ class _SpectrumChartView(QChartView):
     def set_full_range(self, x_min, x_max, y_min, y_max):
         self._full_x = (x_min, x_max)
         self._full_y = (y_min, y_max)
+
+    def set_scan_markers(self, rt_list: list):
+        """Draw faint firebrick vertical lines at the given RT positions (TIC panels only)."""
+        for s in self._scan_marker_series:
+            self.chart().removeSeries(s)
+        self._scan_marker_series = []
+        if not rt_list:
+            return
+        x_axes = self.chart().axes(Qt.Orientation.Horizontal)
+        y_axes = self.chart().axes(Qt.Orientation.Vertical)
+        if not x_axes or not y_axes:
+            return
+        pen = QPen(QColor(178, 34, 34, 170))  # firebrick, faint
+        pen.setWidth(1)
+        for rt in rt_list:
+            s = QLineSeries()
+            s.setPen(pen)
+            s.append(float(rt), -1e20)
+            s.append(float(rt), 1e20)
+            self.chart().addSeries(s)
+            s.attachAxis(x_axes[0])
+            s.attachAxis(y_axes[0])
+            self._scan_marker_series.append(s)
+        self.chart().legend().setVisible(False)
 
     # private helpers ------------------------------------------------------
     def _xa(self):
@@ -200,11 +238,17 @@ class _SpectrumChartView(QChartView):
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
-            # Pin annotation if this was a short click (not a pan drag) on a highlighted peak
-            if self._press_pos is not None and self._hover_mz is not None:
+            if self._press_pos is not None:
                 dp = event.position() - self._press_pos
-                if dp.x() ** 2 + dp.y() ** 2 < 25.0:
-                    self._pin_annotation(self._hover_mz, self._hover_norm, self._spectrum_color)
+                was_short_click = dp.x() ** 2 + dp.y() ** 2 < 25.0
+            else:
+                was_short_click = False
+            if was_short_click and self._ms_level == 0 and self._tic_hover_rt is not None and self._scan_select_fn is not None:
+                # TIC click: select closest MS1 scan
+                self._scan_select_fn(self._tic_hover_rt)
+            elif was_short_click and self._hover_mz is not None:
+                # Pin annotation on a highlighted spectrum peak
+                self._pin_annotation(self._hover_mz, self._hover_norm, self._spectrum_color)
             self._panning = False
             self._press_pos = None
             self.setCursor(Qt.CursorShape.ArrowCursor)
@@ -258,7 +302,67 @@ class _SpectrumChartView(QChartView):
             self._hover_series = None
         self._hover_mz = None
         self._hover_norm = 0.0
+        self._tic_hover_rt = None
         self._hover_label.hide()
+
+    def _update_tic_hover(self, event):
+        """Show a vertical RT cursor line and tooltip for TIC panels."""
+        spec_data = self._spec_data
+        rt_arr = spec_data.get("rt")
+        tic_arr = spec_data.get("tic")
+        if rt_arr is None or len(rt_arr) == 0:
+            return
+
+        plot_area = self.chart().plotArea()
+        if not plot_area.contains(event.position()):
+            self._clear_hover()
+            return
+
+        xa = self._xa()
+        ya = self._ya()
+        if xa is None or ya is None:
+            return
+
+        # Map cursor x-position to chart RT value
+        px = event.position().x()
+        rt_cursor = xa.min() + (px - plot_area.left()) / plot_area.width() * (xa.max() - xa.min())
+
+        # Snap to nearest RT data point
+        rt_np = np.asarray(rt_arr, dtype=float)
+        tic_np = np.asarray(tic_arr, dtype=float)
+        idx = int(np.argmin(np.abs(rt_np - rt_cursor)))
+        closest_rt = float(rt_np[idx])
+        closest_tic = float(tic_np[idx])
+
+        # Redraw vertical line (y range may change with pan/zoom)
+        if self._hover_series is not None:
+            self.chart().removeSeries(self._hover_series)
+            self._hover_series = None
+
+        self._tic_hover_rt = closest_rt
+        hs = QLineSeries()
+        hs.setPen(QPen(QColor(178, 34, 34), 1.5))  # firebrick vertical line
+        hs.append(closest_rt, ya.min())
+        hs.append(closest_rt, ya.max())
+        self.chart().addSeries(hs)
+        x_axes = self.chart().axes(Qt.Orientation.Horizontal)
+        y_axes = self.chart().axes(Qt.Orientation.Vertical)
+        if x_axes and y_axes:
+            hs.attachAxis(x_axes[0])
+            hs.attachAxis(y_axes[0])
+        self._hover_series = hs
+        self.chart().legend().setVisible(False)
+
+        self._hover_label.setText(f"RT: {closest_rt:.4f} min")
+        self._hover_label.adjustSize()
+        tip_pos = self.chart().mapToPosition(QPointF(closest_rt, closest_tic))
+        lx = int(tip_pos.x()) - self._hover_label.width() // 2
+        ly = int(tip_pos.y()) - self._hover_label.height() - 6
+        lx = max(0, min(lx, self.width() - self._hover_label.width()))
+        if ly < 0:
+            ly = int(tip_pos.y()) + 6
+        self._hover_label.move(lx, ly)
+        self._hover_label.show()
 
     def _pin_annotation(self, mz: float, norm_int: float, color: str = "#1565c0"):
         """Pin a colored m/z label; clicking the same peak again removes it."""
@@ -278,7 +382,7 @@ class _SpectrumChartView(QChartView):
         self._redraw_annotation_labels()
 
     def _show_context_menu(self, event):
-        """Right-click context menu: Annotate (with colour submenu) + MSMS viewer."""
+        """Right-click context menu: Annotate (with colour submenu) + MSMS viewer + EIC."""
         mz = self._right_click_mz
         norm = self._right_click_norm
         menu = QMenu(self)
@@ -287,10 +391,40 @@ class _SpectrumChartView(QChartView):
             for name, color_str in ANNOTATION_COLOR_PRESETS:
                 act = ann_menu.addAction(name)
                 act.triggered.connect(lambda _c=False, m=mz, n=norm, c=color_str: self._pin_annotation(m, n, c))
+            if self._file_manager is not None:
+                menu.addSeparator()
+                eic_act = menu.addAction(f"Extract EIC for m/z {mz:.5f}")
+                eic_act.triggered.connect(lambda _c=False, m=mz: self._open_eic_window(m))
         if self._ms_level == 2 and self._open_msms_fn is not None:
             menu.addAction("Open in MSMS Spectrum Viewer").triggered.connect(lambda _checked=False: self._open_msms_fn())
         if not menu.isEmpty():
             menu.exec(event.globalPosition().toPoint())
+
+    def _open_eic_window(self, mz: float):
+        """Open an EICWindow for *mz*, deriving polarity from the current spectrum."""
+        polarity = None
+        if self._spec_data is not None:
+            raw_pol = self._spec_data.get("polarity", "")
+            if isinstance(raw_pol, str):
+                p = raw_pol.strip().lower()
+                if p in {"+", "positive", "pos", "pos."}:
+                    polarity = "+"
+                elif p in {"-", "negative", "neg", "neg."}:
+                    polarity = "-"
+        compound_data = {"Name": f"m/z {mz:.5f}"}
+        win = EICWindow(
+            compound_data=compound_data,
+            adduct="Unknown",
+            file_manager=self._file_manager,
+            mz_value=mz,
+            polarity=polarity,
+            defaults=self._eic_defaults,
+            parent=None,
+        )
+        win.show()
+        win.raise_()
+        self._eic_windows.append(win)
+        win.destroyed.connect(lambda _, w=win: self._eic_windows.remove(w) if w in self._eic_windows else None)
 
     def _redraw_annotation_labels(self):
         """Reposition all pinned annotation labels to match current chart coordinates."""
@@ -310,6 +444,9 @@ class _SpectrumChartView(QChartView):
 
     def _update_hover(self, event):
         """Highlight the closest peak stick to the cursor with firebrick color and show its m/z."""
+        if self._ms_level == 0 and self._spec_data is not None and self._spec_data.get("__type__") == "tic":
+            self._update_tic_hover(event)
+            return
         if self._spec_mz is None or len(self._spec_mz) == 0:
             self._hover_label.hide()
             return
@@ -410,7 +547,69 @@ class _ChartPanel(QFrame):
         self._placeholder.setStyleSheet("color: #9aa0a6; font-size: 11px;")
         self._layout.addWidget(self._placeholder, stretch=1)
 
-    def set_spectrum(self, title: str, mz_array, intensity_array, ms_level: int = 1, spec=None, open_msms_fn=None):
+    def set_tic(self, title: str, rt_array, tic_array, tic_data=None, select_fn=None):
+        """Replace the chart view with a TIC line plot (RT vs. total ion current)."""
+        if self._chart_view is not None:
+            self._layout.removeWidget(self._chart_view)
+            self._chart_view.deleteLater()
+            self._chart_view = None
+        if self._placeholder is not None:
+            self._layout.removeWidget(self._placeholder)
+            self._placeholder.deleteLater()
+            self._placeholder = None
+
+        self._title.setText(title)
+
+        rt = np.asarray(rt_array, dtype=float)
+        tic = np.asarray(tic_array, dtype=float)
+
+        chart = QChart()
+        chart.setMargins(QMargins(0, 0, 0, 0))
+        chart.layout().setContentsMargins(0, 0, 0, 0)
+        chart.legend().setVisible(False)
+
+        series = QLineSeries()
+        series.setPen(QPen(QColor("#1565c0"), 1.5))
+        for rt_v, tic_v in zip(rt, tic):
+            series.append(float(rt_v), float(tic_v))
+        chart.addSeries(series)
+
+        x_axis = QValueAxis()
+        x_axis.setTitleText("RT (min)")
+        x_axis.setLabelFormat("%.2f")
+        y_axis = QValueAxis()
+        y_axis.setTitleText("Total Ion Current")
+        y_axis.setLabelFormat("%.2e")
+        chart.addAxis(x_axis, Qt.AlignmentFlag.AlignBottom)
+        chart.addAxis(y_axis, Qt.AlignmentFlag.AlignLeft)
+        series.attachAxis(x_axis)
+        series.attachAxis(y_axis)
+
+        if len(rt) > 0:
+            rt_margin = max((float(rt[-1]) - float(rt[0])) * 0.02, 0.01)
+            x_axis.setRange(float(rt[0]) - rt_margin, float(rt[-1]) + rt_margin)
+        if len(tic) > 0 and float(np.max(tic)) > 0:
+            y_axis.setRange(0.0, float(np.max(tic)) * 1.1)
+
+        cv = _SpectrumChartView(chart)
+        if len(rt) > 0:
+            cv.set_full_range(
+                x_axis.min(),
+                x_axis.max(),
+                y_axis.min(),
+                y_axis.max(),
+            )
+        # TIC items have no spectrum mz/intensity data
+        cv._spec_mz = None
+        cv._spec_ints = None
+        cv._ms_level = 0
+        cv._spec_data = tic_data
+        cv._scan_select_fn = select_fn
+        self._chart_view = cv
+        self._current_spec = tic_data
+        self._layout.addWidget(cv, stretch=1)
+
+    def set_spectrum(self, title: str, mz_array, intensity_array, ms_level: int = 1, spec=None, open_msms_fn=None, file_manager=None, eic_defaults=None):
         """Replace the chart view with a new stick spectrum."""
         # remove old chart view / placeholder
         if self._chart_view is not None:
@@ -469,6 +668,9 @@ class _ChartPanel(QFrame):
         cv._ms_level = ms_level
         cv._spectrum_color = "#1565c0" if ms_level == 1 else "#0d7a2f"
         cv._open_msms_fn = open_msms_fn
+        cv._spec_data = spec
+        cv._file_manager = file_manager
+        cv._eic_defaults = eic_defaults
         self._chart_view = cv
         self._current_spec = spec
         self._layout.addWidget(cv, stretch=1)
@@ -505,7 +707,7 @@ _TREE_HEADERS = ["Scan ID", "Type", "RT (min)", "Polarity", "Precursor m/z", "Pr
 
 # UserRole data stored on each tree item
 _ROLE_SPEC_DATA = Qt.ItemDataRole.UserRole
-_ROLE_MS_LEVEL = Qt.ItemDataRole.UserRole + 1
+_ROLE_MS_LEVEL = Qt.ItemDataRole.UserRole + 1  # 0 = TIC, 1 = MS1, 2 = MS2
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -514,17 +716,20 @@ _ROLE_MS_LEVEL = Qt.ItemDataRole.UserRole + 1
 
 
 class MzMLFileExplorerWindow(QWidget):
-    """Browse all scans in a single mzML file and view up to 4 at once."""
+    """Browse all scans in a single mzML file and view up to 12 at once."""
 
-    MAX_SELECTED = 4  # maximum simultaneous chart panels
+    MAX_SELECTED = 12  # maximum simultaneous chart panels
+    _GRID_MAX_COLS = 4
+    _GRID_MAX_ROWS = 3
 
-    def __init__(self, filepath: str, file_manager, parent=None):
+    def __init__(self, filepath: str, file_manager, defaults=None, parent=None):
         super().__init__(parent)
         self.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.WindowCloseButtonHint | Qt.WindowType.WindowMinimizeButtonHint | Qt.WindowType.WindowMaximizeButtonHint)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
 
         self._filepath = filepath
         self._file_manager = file_manager
+        self._eic_defaults = defaults  # passed to EICWindow on EIC extraction
         self._filename = os.path.basename(filepath)
 
         # Ordered list of (tree_item, spectrum_data, ms_level) for selected panels
@@ -567,7 +772,9 @@ class MzMLFileExplorerWindow(QWidget):
         tree_layout.setContentsMargins(0, 0, 0, 0)
         tree_layout.setSpacing(2)
 
-        tree_hint = QLabel("Click a scan to pin it (max 4).  Click again to unpin.  Left-drag to pan, right-drag to zoom, wheel to zoom, double-click to reset.")
+        tree_hint = QLabel(
+            "Click to select (max 12, Ctrl+click to add).  Click again to unpin.  Right-click MS1/MS2 to deselect.  Left-drag to pan, right-drag to zoom, wheel to zoom, double-click to reset."
+        )
         tree_hint.setWordWrap(True)
         tree_hint.setStyleSheet("font-size: 10px; color: #5f6368; padding: 2px 0px;")
         tree_layout.addWidget(tree_hint)
@@ -593,31 +800,29 @@ class MzMLFileExplorerWindow(QWidget):
         self._tree.setColumnWidth(_COL_PREC_INT, 90)
 
         self._tree.itemClicked.connect(self._on_item_clicked)
+        self._tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._tree.customContextMenuRequested.connect(self._on_tree_context_menu)
         tree_layout.addWidget(self._tree, stretch=1)
 
         splitter.addWidget(tree_container)
 
-        # ── Right: 2×2 chart grid via nested splitters ────────────────────────
-        # Outer vertical splitter splits top row / bottom row
+        # ── Right: 3×4 chart grid (3 rows × 4 cols = 12 panels) ──────────────
         self._vsplit = QSplitter(Qt.Orientation.Vertical)
-
-        # Top row: panels[0] (left) and panels[1] (right)
-        self._hsplit_top = QSplitter(Qt.Orientation.Horizontal)
-        # Bottom row: panels[2] (left) and panels[3] (right)
-        self._hsplit_bot = QSplitter(Qt.Orientation.Horizontal)
-
+        self._hsplit_rows: list[QSplitter] = []
         self._panels: list[_ChartPanel] = []
-        for hsplit in (self._hsplit_top, self._hsplit_bot):
-            for _ in range(2):
+        for _r in range(self._GRID_MAX_ROWS):
+            hsplit = QSplitter(Qt.Orientation.Horizontal)
+            for _c in range(self._GRID_MAX_COLS):
                 panel = _ChartPanel()
                 hsplit.addWidget(panel)
                 self._panels.append(panel)
-            hsplit.setSizes([500, 500])
+            self._hsplit_rows.append(hsplit)
             self._vsplit.addWidget(hsplit)
 
-        self._vsplit.setSizes([450, 450])
         splitter.addWidget(self._vsplit)
         splitter.setSizes([380, 1020])
+        # Show only the single-panel layout initially (updated as selections change)
+        self._update_grid_layout()
 
     # ── Loading ───────────────────────────────────────────────────────────────
 
@@ -634,6 +839,28 @@ class MzMLFileExplorerWindow(QWidget):
         self._status_label.setText(f"{self._filename}  —  {len(ms1_list)} MS1 scans, {len(ms2_list)} MS2 scans")
         self._populate_tree(ms1_list, ms2_list)
 
+    @staticmethod
+    def _compute_tics(ms1_list: list) -> dict:
+        """Return {polarity: {"rt": ndarray, "tic": ndarray}} for each polarity in ms1_list.
+
+        The TIC value per scan is taken from ``spec["tic"]`` when present (read
+        from the mzML cvParam MS:1000285) and falls back to summing all
+        intensities otherwise.
+        """
+        from collections import defaultdict
+
+        pol_buckets: dict = defaultdict(lambda: {"rt": [], "tic": []})
+        for spec in ms1_list:
+            pol = spec.get("polarity") or "unknown"
+            rt = float(spec.get("scan_time", 0.0))
+            tic_val = spec.get("tic")  # may be stored from cvParam MS:1000285
+            if tic_val is None:
+                ints = spec.get("intensity", [])
+                tic_val = float(np.sum(ints)) if len(ints) > 0 else 0.0
+            pol_buckets[pol]["rt"].append(rt)
+            pol_buckets[pol]["tic"].append(float(tic_val))
+        return {pol: {"rt": np.array(d["rt"]), "tic": np.array(d["tic"])} for pol, d in pol_buckets.items()}
+
     def _on_load_error(self, message: str):
         self._progress.setVisible(False)
         self._status_label.setText(f"Error loading file: {message}")
@@ -641,7 +868,7 @@ class MzMLFileExplorerWindow(QWidget):
     # ── Tree population ───────────────────────────────────────────────────────
 
     def _populate_tree(self, ms1_list: list, ms2_list: list):
-        """Build the file → MS1 → MS2 hierarchy."""
+        """Build the TIC(s) + file → MS1 → MS2 hierarchy."""
         self._tree.clear()
 
         # Sort everything by RT for proper grouping
@@ -649,6 +876,27 @@ class MzMLFileExplorerWindow(QWidget):
         ms2_sorted = sorted(ms2_list, key=lambda s: s.get("scan_time", 0.0))
 
         ms1_rts = [s.get("scan_time", 0.0) for s in ms1_sorted]
+
+        # ── TIC entries at the top ────────────────────────────────────────────
+        tics = self._compute_tics(ms1_sorted)
+        for pol, tic_data in sorted(tics.items()):  # sorted for determinism
+            pol_label = f" [{pol}]" if pol and pol != "unknown" else ""
+            label = f"TIC{pol_label}"
+            tic_item = QTreeWidgetItem(self._tree)
+            tic_item.setText(_COL_SCAN_ID, label)
+            tic_item.setText(_COL_TYPE, "TIC")
+            n_scans = len(tic_data["rt"])
+            tic_item.setText(_COL_RT, f"{n_scans} scans")
+            if pol and pol != "unknown":
+                tic_item.setText(_COL_POLARITY, pol)
+            tic_item.setForeground(_COL_SCAN_ID, QColor("#1565c0"))
+            font_tic = tic_item.font(_COL_SCAN_ID)
+            font_tic.setBold(True)
+            tic_item.setFont(_COL_SCAN_ID, font_tic)
+            # Store a sentinel dict so _on_item_clicked can dispatch correctly
+            tic_dict = {"__type__": "tic", "polarity": pol, **tic_data}
+            tic_item.setData(_COL_SCAN_ID, _ROLE_SPEC_DATA, tic_dict)
+            tic_item.setData(_COL_SCAN_ID, _ROLE_MS_LEVEL, 0)
 
         # Root: filename
         root = QTreeWidgetItem(self._tree)
@@ -745,7 +993,8 @@ class MzMLFileExplorerWindow(QWidget):
                     evicted_item, _, _ = self._pinned.popleft()
                     self._pinned_items.discard(id(evicted_item))
                     self._mark_item(evicted_item, selected=False)
-                ms_level = item.data(_COL_SCAN_ID, _ROLE_MS_LEVEL) or 1
+                raw_level = item.data(_COL_SCAN_ID, _ROLE_MS_LEVEL)
+                ms_level = raw_level if raw_level is not None else 1
                 self._pinned.append((item, spec, ms_level))
                 self._pinned_items.add(iid)
                 self._mark_item(item, selected=True)
@@ -756,7 +1005,8 @@ class MzMLFileExplorerWindow(QWidget):
             self._pinned.clear()
             self._pinned_items.clear()
 
-            ms_level = item.data(_COL_SCAN_ID, _ROLE_MS_LEVEL) or 1
+            raw_level = item.data(_COL_SCAN_ID, _ROLE_MS_LEVEL)
+            ms_level = raw_level if raw_level is not None else 1
             self._pinned.append((item, spec, ms_level))
             self._pinned_items.add(iid)
             self._mark_item(item, selected=True)
@@ -775,37 +1025,194 @@ class MzMLFileExplorerWindow(QWidget):
             else:
                 item.setBackground(col, QColor(0, 0, 0, 0))  # transparent
 
+    def _on_tree_context_menu(self, pos):
+        """Right-click on MS1/MS2 tree items: offer Deselect when the item is pinned."""
+        item = self._tree.itemAt(pos)
+        if item is None:
+            return
+        ms_level = item.data(_COL_SCAN_ID, _ROLE_MS_LEVEL)
+        if ms_level not in (1, 2):
+            return
+        if id(item) not in self._pinned_items:
+            return
+        menu = QMenu(self)
+        menu.addAction("Deselect").triggered.connect(lambda _checked=False, it=item: self._deselect_item(it))
+        menu.exec(self._tree.viewport().mapToGlobal(pos))
+
+    def _deselect_item(self, item: QTreeWidgetItem):
+        """Remove an item from the pinned selection and refresh."""
+        iid = id(item)
+        if iid not in self._pinned_items:
+            return
+        self._pinned = deque(
+            (p for p in self._pinned if p[0] is not item),
+            maxlen=self.MAX_SELECTED,
+        )
+        self._pinned_items.discard(iid)
+        self._mark_item(item, selected=False)
+        self._refresh_panels()
+
+    def _grid_config(self) -> tuple[int, int]:
+        """Return (n_cols, n_rows) for the current selection count."""
+        n = len(self._pinned)
+        if n <= 1:
+            return 1, 1
+        if n == 2:
+            return 2, 1
+        if n <= 4:
+            return 2, 2
+        if n <= 6:
+            return 3, 2
+        if n <= 9:
+            return 3, 3
+        return 4, 3
+
+    def _update_grid_layout(self):
+        """Show/hide panels and splitter rows to match the current selection count."""
+        n_cols, n_rows = self._grid_config()
+        for r, hsplit in enumerate(self._hsplit_rows):
+            row_visible = r < n_rows
+            hsplit.setVisible(row_visible)
+            for c in range(self._GRID_MAX_COLS):
+                self._panels[r * self._GRID_MAX_COLS + c].setVisible(row_visible and c < n_cols)
+        # Equalise splitter sizes for the visible portion
+        self._vsplit.setSizes([450 if r < n_rows else 0 for r in range(self._GRID_MAX_ROWS)])
+        for r, hsplit in enumerate(self._hsplit_rows):
+            if r < n_rows:
+                hsplit.setSizes([500 if c < n_cols else 0 for c in range(self._GRID_MAX_COLS)])
+
+    # ── TIC click: select closest MS1 scan ───────────────────────────────────
+
+    def _select_closest_ms1(self, rt: float, polarity: str):
+        """Find and select the closest MS1 scan of *polarity* to *rt* in the tree."""
+        best_item = None
+        best_diff = float("inf")
+        req_pol = str(polarity).strip().lower()
+
+        root = self._tree.invisibleRootItem()
+        for top_idx in range(root.childCount()):
+            top_item = root.child(top_idx)
+            if top_item.data(_COL_SCAN_ID, _ROLE_MS_LEVEL) == 0:
+                continue  # skip TIC items
+            for ms1_idx in range(top_item.childCount()):
+                ms1_item = top_item.child(ms1_idx)
+                if ms1_item.data(_COL_SCAN_ID, _ROLE_MS_LEVEL) != 1:
+                    continue
+                spec = ms1_item.data(_COL_SCAN_ID, _ROLE_SPEC_DATA)
+                if spec is None:
+                    continue
+                item_pol = str(spec.get("polarity", "")).strip().lower()
+                if req_pol and item_pol != req_pol:
+                    continue
+                diff = abs(float(spec.get("scan_time", 0.0)) - rt)
+                if diff < best_diff:
+                    best_diff = diff
+                    best_item = ms1_item
+
+        if best_item is not None:
+            iid = id(best_item)
+            if iid not in self._pinned_items:
+                spec = best_item.data(_COL_SCAN_ID, _ROLE_SPEC_DATA)
+                if len(self._pinned) >= self.MAX_SELECTED:
+                    evicted_item, _, _ = self._pinned.popleft()
+                    self._pinned_items.discard(id(evicted_item))
+                    self._mark_item(evicted_item, selected=False)
+                self._pinned.append((best_item, spec, 1))
+                self._pinned_items.add(iid)
+                self._mark_item(best_item, selected=True)
+                self._refresh_panels()
+            self._tree.scrollToItem(best_item)
+
     # ── Panel refresh ─────────────────────────────────────────────────────────
 
+    def _visible_panels(self) -> list:
+        """Return panels in population order for the current grid config (row-major, visible only)."""
+        n_cols, n_rows = self._grid_config()
+        return [self._panels[r * self._GRID_MAX_COLS + c] for r in range(n_rows) for c in range(n_cols)]
+
     def _refresh_panels(self):
-        """Update only chart panels whose content has changed, preserving zoom/annotations."""
+        """Update chart panels, preserving zoom and annotations even when the grid reshapes."""
+        # ── 1. Snapshot current state (zoom + annotations) keyed by spec identity ──
+        saved_state: dict[int, dict] = {}
+        for panel in self._panels:
+            if panel._current_spec is not None and panel._chart_view is not None:
+                cv = panel._chart_view
+                xa, ya = cv._xa(), cv._ya()
+                saved_state[id(panel._current_spec)] = {
+                    "x_range": (xa.min(), xa.max()) if xa else None,
+                    "y_range": (ya.min(), ya.max()) if ya else None,
+                    "pinned": list(cv._pinned_annotations),
+                }
+
+        self._update_grid_layout()
         pinned_list = list(self._pinned)
-        for idx, panel in enumerate(self._panels):
+        visible = self._visible_panels()
+
+        # ── 2. Populate visible panels ─────────────────────────────────────────────
+        for idx, panel in enumerate(visible):
             if idx < len(pinned_list):
                 item, spec, ms_level = pinned_list[idx]
                 if panel._current_spec is spec:
-                    continue  # same scan already shown — preserve zoom/pan/annotations
-                scan_id = spec.get("scan_id", "?")
-                rt = spec.get("scan_time", 0.0)
-                polarity = spec.get("polarity", "")
-                title = f"MS{ms_level}  |  Scan: {scan_id}  |  RT: {rt:.4f} min  |  {polarity}"
-                if ms_level == 2:
-                    prec = spec.get("precursor_mz")
-                    if prec is not None:
-                        title += f"  |  Precursor: {float(prec):.4f}"
-                open_fn = (lambda s=spec, fn=self._filename: self._open_msms_popup(s, fn)) if ms_level == 2 else None
-                panel.set_spectrum(
-                    title,
-                    spec.get("mz", []),
-                    spec.get("intensity", []),
-                    ms_level,
-                    spec=spec,
-                    open_msms_fn=open_fn,
-                )
+                    continue  # same panel, same spec — nothing to do
+
+                if ms_level == 0:
+                    pol = spec.get("polarity", "")
+                    pol_label = f" [{pol}]" if pol and pol != "unknown" else ""
+                    n = len(spec["rt"])
+                    title = f"TIC{pol_label}  |  {n} MS1 scans  |  {self._filename}"
+                    select_fn = lambda rt, p=pol: self._select_closest_ms1(rt, p)
+                    panel.set_tic(title, spec["rt"], spec["tic"], tic_data=spec, select_fn=select_fn)
+                else:
+                    scan_id = spec.get("scan_id", "?")
+                    rt = spec.get("scan_time", 0.0)
+                    polarity = spec.get("polarity", "")
+                    title = f"MS{ms_level}  |  Scan: {scan_id}  |  RT: {rt:.4f} min  |  {polarity}"
+                    if ms_level == 2:
+                        prec = spec.get("precursor_mz")
+                        if prec is not None:
+                            title += f"  |  Precursor: {float(prec):.4f}"
+                    open_fn = (lambda s=spec, fn=self._filename: self._open_msms_popup(s, fn)) if ms_level == 2 else None
+                    panel.set_spectrum(
+                        title,
+                        spec.get("mz", []),
+                        spec.get("intensity", []),
+                        ms_level,
+                        spec=spec,
+                        open_msms_fn=open_fn,
+                        file_manager=self._file_manager,
+                        eic_defaults=self._eic_defaults,
+                    )
+
+                # ── 3. Restore zoom + annotations if spec was shown elsewhere ──────
+                saved = saved_state.get(id(spec))
+                if saved and panel._chart_view is not None:
+                    cv = panel._chart_view
+                    if saved["x_range"] and cv._xa():
+                        cv._xa().setRange(*saved["x_range"])
+                    if saved["y_range"] and cv._ya():
+                        cv._ya().setRange(*saved["y_range"])
+                    if ms_level != 0:
+                        for ann_mz, ann_norm, ann_color in saved["pinned"]:
+                            cv._pin_annotation(ann_mz, ann_norm, ann_color)
             else:
-                if panel._current_spec is None:
-                    continue  # already empty
+                if panel._current_spec is not None:
+                    panel.clear()
+
+        # ── 4. Clear panels that left the visible set ──────────────────────────────
+        visible_set = set(id(p) for p in visible)
+        for panel in self._panels:
+            if id(panel) not in visible_set and panel._current_spec is not None:
                 panel.clear()
+
+        # ── 5. Refresh scan markers on all visible TIC panels ──────────────────────
+        for idx, panel in enumerate(visible):
+            if idx >= len(pinned_list):
+                break
+            _, spec, ms_level = pinned_list[idx]
+            if ms_level == 0 and panel._chart_view is not None:
+                pol = str(spec.get("polarity", "")).strip().lower()
+                marker_rts = [float(s.get("scan_time", 0.0)) for _, s, lvl in pinned_list if lvl == 1 and str(s.get("polarity", "")).strip().lower() == pol]
+                panel._chart_view.set_scan_markers(marker_rts)
 
     def _open_msms_popup(self, spec: dict, filename: str):
         """Open a MSMSPopupWindow for the given MS2 spectrum."""

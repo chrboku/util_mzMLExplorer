@@ -1029,7 +1029,7 @@ wheels = [
 
 [[package]]
 name = "util-mzmlexplorer"
-version = "7.10.0"
+version = "7.10.1"
 source = { editable = "." }
 dependencies = [
     { name = "matchms" },

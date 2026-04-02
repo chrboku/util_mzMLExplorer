@@ -1905,24 +1905,40 @@ class MzMLExplorerMainWindow(QMainWindow):
                 min_mz, max_mz = filter_params
                 adducts = compound_data.get("Common_adducts", "")
 
-                if isinstance(adducts, str) and adducts.strip():
+                # Build explicit adduct list from Common_adducts
+                if isinstance(adducts, list):
+                    adduct_list = [a.strip() for a in adducts if a and str(a).strip()]
+                elif isinstance(adducts, str) and adducts.strip():
                     adduct_list = [a.strip() for a in adducts.split(",") if a.strip()]
-                    for adduct in adduct_list:
-                        try:
-                            # Use pre-calculated m/z value if available
-                            precalc_data = self.compound_manager.get_precalculated_data(compound_name, adduct)
+                else:
+                    adduct_list = []
 
-                            if precalc_data and precalc_data["mz"] is not None:
-                                mz_value = precalc_data["mz"]
-                            else:
-                                # Fallback to calculation if pre-calculated data not available
-                                mz_value = self.compound_manager.calculate_compound_mz(compound_name, adduct)
+                # For formula/mass compounds also consider all adducts from the adducts table
+                compound_type = compound_data.get("compound_type", "formula")
+                if compound_type in ("formula", "mass"):
+                    adducts_df = self.compound_manager.get_adducts_data()
+                    if not adducts_df.empty and "Adduct" in adducts_df.columns:
+                        all_table_adducts = adducts_df["Adduct"].dropna().tolist()
+                        # Append adducts not already in the explicit list
+                        explicit_set = set(adduct_list)
+                        adduct_list = adduct_list + [a for a in all_table_adducts if a not in explicit_set]
 
-                            if mz_value is not None and min_mz <= mz_value <= max_mz:
-                                show_compound = True
-                                break
-                        except:
-                            continue
+                for adduct in adduct_list:
+                    try:
+                        # Use pre-calculated m/z value if available
+                        precalc_data = self.compound_manager.get_precalculated_data(compound_name, adduct)
+
+                        if precalc_data and precalc_data["mz"] is not None:
+                            mz_value = precalc_data["mz"]
+                        else:
+                            # Fallback to calculation if pre-calculated data not available
+                            mz_value = self.compound_manager.calculate_compound_mz(compound_name, adduct)
+
+                        if mz_value is not None and min_mz <= mz_value <= max_mz:
+                            show_compound = True
+                            break
+                    except:
+                        continue
 
             elif filter_type == "rt":
                 # Check if RT is in range

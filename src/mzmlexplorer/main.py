@@ -221,18 +221,24 @@ class CompoundStructurePopup(QWidget):
         self.show()
 
 
+# Path to the bundled logo image
+_LOGO_PATH = os.path.join(os.path.dirname(__file__), "logo.png")
+
+
 class CustomEICDialog(QDialog):
     """Dialog for quickly plotting an EIC trace for a custom formula, mass, SMILES or m/z value."""
 
-    def __init__(self, adducts_data, parent=None):
+    def __init__(self, adducts_data, ppm_default=5.0, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Show Custom EIC Trace")
         self.setMinimumWidth(500)
         self._adducts_data = adducts_data
+        self._ppm_default = ppm_default
         self._result_compound_data = None
         self._result_adduct = None
         self._result_mz = None
         self._result_polarity = None
+        self._result_ppm = ppm_default
         self._setup_ui()
         self._connect_signals()
         # Trigger initial validation
@@ -248,6 +254,27 @@ class CustomEICDialog(QDialog):
 
         self.tabs = QTabWidget()
 
+        # ---- Tab 0 (default): m/z value ----
+        tab2 = QWidget()
+        form2 = QFormLayout(tab2)
+        form2.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        form2.setContentsMargins(12, 12, 12, 12)
+        form2.setVerticalSpacing(8)
+
+        self.mz_spin = QDoubleSpinBox()
+        self.mz_spin.setRange(0.001, 100000.0)
+        self.mz_spin.setDecimals(6)
+        self.mz_spin.setSuffix(" m/z")
+        self.mz_spin.setValue(200.0)
+        form2.addRow("m/z value:", self.mz_spin)
+
+        self.polarity_combo = QComboBox()
+        self.polarity_combo.addItem("Positive", "positive")
+        self.polarity_combo.addItem("Negative", "negative")
+        form2.addRow("Polarity:", self.polarity_combo)
+
+        self.tabs.addTab(tab2, "m/z value")
+
         # ---- Tab 1: Formula / SMILES / Mass ----
         tab1 = QWidget()
         form1 = QFormLayout(tab1)
@@ -260,7 +287,7 @@ class CustomEICDialog(QDialog):
         form1.addRow("Chemical Formula:", self.formula_edit)
 
         self.smiles_edit = QLineEdit()
-        self.smiles_edit.setPlaceholderText("Optional – validated with RDKit when filled")
+        self.smiles_edit.setPlaceholderText("Optional \u2013 validated with RDKit when filled")
         form1.addRow("SMILES:", self.smiles_edit)
 
         self.mass_spin = QDoubleSpinBox()
@@ -290,28 +317,22 @@ class CustomEICDialog(QDialog):
 
         self.tabs.addTab(tab1, "Formula / SMILES / Mass")
 
-        # ---- Tab 2: m/z value ----
-        tab2 = QWidget()
-        form2 = QFormLayout(tab2)
-        form2.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
-        form2.setContentsMargins(12, 12, 12, 12)
-        form2.setVerticalSpacing(8)
-
-        self.mz_spin = QDoubleSpinBox()
-        self.mz_spin.setRange(0.001, 100000.0)
-        self.mz_spin.setDecimals(6)
-        self.mz_spin.setSuffix(" m/z")
-        self.mz_spin.setValue(200.0)
-        form2.addRow("m/z value:", self.mz_spin)
-
-        self.polarity_combo = QComboBox()
-        self.polarity_combo.addItem("Positive", "positive")
-        self.polarity_combo.addItem("Negative", "negative")
-        form2.addRow("Polarity:", self.polarity_combo)
-
-        self.tabs.addTab(tab2, "m/z value")
-
         layout.addWidget(self.tabs)
+
+        # ---- Shared ppm tolerance spinner ----
+        ppm_layout = QHBoxLayout()
+        ppm_label = QLabel("m/z Tolerance:")
+        self.ppm_spin = QDoubleSpinBox()
+        self.ppm_spin.setRange(0.1, 500.0)
+        self.ppm_spin.setDecimals(1)
+        self.ppm_spin.setSingleStep(1.0)
+        self.ppm_spin.setSuffix(" ppm")
+        self.ppm_spin.setValue(self._ppm_default)
+        self.ppm_spin.setToolTip("m/z extraction window in parts-per-million")
+        ppm_layout.addWidget(ppm_label)
+        ppm_layout.addWidget(self.ppm_spin)
+        ppm_layout.addStretch()
+        layout.addLayout(ppm_layout)
 
         # Buttons
         btn_layout = QHBoxLayout()
@@ -469,20 +490,20 @@ class CustomEICDialog(QDialog):
             self.validation_label1.setText("")
 
         # Enable OK only when on this tab and m/z could be computed without blocking errors
-        if self.tabs.currentIndex() == 0:
+        if self.tabs.currentIndex() == 1:
             self.ok_btn.setEnabled(bool(not errors and mz_value is not None))
 
     def _validate_tab2(self):
         """Live-validate the m/z tab."""
         valid = self.mz_spin.value() > 0.0
-        if self.tabs.currentIndex() == 1:
+        if self.tabs.currentIndex() == 0:
             self.ok_btn.setEnabled(valid)
 
     def _on_tab_changed(self, index):
         if index == 0:
-            self._validate_tab1()
-        else:
             self._validate_tab2()
+        else:
+            self._validate_tab1()
 
     # ------------------------------------------------------------------
     # Accept handler
@@ -492,8 +513,8 @@ class CustomEICDialog(QDialog):
         """Collect results and close the dialog."""
         from .utils import calculate_molecular_mass, parse_molecular_formula, adduct_mass_change
 
-        if self.tabs.currentIndex() == 0:
-            # ---- Tab 1 ----
+        if self.tabs.currentIndex() == 1:
+            # ---- Tab 1: Formula / SMILES / Mass ----
             formula = self.formula_edit.text().strip()
             mass_override = self.mass_spin.value()
             adduct = self.adduct_combo1.currentText()
@@ -525,7 +546,7 @@ class CustomEICDialog(QDialog):
             self._result_mz = mz_value
             self._result_polarity = polarity
         else:
-            # ---- Tab 2 ----
+            # ---- Tab 0: m/z value ----
             mz_value = self.mz_spin.value()
             polarity = self.polarity_combo.currentData()
             pol_sign = "+" if polarity == "positive" else "-"
@@ -539,15 +560,17 @@ class CustomEICDialog(QDialog):
             self._result_mz = mz_value
             self._result_polarity = polarity
 
+        self._result_ppm = self.ppm_spin.value()
         self.accept()
 
     def get_result(self):
-        """Return (compound_data, adduct, mz_value, polarity) after the dialog was accepted."""
+        """Return (compound_data, adduct, mz_value, polarity, ppm) after the dialog was accepted."""
         return (
             self._result_compound_data,
             self._result_adduct,
             self._result_mz,
             self._result_polarity,
+            self._result_ppm,
         )
 
 
@@ -2051,12 +2074,12 @@ class MzMLExplorerMainWindow(QMainWindow):
                 base_df = pd.concat([base_df, extra], ignore_index=True)
         adducts_data = base_df
 
-        dialog = CustomEICDialog(adducts_data, parent=self)
+        dialog = CustomEICDialog(adducts_data, ppm_default=self.eic_defaults["mz_tolerance_ppm"], parent=self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
-            compound_data, adduct, mz_value, polarity = dialog.get_result()
-            self.show_eic_window(compound_data, adduct, mz_value=mz_value, polarity=polarity)
+            compound_data, adduct, mz_value, polarity, ppm = dialog.get_result()
+            self.show_eic_window(compound_data, adduct, mz_value=mz_value, polarity=polarity, ppm_override=ppm)
 
-    def show_eic_window(self, compound, adduct, mz_value=None, polarity=None):
+    def show_eic_window(self, compound, adduct, mz_value=None, polarity=None, ppm_override=None):
         """Show EIC window for the selected compound and adduct"""
         if self.file_manager.get_files_data().empty:
             QMessageBox.warning(self, "Warning", "No files loaded!")
@@ -2064,13 +2087,17 @@ class MzMLExplorerMainWindow(QMainWindow):
 
         try:
             # Create EIC window as independent window (no parent)
+            effective_defaults = self.eic_defaults
+            if ppm_override is not None:
+                effective_defaults = dict(self.eic_defaults)
+                effective_defaults["mz_tolerance_ppm"] = ppm_override
             eic_window = EICWindow(
                 compound,
                 adduct,
                 self.file_manager,
                 mz_value=mz_value,
                 polarity=polarity,
-                defaults=self.eic_defaults,  # Pass the defaults
+                defaults=effective_defaults,  # Pass the defaults
                 parent=None,  # Make it independent
                 integration_callback=self.record_peak_integration,  # Pass integration callback
                 settings_callback=self._on_eic_settings_changed,  # Persist control changes
@@ -2180,20 +2207,72 @@ class MzMLExplorerMainWindow(QMainWindow):
 
     def show_about_dialog(self):
         """Show the about dialog"""
+        from PyQt6.QtWidgets import QDialogButtonBox
+
         # Extract version from the project's pyproject.toml file
         try:
             toml_path = os.path.join(os.path.dirname(__file__), "..", "..", "pyproject.toml")
             with open(toml_path, "r") as f:
                 project_data = toml.load(f)
                 version = project_data.get("project", {}).get("version", "Unknown")
-        except Exception as ex:
+        except Exception:
             version = "Unknown"
 
-        QMessageBox.about(
-            self,
-            "About mzML Explorer",
-            f"mzML Explorer v{version}\n\nA tool for visualizing LC-HRMS data from mzML files.\n\nFeatures:\n• Load mzML files via Excel templates\n• Extract ion chromatograms (EICs)\n• Interactive plotting with zoom and pan\n• Group-based color coding\n\nBuilt with PyQt6 and pymzml.\n\n(c) 2025 Plant-Microbe Metabolomics, BOKU University",
+        dlg = QDialog(self)
+        dlg.setWindowTitle("About mzML Explorer")
+        dlg.setMinimumWidth(400)
+        dlg.setStyleSheet("background-color: white;")
+        layout = QVBoxLayout(dlg)
+        layout.setSpacing(12)
+        layout.setContentsMargins(20, 20, 20, 20)
+
+        # Logo
+        if os.path.exists(_LOGO_PATH):
+            from .window_game import SnakeWindow
+
+            logo_lbl = QLabel()
+            pix = QPixmap(_LOGO_PATH).scaledToWidth(260, Qt.TransformationMode.SmoothTransformation)
+            logo_lbl.setPixmap(pix)
+            logo_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            logo_lbl.setToolTip("Click to play Snake 🐍")
+
+            def _open_snake(event, _dlg=dlg):
+                _dlg.accept()
+                snake_win = SnakeWindow(parent=None)
+                snake_win.show()
+                snake_win.raise_()
+                # Keep reference on the main window so it isn't garbage-collected
+                mw = self
+                if not hasattr(mw, "_game_windows"):
+                    mw._game_windows = []
+                mw._game_windows.append(snake_win)
+                snake_win.destroyed.connect(lambda: mw._game_windows.remove(snake_win) if snake_win in mw._game_windows else None)
+
+            logo_lbl.mousePressEvent = _open_snake
+            layout.addWidget(logo_lbl)
+
+        # Info text
+        text_lbl = QLabel(
+            f"<b>mzML Explorer v{version}</b><br><br>"
+            "A tool for visualizing LC-HRMS data from mzML files.<br><br>"
+            "<b>Features:</b><br>"
+            "\u2022 Load mzML files via Excel templates<br>"
+            "\u2022 Extract ion chromatograms (EICs)<br>"
+            "\u2022 Interactive plotting with zoom and pan<br>"
+            "\u2022 Group-based color coding<br><br>"
+            "Built with PyQt6 and pymzml.<br><br>"
+            "\u00a9 2025 Plant-Microbe Metabolomics, BOKU University"
         )
+        text_lbl.setWordWrap(True)
+        text_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(text_lbl)
+
+        # OK button
+        btn_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok)
+        btn_box.accepted.connect(dlg.accept)
+        layout.addWidget(btn_box)
+
+        dlg.exec()
 
     def dragEnterEvent(self, event: QDragEnterEvent):
         """Handle drag enter events"""

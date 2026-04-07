@@ -1,4 +1,4 @@
-print("Loading mzML Explorer...")
+print("Loading mzmlexplorer...")
 
 import sys
 import os

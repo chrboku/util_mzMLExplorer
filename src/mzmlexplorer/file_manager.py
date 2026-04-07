@@ -415,8 +415,9 @@ class FileManager:
             # If no group column, create a default group
             self.files_data["group"] = "default"
 
-        # Get unique groups
-        unique_groups = self.files_data["group"].unique()
+        # Get unique groups in natural sort order so palette index 0 always
+        # goes to the first group alphabetically, regardless of file-load order.
+        unique_groups = natsorted(self.files_data["group"].unique())
 
         # Check if color column exists
         if "color" in self.files_data.columns:
@@ -611,6 +612,8 @@ class FileManager:
             polarity = "+"
         elif polarity.lower() in ["negative", "neg", "neg.", "-"]:
             polarity = "-"
+        else:
+            polarity = None  # unrecognised value → no filtering
 
         try:
             rt_list = []

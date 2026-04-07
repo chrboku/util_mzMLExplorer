@@ -668,6 +668,15 @@ class EICWindow(QWidget):
         # Use pre-calculated m/z value if provided, otherwise calculate
         if mz_value is not None:
             self.target_mz = mz_value
+            # Normalise "positive"/"negative" → "+"/"-" so comparisons are consistent
+            if isinstance(polarity, str):
+                _p = polarity.strip().lower()
+                if _p in {"+", "positive", "pos", "pos."}:
+                    polarity = "+"
+                elif _p in {"-", "negative", "neg", "neg."}:
+                    polarity = "-"
+                else:
+                    polarity = None
             self.polarity = polarity
         else:
             # Fallback: Calculate target m/z using compound manager

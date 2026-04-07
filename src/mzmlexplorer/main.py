@@ -636,6 +636,18 @@ class MzMLExplorerMainWindow(QMainWindow):
         self.files_table.verticalHeader().setMinimumSectionSize(16)
         left_layout.addWidget(self.files_table)
 
+        # Watermark logo shown until files are loaded
+        self._logo_overlay = None
+        self._setup_logo_overlay()
+
+        # Placeholder hint
+        self._files_placeholder = QLabel("Drag 'n' drop files here", self.files_table.viewport())
+        self._files_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._files_placeholder.setStyleSheet("color: #aaaaaa; font-size: 13px;")
+        self._files_placeholder.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self._files_placeholder.show()
+        self.files_table.viewport().installEventFilter(self)
+
         # Right panel: Compounds tree
         right_panel = QGroupBox("Compounds")
         right_panel.setAcceptDrops(True)
@@ -680,6 +692,14 @@ class MzMLExplorerMainWindow(QMainWindow):
         header.resizeSection(6, 150)
 
         right_layout.addWidget(self.compounds_table)
+
+        # Placeholder hint
+        self._compounds_placeholder = QLabel("Drag 'n' drop compounds table here", self.compounds_table.viewport())
+        self._compounds_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._compounds_placeholder.setStyleSheet("color: #aaaaaa; font-size: 13px;")
+        self._compounds_placeholder.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self._compounds_placeholder.show()
+        self.compounds_table.viewport().installEventFilter(self)
 
         # Structure hover popup — one instance, reused for every hovered row
         self.structure_popup = CompoundStructurePopup(self)
@@ -1037,6 +1057,16 @@ class MzMLExplorerMainWindow(QMainWindow):
             self.files_table.setColumnCount(0)
             return
 
+        # Hide the logo watermark now that files have been loaded
+        if self._logo_overlay is not None:
+            self._logo_overlay.hide()
+            self._logo_overlay.deleteLater()
+            self._logo_overlay = None
+
+        # Hide the placeholder once rows exist
+        if hasattr(self, "_files_placeholder"):
+            self._files_placeholder.setVisible(files_display_data.empty)
+
         # Set up table
         self.files_table.verticalHeader().setDefaultSectionSize(20)
         self.files_table.setRowCount(len(files_display_data))
@@ -1120,7 +1150,46 @@ class MzMLExplorerMainWindow(QMainWindow):
         """Hide the structure popup when the mouse leaves the compounds table."""
         if obj is self.compounds_table.viewport() and event.type() == QEvent.Type.Leave:
             self.structure_popup.hide()
+        if obj is self.files_table and event.type() == QEvent.Type.Resize:
+            self._reposition_logo_overlay()
+        # Keep placeholder labels filling their viewport
+        if event.type() == QEvent.Type.Resize:
+            if obj is self.files_table.viewport() and hasattr(self, "_files_placeholder"):
+                self._files_placeholder.setGeometry(obj.rect())
+            if obj is self.compounds_table.viewport() and hasattr(self, "_compounds_placeholder"):
+                self._compounds_placeholder.setGeometry(obj.rect())
         return super().eventFilter(obj, event)
+
+    def _setup_logo_overlay(self):
+        """Pin a semi-transparent logo to the bottom-left of the files table."""
+        if not os.path.exists(_LOGO_PATH):
+            return
+        source_px = QPixmap(_LOGO_PATH)
+        scaled = source_px.scaledToWidth(180, Qt.TransformationMode.SmoothTransformation)
+        faded = QPixmap(scaled.size())
+        faded.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(faded)
+        painter.setOpacity(0.40)
+        painter.drawPixmap(0, 0, scaled)
+        painter.end()
+        lbl = QLabel(self.files_table)
+        lbl.setPixmap(faded)
+        lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        lbl.setFixedSize(faded.size())
+        lbl.raise_()
+        lbl.show()
+        self._logo_overlay = lbl
+        self.files_table.installEventFilter(self)
+        self._reposition_logo_overlay()
+
+    def _reposition_logo_overlay(self):
+        """Move the logo to the bottom-left corner of the files table (10 px margin)."""
+        if self._logo_overlay is None:
+            return
+        tbl = self.files_table
+        lbl = self._logo_overlay
+        y = tbl.height() - lbl.height() - 10
+        lbl.move(10, max(0, y))
 
     def _on_compound_hover(self, item: QTreeWidgetItem, column: int) -> None:
         """Show the structure popup for the compound row the mouse entered."""
@@ -1139,6 +1208,9 @@ class MzMLExplorerMainWindow(QMainWindow):
         self.compounds_table.clear()
         self.compounds_table.setHeaderLabels(["Name", "Retention Time", "Type", "Quantification", "Formula", "Mass", "Common Adducts"])
         compounds_data = self.compound_manager.get_compounds_data()
+
+        if hasattr(self, "_compounds_placeholder"):
+            self._compounds_placeholder.setVisible(compounds_data.empty)
 
         if compounds_data.empty:
             return

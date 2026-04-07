@@ -46,6 +46,7 @@ from PyQt6.QtWidgets import (
     QScrollArea,
     QTextEdit,
     QStyle,
+    QLineEdit,
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QPointF, QMargins
 from PyQt6.QtCharts import QChart, QChartView, QLineSeries, QValueAxis
@@ -57,6 +58,9 @@ from .window_msms import MSMSViewerWindow
 from .utils import (
     format_mz,
     format_retention_time,
+    adduct_mass_change,
+    calculate_molecular_mass,
+    parse_molecular_formula,
 )
 from .compound_manager import CompoundManager
 
@@ -693,6 +697,14 @@ class EICWindow(QWidget):
         self.scatter_plot_menu_text = "View 2D scatter plot (RT vs m/z)"
         self._syncing_scatter_x_axis = False
 
+        # Extra EIC trace state (additional subplots below the main EIC)
+        # Each entry: {"label": str, "mz": float, "ppm": float, "polarity": str,
+        #              "eic_data": dict, "chart": QChart, "chart_view": InteractiveChartView,
+        #              "x_axis": QValueAxis, "y_axis": QValueAxis, "color": str}
+        self._extra_eic_traces = []
+        self._syncing_x_axes = False  # Guard against recursive axis-sync loops
+        self._equalizing_y_widths = False  # Guard against recursive width equalization
+
         # Group name annotation items drawn on the chart scene (cleared/rebuilt on each update_plot)
         self._group_annotations = []  # QGraphicsSimpleTextItem references
         self._group_annotation_data = []  # (text_item, x_rt_data) for live repositioning
@@ -810,9 +822,15 @@ class EICWindow(QWidget):
         self.eic_boxplot_splitter = QSplitter(Qt.Orientation.Vertical)
         self.eic_boxplot_splitter.setChildrenCollapsible(False)  # Prevent complete collapse
 
+        # Inner vertical splitter that holds the main EIC chart + any extra trace charts
+        self._eic_charts_splitter = QSplitter(Qt.Orientation.Vertical)
+        self._eic_charts_splitter.setChildrenCollapsible(False)
+
         # Main chart (EIC)
         self.chart_view = self.create_chart()
-        self.eic_boxplot_splitter.addWidget(self.chart_view)
+        self._eic_charts_splitter.addWidget(self.chart_view)
+
+        self.eic_boxplot_splitter.addWidget(self._eic_charts_splitter)
 
         # Boxplot widget
         self.create_boxplot_widget()
@@ -1107,6 +1125,12 @@ class EICWindow(QWidget):
         self._populate_grouping_columns()
         self.grouping_column_combo.currentTextChanged.connect(self.on_grouping_column_changed)
         layout.addRow("Group by Column:", self.grouping_column_combo)
+        # Hide the grouping-column row — it's an internal setting; users should not
+        # change it in this panel.
+        self.grouping_column_combo.setVisible(False)
+        _gcol_label = layout.labelForField(self.grouping_column_combo)
+        if _gcol_label:
+            _gcol_label.setVisible(False)
 
         # Separation mode
         self.separation_mode_combo = QComboBox()
@@ -1164,7 +1188,7 @@ class EICWindow(QWidget):
         # Logarithmic Y-axis option
         self.log_y_cb = QCheckBox("Log\u2081\u2080 Y-axis")
         self.log_y_cb.setChecked(False)
-        self.log_y_cb.stateChanged.connect(self.update_plot)
+        self.log_y_cb.stateChanged.connect(lambda _: self.update_plot())
         layout.addRow(self.log_y_cb)
 
         # Ridge plot option
@@ -1367,36 +1391,34 @@ class EICWindow(QWidget):
     def on_group_setting_changed(self, group, setting, value):
         """Handle changes to group settings.
 
-        The new value is stored in group_settings and applied at render time,
-        using the same mechanism as the scaling factor: group membership is
-        determined from each EIC entry's metadata at render time, so no
-        propagation to individual sample_settings is needed.
-
-        For the 'plot' setting the value is additionally propagated to the
-        sample visibility checkboxes so the sample table stays in sync.
+        The new value is stored in ``group_settings``, then propagated to every
+        matching sample in ``sample_settings`` so that rendering (which uses
+        sample_settings exclusively) picks up the change immediately.
+        Table widgets are updated with signals blocked to avoid per-row redraws.
         """
-        if group in self.group_settings:
-            self.group_settings[group][setting] = value
+        if group not in self.group_settings:
+            return
+        self.group_settings[group][setting] = value
 
-            # Propagate group visibility to the sample settings table (display only)
-            if setting == "plot" and hasattr(self.file_manager, "files_data") and self.file_manager.files_data is not None:
-                df = self.file_manager.files_data
-                group_col = self.grouping_column if self.grouping_column in df.columns else None
-                if group_col is not None:
-                    matching_files = df[df[group_col].astype(str) == group]
-                    for _, frow in matching_files.iterrows():
-                        fn = str(frow.get("filename", ""))
-                        if not fn:
-                            continue
-                        if fn not in self.sample_settings:
-                            self.sample_settings[fn] = {"plot": True, "line_width": 1.0}
-                        self.sample_settings[fn][setting] = value
+        # Propagate to sample settings for every file belonging to this group
+        if hasattr(self.file_manager, "files_data") and self.file_manager.files_data is not None:
+            df = self.file_manager.files_data
+            group_col = self.grouping_column if self.grouping_column in df.columns else None
+            if group_col is not None:
+                matching_files = df[df[group_col].astype(str) == group]
+                for _, frow in matching_files.iterrows():
+                    fn = str(frow.get("filename", ""))
+                    if not fn:
+                        continue
+                    if fn not in self.sample_settings:
+                        self.sample_settings[fn] = {"scaling": 1.0, "plot": True, "negative": False, "line_width": 1.0}
+                    self.sample_settings[fn][setting] = value
 
-                # Silently update the sample settings table widgets
-                self._sync_sample_table_from_settings()
+        # Silently update all sample table widgets (signals blocked → no cascade redraws)
+        self._sync_sample_table_from_settings()
 
-            # Update the plot when settings change without resetting the view
-            self.update_plot(preserve_view=True)
+        # Trigger a single redraw
+        self.update_plot(preserve_view=True)
 
     def _sync_sample_table_from_settings(self):
         """Refresh sample table widgets from self.sample_settings without triggering per-row plot updates."""
@@ -1410,19 +1432,34 @@ class EICWindow(QWidget):
             fn = name_item.data(Qt.ItemDataRole.UserRole)
             if fn is None or fn not in self.sample_settings:
                 continue
-            # Column 1: Plot checkbox
-            cb_widget = table.cellWidget(row, 1)
+            ss = self.sample_settings[fn]
+            # Column 1: Scaling spinbox
+            scale_widget = table.cellWidget(row, 1)
+            if scale_widget is not None and isinstance(scale_widget, QDoubleSpinBox):
+                scale_widget.blockSignals(True)
+                scale_widget.setValue(ss.get("scaling", 1.0))
+                scale_widget.blockSignals(False)
+            # Column 2: Plot checkbox
+            cb_widget = table.cellWidget(row, 2)
             if cb_widget is not None:
                 cb = cb_widget.findChild(QCheckBox)
                 if cb is not None:
                     cb.blockSignals(True)
-                    cb.setChecked(self.sample_settings[fn]["plot"])
+                    cb.setChecked(ss.get("plot", True))
                     cb.blockSignals(False)
-            # Column 2: Line width spinbox
-            lw_widget = table.cellWidget(row, 2)
+            # Column 3: Neg. checkbox
+            neg_widget = table.cellWidget(row, 3)
+            if neg_widget is not None:
+                neg_cb = neg_widget.findChild(QCheckBox)
+                if neg_cb is not None:
+                    neg_cb.blockSignals(True)
+                    neg_cb.setChecked(ss.get("negative", False))
+                    neg_cb.blockSignals(False)
+            # Column 4: Line width spinbox
+            lw_widget = table.cellWidget(row, 4)
             if lw_widget is not None and isinstance(lw_widget, QDoubleSpinBox):
                 lw_widget.blockSignals(True)
-                lw_widget.setValue(self.sample_settings[fn].get("line_width", 1.0))
+                lw_widget.setValue(ss.get("line_width", 1.0))
                 lw_widget.blockSignals(False)
 
     def create_sample_settings_table(self):
@@ -1430,18 +1467,20 @@ class EICWindow(QWidget):
         self.sample_settings_box = CollapsibleBox("Sample Display Settings")
 
         self.sample_settings_table = QTableWidget()
-        # Column 0: Sample name  |  Column 1: Plot  |  Column 2: Line Width
-        self.sample_settings_table.setColumnCount(3)
-        self.sample_settings_table.setHorizontalHeaderLabels(["Sample", "Plot", "Line Width"])
+        # Column 0: Sample  |  Col 1: Scaling  |  Col 2: Plot  |  Col 3: Neg.  |  Col 4: Line Width
+        self.sample_settings_table.setColumnCount(5)
+        self.sample_settings_table.setHorizontalHeaderLabels(["Sample", "Scaling", "Plot", "Neg.", "Line Width"])
 
         self.sample_settings_table.setAlternatingRowColors(True)
         self.sample_settings_table.setSortingEnabled(True)
         self.sample_settings_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         self.sample_settings_table.horizontalHeader().setStretchLastSection(False)
         self.sample_settings_table.verticalHeader().setVisible(False)
-        self.sample_settings_table.setColumnWidth(0, 160)  # Sample name column
-        self.sample_settings_table.setColumnWidth(1, 40)  # Plot checkbox column
-        self.sample_settings_table.setColumnWidth(2, 80)  # Line Width column
+        self.sample_settings_table.setColumnWidth(0, 130)  # Sample name column
+        self.sample_settings_table.setColumnWidth(1, 95)  # Scaling column
+        self.sample_settings_table.setColumnWidth(2, 30)  # Plot checkbox column
+        self.sample_settings_table.setColumnWidth(3, 30)  # Neg. checkbox column
+        self.sample_settings_table.setColumnWidth(4, 80)  # Line Width column
         self.sample_settings_table.setMaximumHeight(800)
         self.sample_settings_table.setMinimumHeight(340)
 
@@ -1474,8 +1513,10 @@ class EICWindow(QWidget):
         # Initialise settings for samples that haven't been seen before
         for filename in sorted_samples:
             if filename not in self.sample_settings:
-                self.sample_settings[filename] = {"plot": True, "line_width": 1.0}
+                self.sample_settings[filename] = {"scaling": 1.0, "plot": True, "negative": False, "line_width": 1.0}
             else:
+                self.sample_settings[filename].setdefault("scaling", 1.0)
+                self.sample_settings[filename].setdefault("negative", False)
                 self.sample_settings[filename].setdefault("line_width", 1.0)
 
         for row, filename in enumerate(sorted_samples):
@@ -1490,7 +1531,16 @@ class EICWindow(QWidget):
                 name_item.setForeground(QColor(group_color))
             table.setItem(row, 0, name_item)
 
-            # Column 1: Plot checkbox
+            # Column 1: Scaling spinbox
+            scaling_spin = QDoubleSpinBox()
+            scaling_spin.setRange(0.00001, 100000.0)
+            scaling_spin.setValue(self.sample_settings[filename]["scaling"])
+            scaling_spin.setDecimals(5)
+            scaling_spin.setSingleStep(0.1)
+            scaling_spin.valueChanged.connect(lambda value, fn=filename: self.on_sample_setting_changed(fn, "scaling", value))
+            table.setCellWidget(row, 1, scaling_spin)
+
+            # Column 2: Plot checkbox
             plot_checkbox = QCheckBox()
             plot_checkbox.setChecked(self.sample_settings[filename]["plot"])
             plot_checkbox.stateChanged.connect(lambda state, fn=filename: self.on_sample_setting_changed(fn, "plot", state == Qt.CheckState.Checked.value))
@@ -1499,16 +1549,27 @@ class EICWindow(QWidget):
             checkbox_layout.addWidget(plot_checkbox)
             checkbox_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
             checkbox_layout.setContentsMargins(0, 0, 0, 0)
-            table.setCellWidget(row, 1, checkbox_widget)
+            table.setCellWidget(row, 2, checkbox_widget)
 
-            # Column 2: Line width spinbox
+            # Column 3: Neg. checkbox
+            neg_checkbox = QCheckBox()
+            neg_checkbox.setChecked(self.sample_settings[filename]["negative"])
+            neg_checkbox.stateChanged.connect(lambda state, fn=filename: self.on_sample_setting_changed(fn, "negative", state == Qt.CheckState.Checked.value))
+            neg_checkbox_widget = QWidget()
+            neg_checkbox_layout = QHBoxLayout(neg_checkbox_widget)
+            neg_checkbox_layout.addWidget(neg_checkbox)
+            neg_checkbox_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            neg_checkbox_layout.setContentsMargins(0, 0, 0, 0)
+            table.setCellWidget(row, 3, neg_checkbox_widget)
+
+            # Column 4: Line width spinbox
             width_spin = QDoubleSpinBox()
             width_spin.setRange(0.5, 10.0)
             width_spin.setValue(self.sample_settings[filename]["line_width"])
             width_spin.setDecimals(1)
             width_spin.setSingleStep(0.5)
             width_spin.valueChanged.connect(lambda value, fn=filename: self.on_sample_setting_changed(fn, "line_width", value))
-            table.setCellWidget(row, 2, width_spin)
+            table.setCellWidget(row, 4, width_spin)
 
         table.setSortingEnabled(True)
 
@@ -1528,7 +1589,7 @@ class EICWindow(QWidget):
     def on_sample_setting_changed(self, filename: str, setting: str, value) -> None:
         """Handle changes to per-sample display settings"""
         if filename not in self.sample_settings:
-            self.sample_settings[filename] = {"plot": True, "line_width": 1.0}
+            self.sample_settings[filename] = {"scaling": 1.0, "plot": True, "negative": False, "line_width": 1.0}
         self.sample_settings[filename][setting] = value
         # Persist across future EIC windows
         self._notify_setting("sample_settings", dict(self.sample_settings))
@@ -1552,10 +1613,11 @@ class EICWindow(QWidget):
                     continue
                 # Update the settings dict directly (no signal → no individual plot update)
                 if fn not in self.sample_settings:
-                    self.sample_settings[fn] = {"plot": True, "line_width": 1.0}
+                    self.sample_settings[fn] = {"scaling": 1.0, "plot": True, "negative": False, "line_width": 1.0}
                 self.sample_settings[fn]["plot"] = visible
                 # Silence the checkbox signal so it doesn't call update_plot per row
-                cell_widget = table.cellWidget(row, 1)
+                # Plot is now column 2
+                cell_widget = table.cellWidget(row, 2)
                 if cell_widget is not None:
                     cb = cell_widget.findChild(QCheckBox)
                     if cb is not None:
@@ -4675,6 +4737,9 @@ class EICWindow(QWidget):
         # Connect context menu signal
         chart_view.contextMenuRequested.connect(self.show_context_menu)
 
+        # Connect main x-axis range changes to sync handler
+        self.x_axis.rangeChanged.connect(self._on_main_x_axis_changed)
+
         # Store original ranges for reset functionality
         self.original_x_range = None
         self.original_y_range = None
@@ -5128,15 +5193,13 @@ class EICWindow(QWidget):
         if ridge:
             max_plot_intensity = 0.0
             for _grp in natsorted(groups_data.keys()):
-                _gs = self.group_settings.get(_grp, {"scaling": 1.0, "plot": True, "negative": False})
-                if not _gs.get("plot", True):
-                    continue
                 for _fd in groups_data.get(_grp, []):
                     _fn = _fd["metadata"].get("filename", os.path.basename(_fd["filepath"]))
-                    if not self.sample_settings.get(_fn, {}).get("plot", True):
+                    _ss = self.sample_settings.get(_fn, {"scaling": 1.0, "plot": True, "negative": False})
+                    if not _ss.get("plot", True):
                         continue
-                    _ints = _fd["intensity"] * _gs.get("scaling", 1.0)
-                    if _gs.get("negative", False):
+                    _ints = _fd["intensity"] * _ss.get("scaling", 1.0)
+                    if _ss.get("negative", False):
                         _ints = -_ints
                     if log_y:
                         _ints = self._apply_log_transform(_ints)
@@ -5156,21 +5219,15 @@ class EICWindow(QWidget):
         sorted_groups = natsorted(groups_data.keys())
 
         for group_name in sorted_groups:
-            # Check group settings - skip if group should not be plotted
-            group_settings = self.group_settings.get(
-                group_name,
-                {"scaling": 1.0, "plot": True, "negative": False, "line_width": 1.0},
-            )
-
             # Get group color
             group_color = self._get_group_color(group_name)
 
-            # Always add at least one legend entry per group, even if no data or not plotted
-            # This ensures the legend order matches the separation order
             group_files = groups_data.get(group_name, [])
 
-            if not group_settings["plot"] or len(group_files) == 0:
-                # Create an invisible/empty series just for the legend entry
+            # Create a placeholder legend entry when all samples in the group are hidden
+            # or there is no data (keeps legend order consistent).
+            any_visible = any(self.sample_settings.get(fd["metadata"].get("filename", os.path.basename(fd["filepath"])), {}).get("plot", True) for fd in group_files)
+            if not any_visible or len(group_files) == 0:
                 series = QLineSeries()
                 if separate_groups:
                     shift = self.group_shifts.get(group_name, 0.0)
@@ -5179,15 +5236,13 @@ class EICWindow(QWidget):
                     legend_name = group_name
                 series.setName(legend_name)
 
-                # Apply group color (even for invisible series)
                 if group_color:
                     color = QColor(group_color)
                     color.setAlpha(180)
                     pen = QPen(color)
-                    pen.setWidthF(group_settings.get("line_width", 1.0))
+                    pen.setWidthF(1.0)
                     series.setPen(pen)
 
-                # Add the series to chart (won't be visible but shows in legend)
                 self.chart.addSeries(series)
                 series.attachAxis(self.x_axis)
                 series.attachAxis(self.y_axis)
@@ -5196,22 +5251,21 @@ class EICWindow(QWidget):
             first_file_in_group = True
 
             for file_data in group_files:
-                # Check per-sample visibility setting
                 _fn = file_data["metadata"].get(
                     "filename",
                     os.path.basename(file_data["filepath"]),
                 )
-                if not self.sample_settings.get(_fn, {}).get("plot", True):
+                # Per-sample rendering settings (authoritative source for all render decisions)
+                _ss = self.sample_settings.get(_fn, {"scaling": 1.0, "plot": True, "negative": False, "line_width": 1.0})
+                if not _ss.get("plot", True):
                     continue
 
                 rt = file_data["rt"]
                 intensity = file_data["intensity"]
 
-                # Apply group scaling factor
-                intensity = intensity * group_settings["scaling"]
-
-                # Apply negative intensities if enabled for this group
-                if group_settings["negative"]:
+                # Apply per-sample scaling and negation
+                intensity = intensity * _ss.get("scaling", 1.0)
+                if _ss.get("negative", False):
                     intensity = -intensity
 
                 # Apply log10 transform if enabled
@@ -5258,13 +5312,11 @@ class EICWindow(QWidget):
                 for x, y in zip(rt, intensity):
                     series.append(float(x), float(y))
 
-                # Apply group color with transparency and line width.
-                # Line width is taken directly from group_settings (same mechanism
-                # as scaling), so it always reflects the group table value.
-                _effective_lw = group_settings.get("line_width", 1.0)
+                # Apply group color with transparency and per-sample line width
+                _effective_lw = _ss.get("line_width", 1.0)
                 if group_color:
                     color = QColor(group_color)
-                    color.setAlpha(180)  # Make lines semi-transparent (0-255, 180 = ~70% opacity)
+                    color.setAlpha(180)
                     pen = QPen(color)
                     pen.setWidthF(_effective_lw)
                     series.setPen(pen)
@@ -5364,6 +5416,17 @@ class EICWindow(QWidget):
 
         # Re-add peak boundary lines if they exist
         self._restore_peak_boundary_lines()
+
+        # Refresh all extra EIC trace charts with the same view settings
+        if self._extra_eic_traces:
+            for trace in self._extra_eic_traces:
+                self._update_extra_trace_chart(trace)
+            # Re-sync x-axis range of extra traces to the main chart after reset
+            from PyQt6.QtCore import QTimer
+
+            QTimer.singleShot(80, self._sync_all_x_axes_to_main)
+            # Re-equalize y-axis label widths
+            QTimer.singleShot(150, self._equalize_y_axis_widths)
 
     def _clear_group_annotations(self):
         """Remove all group-name text annotations and disconnect live-repositioning signals."""
@@ -5674,14 +5737,404 @@ class EICWindow(QWidget):
 
         return sorted(types_seen)
 
-    def show_context_menu(self, rt_value: float, position: QPointF):
-        """Show context menu at the specified position"""
+    # ------------------------------------------------------------------
+    # Extra EIC trace support
+    # ------------------------------------------------------------------
+
+    def _on_main_x_axis_changed(self, min_val: float, max_val: float):
+        """Propagate main chart x-axis range to all extra trace charts."""
+        if self._syncing_x_axes:
+            return
+        self._syncing_x_axes = True
+        try:
+            for trace in self._extra_eic_traces:
+                x_ax = trace.get("x_axis")
+                if x_ax is not None:
+                    x_ax.setRange(min_val, max_val)
+        finally:
+            self._syncing_x_axes = False
+
+    def _on_trace_x_axis_changed(self, min_val: float, max_val: float):
+        """Propagate an extra trace x-axis range change to all other charts."""
+        if self._syncing_x_axes:
+            return
+        self._syncing_x_axes = True
+        try:
+            # Sync main chart
+            self.x_axis.setRange(min_val, max_val)
+            # Sync all other extra traces
+            for trace in self._extra_eic_traces:
+                x_ax = trace.get("x_axis")
+                if x_ax is not None:
+                    x_ax.setRange(min_val, max_val)
+        finally:
+            self._syncing_x_axes = False
+
+    def _sync_all_x_axes_to_main(self):
+        """Copy the current main x-axis range to every extra trace chart."""
+        if not self.chart.axes(Qt.Orientation.Horizontal):
+            return
+        main_x = self.chart.axes(Qt.Orientation.Horizontal)[0]
+        min_val, max_val = main_x.min(), main_x.max()
+        self._syncing_x_axes = True
+        try:
+            for trace in self._extra_eic_traces:
+                x_ax = trace.get("x_axis")
+                if x_ax is not None:
+                    x_ax.setRange(min_val, max_val)
+        finally:
+            self._syncing_x_axes = False
+
+    def _equalize_y_axis_widths(self):
+        """Align the left edge of all EIC chart plot-areas so that y-axis tick
+        labels are all the same width and the x-axes are visually aligned.
+
+        Uses a two-phase approach to avoid infinite feedback loops:
+          1. Reset all extra left margins to 0.
+          2. After a short QTimer delay (so Qt can re-layout), measure the
+             natural plotArea().left() of each chart (= y-axis label width)
+             and add compensating left margins to narrower charts.
+        A reentrance guard prevents recursive calls from plotAreaChanged.
+        """
+        if self._equalizing_y_widths:
+            return
+        self._equalizing_y_widths = True
+
+        all_charts = [self.chart]
+        for trace in self._extra_eic_traces:
+            c = trace.get("chart")
+            if c is not None:
+                all_charts.append(c)
+
+        if len(all_charts) < 2:
+            # No extra traces — reset any stale padding
+            self.chart.setMargins(QMargins(0, 0, 0, 0))
+            self._equalizing_y_widths = False
+            return
+
+        # Phase 1 — reset all left padding so natural widths can be measured
+        for c in all_charts:
+            c.setMargins(QMargins(0, 0, 0, 0))
+
+        # Phase 2 — after Qt has laid out the charts, measure and compensate
+        from PyQt6.QtCore import QTimer
+
+        def _apply_equalization():
+            try:
+                lefts = [c.plotArea().left() for c in all_charts]
+                max_left = max(lefts)
+                for c, left in zip(all_charts, lefts):
+                    extra = max_left - left
+                    if extra > 0.5:
+                        c.setMargins(QMargins(int(extra), 0, 0, 0))
+            finally:
+                self._equalizing_y_widths = False
+
+        QTimer.singleShot(60, _apply_equalization)
+
+    def _show_add_eic_trace_dialog(self):
+        """Open the Add EIC Trace dialog and, if accepted, extract and display the new trace."""
+        dialog = _AddEICTraceDialog(
+            adducts_data=self._adducts_data,
+            ppm_default=self.defaults.get("mz_tolerance_ppm", 5.0),
+            parent=self,
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        label, mz, polarity, ppm = dialog.get_result()
+        self._add_extra_eic_trace(label, mz, ppm, polarity)
+
+    def _add_extra_eic_trace(self, label: str, target_mz: float, ppm: float, polarity: str):
+        """Extract EIC data for *target_mz* and add a new subplot below the main chart."""
+        # Pick a color for this trace (cycle through the palette)
+        color = _EXTRA_TRACE_COLORS[len(self._extra_eic_traces) % len(_EXTRA_TRACE_COLORS)]
+
+        # Determine mz tolerance in Da
+        mz_tolerance_da = target_mz * ppm * 1e-6
+
+        # Extract EIC data for every loaded file synchronously
+        eic_data = {}
+        files_data = self.file_manager.get_files_data()
+        for _, row in files_data.iterrows():
+            filepath = row["Filepath"]
+            try:
+                rt, intensity = self.file_manager.extract_eic(
+                    filepath,
+                    target_mz,
+                    mz_tolerance_da,
+                    None,
+                    None,
+                    self.eic_method_combo.currentText(),
+                    polarity,
+                )
+                eic_data[filepath] = {
+                    "rt": rt,
+                    "intensity": intensity,
+                    "metadata": row.to_dict(),
+                }
+            except Exception as e:
+                print(f"[Extra EIC trace] failed for {filepath}: {e}")
+
+        if not eic_data:
+            QMessageBox.warning(self, "No Data", f"No EIC data found for m/z {target_mz:.4f}.")
+            return
+
+        # Create chart and chart view for this trace
+        trace_chart = QChart()
+        trace_chart.setTitle("")
+        trace_chart.legend().setVisible(False)
+        trace_chart.setMargins(QMargins(0, 0, 0, 0))
+
+        trace_x_axis = QValueAxis()
+        trace_x_axis.setTitleText("Retention Time (min)")
+        trace_x_axis.setLabelFormat("%.1f")
+        trace_x_axis.setTickCount(8)
+        trace_chart.addAxis(trace_x_axis, Qt.AlignmentFlag.AlignBottom)
+
+        trace_y_axis = QValueAxis()
+        pol_str = f" [{polarity[0].upper() if polarity else '?'}]"
+        trace_y_axis.setTitleText(f"Intensity  {label}{pol_str}")
+        trace_y_axis.setLabelFormat("%.2e")
+        trace_y_axis.setTickCount(4)
+        trace_chart.addAxis(trace_y_axis, Qt.AlignmentFlag.AlignLeft)
+
+        trace_chart_view = InteractiveChartView(trace_chart)
+
+        # Synchronize scroll/zoom with the main chart
+        trace_x_axis.rangeChanged.connect(self._on_trace_x_axis_changed)
+
+        # Connect context menu so the extra trace chart shows the same menu
+        trace_chart_view.contextMenuRequested.connect(lambda rt_val, pos, cv=trace_chart_view: self.show_context_menu(rt_val, pos, source_chart_view=cv))
+
+        # Assemble trace info dict
+        trace_info = {
+            "label": label,
+            "mz": target_mz,
+            "ppm": ppm,
+            "polarity": polarity,
+            "eic_data": eic_data,
+            "chart": trace_chart,
+            "chart_view": trace_chart_view,
+            "x_axis": trace_x_axis,
+            "y_axis": trace_y_axis,
+            "color": color,
+        }
+        self._extra_eic_traces.append(trace_info)
+
+        # Populate chart with data
+        self._update_extra_trace_chart(trace_info)
+
+        # Add the chart view to the charts splitter
+        self._eic_charts_splitter.addWidget(trace_chart_view)
+
+        # Equalise heights: give each pane roughly equal space
+        n = self._eic_charts_splitter.count()
+        if n > 1:
+            total = 800  # nominal pixels
+            self._eic_charts_splitter.setSizes([total // n] * n)
+
+        # Sync x-axis of the new trace to the current main chart range
+        if self.chart.axes(Qt.Orientation.Horizontal):
+            main_x = self.chart.axes(Qt.Orientation.Horizontal)[0]
+            trace_x_axis.setRange(main_x.min(), main_x.max())
+
+        # Align y-axis label widths after the chart has been laid out
+        from PyQt6.QtCore import QTimer
+
+        QTimer.singleShot(200, self._equalize_y_axis_widths)
+
+    def _update_extra_trace_chart(self, trace_info: dict):
+        """Populate a trace chart with EIC series for all files,
+        applying the same view settings as the main EIC chart."""
+        trace_chart: QChart = trace_info["chart"]
+        trace_chart.removeAllSeries()
+
+        trace_x_axis: QValueAxis = trace_info["x_axis"]
+        trace_y_axis: QValueAxis = trace_info["y_axis"]
+        eic_data: dict = trace_info["eic_data"]
+        label: str = trace_info["label"]
+        polarity: str = trace_info.get("polarity") or ""
+
+        # Read the same view settings as the main plot
+        sep_mode = self._separation_mode()
+        separate_groups = sep_mode == "By group"
+        separate_injection = sep_mode in ("By injection order", "By group, then injection order")
+        crop_rt = self.crop_rt_cb.isChecked()
+        normalize = self.normalize_cb.isChecked()
+        log_y = self.log_y_cb.isChecked()
+        ridge = self.ridge_plot_cb.isChecked()
+        ridge_increment = self._get_ridge_increment() if ridge else 0.0
+
+        rt_start_crop = self.compound_data.get("RT_start_min") if crop_rt else None
+        rt_end_crop = self.compound_data.get("RT_end_min") if crop_rt else None
+
+        # Update y-axis title to reflect transforms
+        pol_str = f" [{polarity[0].upper()}]" if polarity else ""
+        if normalize and log_y:
+            y_title = f"Log\u2081\u2080(Norm.)  {label}{pol_str}"
+        elif normalize:
+            y_title = f"Norm. Intensity  {label}{pol_str}"
+        elif log_y:
+            y_title = f"Log\u2081\u2080(Intensity)  {label}{pol_str}"
+        elif ridge:
+            y_title = f"Offset Intensity  {label}{pol_str}"
+        else:
+            y_title = f"Intensity  {label}{pol_str}"
+        trace_y_axis.setTitleText(y_title)
+
+        # Update x-axis title exactly as the main chart does
+        if sep_mode != "None":
+            rt_shift = self.rt_shift_spin.value()
+            trace_x_axis.setTitleText(f"Retention Time (min) + i \u00d7 {rt_shift:.1f} min")
+            trace_x_axis.setTickCount(2)
+            trace_x_axis.setLabelsVisible(False)
+        else:
+            trace_x_axis.setTitleText("Retention Time (min)")
+            trace_x_axis.setTickCount(8)
+            trace_x_axis.setLabelsVisible(True)
+
+        all_y = []
+        all_x_min = float("inf")
+        all_x_max = float("-inf")
+        ridge_file_index = 0
+
+        for filepath, data in eic_data.items():
+            rt = data["rt"]
+            intensity = data["intensity"]
+            if len(rt) == 0:
+                continue
+
+            # Apply RT cropping
+            if crop_rt and rt_start_crop is not None and rt_end_crop is not None:
+                mask = (rt >= rt_start_crop) & (rt <= rt_end_crop)
+                rt = rt[mask]
+                intensity = intensity[mask]
+                if len(rt) == 0:
+                    continue
+
+            metadata = data["metadata"]
+            group_value = metadata.get(self.grouping_column, "Unknown")
+            group = str(group_value) if group_value is not None else "Unknown"
+
+            # Per-sample rendering settings (authoritative source for all render decisions)
+            fn = metadata.get("filename", os.path.basename(filepath))
+            _ss = self.sample_settings.get(fn, {"scaling": 1.0, "plot": True, "negative": False, "line_width": 1.0})
+            if not _ss.get("plot", True):
+                continue
+
+            # Apply RT shifts (same offsets as main chart)
+            rt_plot = rt.copy()
+            if separate_groups:
+                rt_plot = rt_plot + self.group_shifts.get(group, 0.0)
+            if separate_injection:
+                rt_plot = rt_plot + self.file_shifts.get(filepath, 0.0)
+
+            # Apply per-sample scaling and negation
+            intensity_plot = intensity * _ss.get("scaling", 1.0)
+            if _ss.get("negative", False):
+                intensity_plot = -intensity_plot
+
+            # Apply normalization
+            if normalize and len(intensity_plot) > 0:
+                max_i = float(np.max(intensity_plot))
+                if max_i > 0:
+                    intensity_plot = intensity_plot / max_i
+
+            # Apply log transform
+            if log_y:
+                intensity_plot = self._apply_log_transform(intensity_plot)
+
+            # Apply ridge shift (same per-file counter as main chart)
+            if ridge:
+                intensity_plot = intensity_plot + ridge_file_index * ridge_increment
+                ridge_file_index += 1
+
+            # Build QLineSeries
+            series = QLineSeries()
+            series.setProperty("sample_filename", fn)
+            for x, y in zip(rt_plot, intensity_plot):
+                series.append(float(x), float(y))
+
+            # Use the group color (same as main chart) with partial opacity
+            group_color_raw = self._get_group_color(group)
+            if group_color_raw:
+                pen_color = QColor(group_color_raw) if isinstance(group_color_raw, str) else QColor(group_color_raw)
+            else:
+                pen_color = QColor(trace_info["color"])
+            pen_color.setAlpha(180)
+            lw = _ss.get("line_width", 1.0)
+            pen = QPen(pen_color)
+            pen.setWidthF(lw)
+            series.setPen(pen)
+
+            trace_chart.addSeries(series)
+            series.attachAxis(trace_x_axis)
+            series.attachAxis(trace_y_axis)
+
+            for val in intensity_plot:
+                all_y.append(float(val))
+            if len(rt_plot):
+                all_x_min = min(all_x_min, float(np.min(rt_plot)))
+                all_x_max = max(all_x_max, float(np.max(rt_plot)))
+
+        # Set y-axis range
+        if all_y:
+            y_min_data = min(all_y)
+            y_max_data = max(all_y)
+            y_pad = (y_max_data - y_min_data) * 0.05 if y_max_data != y_min_data else abs(y_max_data) * 0.05
+            if normalize and not log_y and not ridge:
+                trace_y_axis.setRange(-0.05, 1.05)
+            elif log_y or ridge:
+                trace_y_axis.setRange(y_min_data - y_pad, y_max_data + y_pad)
+            else:
+                trace_y_axis.setRange(max(0.0, y_min_data - y_pad), y_max_data + y_pad)
+
+        if all_x_min < float("inf"):
+            x_pad = (all_x_max - all_x_min) * 0.02
+            trace_x_axis.setRange(all_x_min - x_pad, all_x_max + x_pad)
+
+    def _remove_all_extra_traces(self):
+        """Remove all extra EIC trace subplots."""
+        for trace in self._extra_eic_traces:
+            cv = trace.get("chart_view")
+            if cv is not None:
+                cv.setParent(None)
+                cv.deleteLater()
+        self._extra_eic_traces.clear()
+        # Reset main chart margins now that there are no extra traces
+        self.chart.setMargins(QMargins(0, 0, 0, 0))
+
+    def _remove_extra_trace_at(self, index: int):
+        """Remove a single extra EIC trace by its index (0 = first extra trace)."""
+        if index < 0 or index >= len(self._extra_eic_traces):
+            return
+        trace = self._extra_eic_traces.pop(index)
+        cv = trace.get("chart_view")
+        if cv is not None:
+            cv.setParent(None)
+            cv.deleteLater()
+        # Re-equalize (or reset if no more traces remain)
+        if not self._extra_eic_traces:
+            self.chart.setMargins(QMargins(0, 0, 0, 0))
+        else:
+            from PyQt6.QtCore import QTimer
+
+            QTimer.singleShot(100, self._equalize_y_axis_widths)
+
+    def show_context_menu(self, rt_value: float, position: QPointF, source_chart_view=None):
+        """Show context menu at the specified position.
+
+        *source_chart_view* is the chart view that emitted the signal; when
+        None the main self.chart_view is used for global position mapping.
+        """
         context_menu = QMenu(self)
+        has_extra = bool(self._extra_eic_traces)
 
         # --- View submenu at the top ---
         view_menu = context_menu.addMenu("View")
 
-        reset_view_action = QAction("Reset View", self)
+        reset_view_action = QAction("Auto fit", self)
         reset_view_action.triggered.connect(self.reset_view)
         view_menu.addAction(reset_view_action)
 
@@ -5693,46 +6146,63 @@ class EICWindow(QWidget):
         reset_y_action.triggered.connect(self.reset_y_axis)
         view_menu.addAction(reset_y_action)
 
-        view_menu.addSeparator()
-
-        scatter_action = QAction(self.scatter_plot_menu_text, self)
-        scatter_action.triggered.connect(self.toggle_scatter_plot)
-        view_menu.addAction(scatter_action)
+        # Scatter plot hidden when extra traces are present
+        if not has_extra:
+            view_menu.addSeparator()
+            scatter_action = QAction(self.scatter_plot_menu_text, self)
+            scatter_action.triggered.connect(self.toggle_scatter_plot)
+            view_menu.addAction(scatter_action)
 
         context_menu.addSeparator()
 
         # Add RT info
-        rt_action = QAction(f"RT: {rt_value:.2f} min", self)
+        rt_action = QAction(f"Clicked at {rt_value:.2f} min", self)
         rt_action.setEnabled(False)  # Make it non-clickable header
         context_menu.addAction(rt_action)
+        context_menu.addSeparator()
+
+        # Add EIC trace option
+        add_trace_action = QAction("Add EIC trace", self)
+        add_trace_action.triggered.connect(self._show_add_eic_trace_dialog)
+        context_menu.addAction(add_trace_action)
+
+        if has_extra:
+            # Submenu for removing individual traces
+            remove_menu = context_menu.addMenu(f"Remove EIC trace ({len(self._extra_eic_traces)})")
+            remove_all_action = QAction("Remove all extra traces", self)
+            remove_all_action.triggered.connect(self._remove_all_extra_traces)
+            remove_menu.addAction(remove_all_action)
+            remove_menu.addSeparator()
+            for i, trace in enumerate(self._extra_eic_traces):
+                lbl = trace.get("label", f"Trace {i + 1}")
+                act = remove_menu.addAction(f"Remove: {lbl}")
+                act.triggered.connect(lambda checked=False, idx=i: self._remove_extra_trace_at(idx))
 
         context_menu.addSeparator()
 
-        # Add peak boundary options
-        if len(self.peak_boundary_lines) == 0:
-            # No boundaries set - offer to add first one
-            add_boundary_action = QAction("Add peak boundary", self)
-            add_boundary_action.triggered.connect(lambda: self.add_peak_boundary(rt_value))
-            context_menu.addAction(add_boundary_action)
-        elif len(self.peak_boundary_lines) == 1:
-            # One boundary set - offer to add second one or remove all
-            add_second_boundary_action = QAction("Add second peak boundary", self)
-            add_second_boundary_action.triggered.connect(lambda: self.add_peak_boundary(rt_value))
-            context_menu.addAction(add_second_boundary_action)
+        # Peak boundary options hidden when extra traces are present
+        if not has_extra:
+            if len(self.peak_boundary_lines) == 0:
+                add_boundary_action = QAction("Add peak boundary", self)
+                add_boundary_action.triggered.connect(lambda: self.add_peak_boundary(rt_value))
+                context_menu.addAction(add_boundary_action)
+            elif len(self.peak_boundary_lines) == 1:
+                add_second_boundary_action = QAction("Add second peak boundary", self)
+                add_second_boundary_action.triggered.connect(lambda: self.add_peak_boundary(rt_value))
+                context_menu.addAction(add_second_boundary_action)
 
-            remove_boundary_action = QAction("Remove peak boundaries", self)
-            remove_boundary_action.triggered.connect(self.remove_peak_boundaries)
-            context_menu.addAction(remove_boundary_action)
-        else:  # len == 2
-            # Both boundaries set - only offer to remove them
-            remove_boundary_action = QAction("Remove peak boundaries", self)
-            remove_boundary_action.triggered.connect(self.remove_peak_boundaries)
-            context_menu.addAction(remove_boundary_action)
+                remove_boundary_action = QAction("Remove peak boundaries", self)
+                remove_boundary_action.triggered.connect(self.remove_peak_boundaries)
+                context_menu.addAction(remove_boundary_action)
+            else:  # len == 2
+                remove_boundary_action = QAction("Remove peak boundaries", self)
+                remove_boundary_action.triggered.connect(self.remove_peak_boundaries)
+                context_menu.addAction(remove_boundary_action)
 
-        context_menu.addSeparator()
+            context_menu.addSeparator()
 
         # Add MS1 viewing option
-        ms1_action = QAction("View MS1 spectra at RT", self)
+        ms1_action = QAction("Show MS1 spectra", self)
         ms1_action.triggered.connect(lambda: self.view_ms1_spectra(rt_value))
         context_menu.addAction(ms1_action)
 
@@ -5744,34 +6214,31 @@ class EICWindow(QWidget):
         any_msms_enabled = show_msms_closest or show_msms_3s or show_msms_6s or show_msms_9s
 
         if any_msms_enabled:
-            context_menu.addSeparator()
-
             # Add MSMS viewing options (unfiltered)
             if show_msms_closest:
-                msms_closest_action = QAction("MSMS spectrum", self)
+                msms_closest_action = QAction("Show MSMS spectra", self)
                 msms_closest_action.triggered.connect(lambda: self.view_closest_msms_spectrum(rt_value))
                 context_menu.addAction(msms_closest_action)
 
             if show_msms_3s:
-                msms_3s_action = QAction("MSMS spectrum (±3 sec)", self)
+                msms_3s_action = QAction("Show MSMS spectra (±3 sec)", self)
                 msms_3s_action.triggered.connect(lambda: self.view_msms_spectra(rt_value, 3.0 / 60.0))
                 context_menu.addAction(msms_3s_action)
 
             if show_msms_6s:
-                msms_6s_action = QAction("MSMS spectrum (±6 sec)", self)
+                msms_6s_action = QAction("Show MSMS spectra (±6 sec)", self)
                 msms_6s_action.triggered.connect(lambda: self.view_msms_spectra(rt_value, 6.0 / 60.0))
                 context_menu.addAction(msms_6s_action)
 
             if show_msms_9s:
-                msms_9s_action = QAction("MSMS spectrum (±9 sec)", self)
+                msms_9s_action = QAction("Show MSMS spectra (±9 sec)", self)
                 msms_9s_action.triggered.connect(lambda: self.view_msms_spectra(rt_value, 9.0 / 60.0))
                 context_menu.addAction(msms_9s_action)
 
             # Add per-type MSMS submenus when a filter regex is configured
             filter_types = self._get_msms_filter_types_at_rt(rt_value, 9.0 / 60.0)
             if filter_types:
-                context_menu.addSeparator()
-                type_header = QAction("— by filter-string type —", self)
+                type_header = QAction("by filter-string", self)
                 type_header.setEnabled(False)
                 context_menu.addAction(type_header)
                 for ftype in filter_types:
@@ -5788,8 +6255,9 @@ class EICWindow(QWidget):
                             action = sub.addAction(f"±{secs} seconds")
                             action.triggered.connect(lambda checked=False, ft=ftype, sw=secs_min: self.view_msms_spectra(rt_value, sw, filter_type=ft))
 
-        # Show the menu at the clicked position
-        global_pos = self.chart_view.mapToGlobal(position.toPoint())
+        # Show the menu — use the source chart view for correct screen coordinates
+        cv = source_chart_view if source_chart_view is not None else self.chart_view
+        global_pos = cv.mapToGlobal(position.toPoint())
         context_menu.exec(global_pos)
 
     def view_msms_spectra(self, rt_center: float, rt_window: float, filter_type: Optional[str] = None):
@@ -6574,6 +7042,283 @@ class EICWindow(QWidget):
                 continue
 
         return msms_spectra
+
+
+# Distinct colors cycled for extra EIC traces (colorblind-friendly)
+_EXTRA_TRACE_COLORS = [
+    "#4477AA",  # blue
+    "#EE6677",  # red-pink
+    "#228833",  # green
+    "#CCBB44",  # yellow
+    "#66CCEE",  # cyan
+    "#AA3377",  # purple
+    "#BBBBBB",  # gray
+]
+
+
+class _AddEICTraceDialog(QDialog):
+    """Dialog for adding an extra EIC trace to an existing EIC window.
+
+    Supports two modes:
+      * Tab 0 (default): enter an m/z value + polarity directly
+      * Tab 1: enter a chemical formula / neutral mass + adduct
+    """
+
+    def __init__(self, adducts_data, ppm_default=5.0, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Add EIC Trace")
+        self.setMinimumWidth(480)
+        self._adducts_data = adducts_data
+        self._ppm_default = ppm_default
+        self._result_label = ""
+        self._result_mz = None
+        self._result_polarity = None
+        self._result_ppm = ppm_default
+        self._setup_ui()
+        self._connect_signals()
+        self._validate_tab1()
+        self._validate_tab2()
+
+    # ------------------------------------------------------------------
+    # UI construction
+    # ------------------------------------------------------------------
+
+    def _setup_ui(self):
+        layout = QVBoxLayout(self)
+
+        self.tabs = QTabWidget()
+
+        # ---- Tab 0: m/z value ----
+        tab0 = QWidget()
+        form0 = QFormLayout(tab0)
+        form0.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        form0.setContentsMargins(12, 12, 12, 12)
+        form0.setVerticalSpacing(8)
+
+        self.mz_spin = QDoubleSpinBox()
+        self.mz_spin.setRange(0.001, 100000.0)
+        self.mz_spin.setDecimals(6)
+        self.mz_spin.setSuffix(" m/z")
+        self.mz_spin.setValue(200.0)
+        form0.addRow("m/z value:", self.mz_spin)
+
+        self.polarity_combo = QComboBox()
+        self.polarity_combo.addItem("Positive", "positive")
+        self.polarity_combo.addItem("Negative", "negative")
+        form0.addRow("Polarity:", self.polarity_combo)
+
+        self.tabs.addTab(tab0, "m/z value")
+
+        # ---- Tab 1: Formula / Mass ----
+        tab1 = QWidget()
+        form1 = QFormLayout(tab1)
+        form1.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        form1.setContentsMargins(12, 12, 12, 12)
+        form1.setVerticalSpacing(8)
+
+        self.formula_edit = QLineEdit()
+        self.formula_edit.setPlaceholderText("e.g. C6H12O6")
+        form1.addRow("Chemical Formula:", self.formula_edit)
+
+        self.mass_spin = QDoubleSpinBox()
+        self.mass_spin.setRange(0.0, 100000.0)
+        self.mass_spin.setDecimals(6)
+        self.mass_spin.setSuffix(" Da")
+        self.mass_spin.setValue(0.0)
+        self.mass_spin.setSpecialValueText("(derive from formula)")
+        form1.addRow("Neutral Mass:", self.mass_spin)
+
+        self.adduct_combo = QComboBox()
+        self._fill_adducts_combo(self.adduct_combo)
+        form1.addRow("Adduct:", self.adduct_combo)
+
+        self.mz_preview_label = QLabel("(enter formula or mass + adduct to preview m/z)")
+        self.mz_preview_label.setStyleSheet("color: gray; font-style: italic;")
+        form1.addRow("Calculated m/z:", self.mz_preview_label)
+
+        self.validation_label = QLabel("")
+        self.validation_label.setWordWrap(True)
+        form1.addRow("", self.validation_label)
+
+        self.tabs.addTab(tab1, "Formula / Mass")
+
+        layout.addWidget(self.tabs)
+
+        # ---- Shared ppm tolerance spinner ----
+        ppm_layout = QHBoxLayout()
+        ppm_label = QLabel("m/z Tolerance:")
+        self.ppm_spin = QDoubleSpinBox()
+        self.ppm_spin.setRange(0.1, 500.0)
+        self.ppm_spin.setDecimals(1)
+        self.ppm_spin.setSingleStep(1.0)
+        self.ppm_spin.setSuffix(" ppm")
+        self.ppm_spin.setValue(self._ppm_default)
+        ppm_layout.addWidget(ppm_label)
+        ppm_layout.addWidget(self.ppm_spin)
+        ppm_layout.addStretch()
+        layout.addLayout(ppm_layout)
+
+        # ---- Buttons ----
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+        self.ok_btn = QPushButton("Add Trace")
+        self.ok_btn.setEnabled(False)
+        self.ok_btn.setDefault(True)
+        cancel_btn = QPushButton("Cancel")
+        btn_layout.addWidget(self.ok_btn)
+        btn_layout.addWidget(cancel_btn)
+        layout.addLayout(btn_layout)
+
+        self.ok_btn.clicked.connect(self._on_accept)
+        cancel_btn.clicked.connect(self.reject)
+
+    def _fill_adducts_combo(self, combo):
+        """Populate adduct combo from the adducts table or a built-in fallback list."""
+        _BUILTIN_ADDUCTS = [
+            "[M+H]+",
+            "[M+NH4]+",
+            "[M+Na]+",
+            "[M+K]+",
+            "[M+2H]++",
+            "[2M+H]+",
+            "[M-H]-",
+            "[M+Cl]-",
+            "[M+FA-H]-",
+            "[M-H2O-H]-",
+            "[2M-H]-",
+        ]
+        if self._adducts_data is not None and not self._adducts_data.empty:
+            adducts = self._adducts_data["Adduct"].tolist()
+        else:
+            adducts = _BUILTIN_ADDUCTS
+        for a in adducts:
+            combo.addItem(a)
+
+    # ------------------------------------------------------------------
+    # Signal connections / validation
+    # ------------------------------------------------------------------
+
+    def _connect_signals(self):
+        self.formula_edit.textChanged.connect(self._validate_tab1)
+        self.mass_spin.valueChanged.connect(self._validate_tab1)
+        self.adduct_combo.currentIndexChanged.connect(self._validate_tab1)
+        self.mz_spin.valueChanged.connect(self._validate_tab2)
+        self.tabs.currentChanged.connect(self._on_tab_changed)
+
+    def _get_adduct_polarity(self, adduct: str):
+        stripped = adduct.rstrip()
+        if stripped.endswith("+"):
+            return "positive"
+        if stripped.endswith("-"):
+            return "negative"
+        if self._adducts_data is not None and not self._adducts_data.empty:
+            row = self._adducts_data[self._adducts_data["Adduct"] == adduct]
+            if not row.empty:
+                try:
+                    charge = int(row.iloc[0]["Charge"])
+                    return "positive" if charge > 0 else "negative"
+                except Exception:
+                    pass
+        return None
+
+    def _validate_tab1(self):
+        formula = self.formula_edit.text().strip()
+        mass_override = self.mass_spin.value()
+        adduct = self.adduct_combo.currentText()
+        errors = []
+        neutral_mass = None
+
+        if formula:
+            try:
+                parse_molecular_formula(formula)
+                neutral_mass = calculate_molecular_mass(formula)
+                self.formula_edit.setStyleSheet("QLineEdit { border: 1.5px solid #3a3; }")
+            except Exception as exc:
+                errors.append(f"Invalid formula: {exc}")
+                self.formula_edit.setStyleSheet("QLineEdit { border: 1.5px solid red; }")
+        else:
+            self.formula_edit.setStyleSheet("")
+
+        if neutral_mass is None and mass_override > 0.0:
+            neutral_mass = mass_override
+
+        mz_value = None
+        if neutral_mass is not None and adduct:
+            if self._adducts_data is not None and not self._adducts_data.empty:
+                adduct_row = self._adducts_data[self._adducts_data["Adduct"] == adduct]
+                if not adduct_row.empty:
+                    try:
+                        mass_change, charge, multiplier = adduct_mass_change(adduct_row.iloc[0])
+                        mz_value = (multiplier * neutral_mass + mass_change) / abs(charge)
+                    except Exception as exc:
+                        errors.append(f"m/z calculation error: {exc}")
+            else:
+                errors.append("No adducts table – cannot calculate m/z")
+
+        if mz_value is not None:
+            self.mz_preview_label.setText(f"{mz_value:.6f}")
+            self.mz_preview_label.setStyleSheet("color: #1a7a1a; font-weight: bold;")
+        else:
+            self.mz_preview_label.setText("(enter formula or mass + adduct to preview m/z)")
+            self.mz_preview_label.setStyleSheet("color: gray; font-style: italic;")
+
+        if errors:
+            self.validation_label.setText("❌ " + "; ".join(errors))
+            self.validation_label.setStyleSheet("color: red;")
+        else:
+            self.validation_label.setText("")
+
+        if self.tabs.currentIndex() == 1:
+            self.ok_btn.setEnabled(bool(not errors and mz_value is not None))
+
+    def _validate_tab2(self):
+        valid = self.mz_spin.value() > 0.0
+        if self.tabs.currentIndex() == 0:
+            self.ok_btn.setEnabled(valid)
+
+    def _on_tab_changed(self, index):
+        if index == 0:
+            self._validate_tab2()
+        else:
+            self._validate_tab1()
+
+    # ------------------------------------------------------------------
+    # Accept handler
+    # ------------------------------------------------------------------
+
+    def _on_accept(self):
+        if self.tabs.currentIndex() == 1:
+            formula = self.formula_edit.text().strip()
+            mass_override = self.mass_spin.value()
+            adduct = self.adduct_combo.currentText()
+
+            neutral_mass = None
+            if formula:
+                try:
+                    neutral_mass = calculate_molecular_mass(formula)
+                except Exception:
+                    pass
+            if neutral_mass is None and mass_override > 0.0:
+                neutral_mass = mass_override
+
+            adduct_row = self._adducts_data[self._adducts_data["Adduct"] == adduct]
+            mass_change, charge, multiplier = adduct_mass_change(adduct_row.iloc[0])
+            self._result_mz = (multiplier * neutral_mass + mass_change) / abs(charge)
+            self._result_polarity = self._get_adduct_polarity(adduct)
+            name = formula if formula else f"Mass {neutral_mass:.4f} Da"
+            self._result_label = f"{name} {adduct}"
+        else:
+            self._result_mz = self.mz_spin.value()
+            self._result_polarity = self.polarity_combo.currentData()
+            pol_sign = "+" if self._result_polarity == "positive" else "-"
+            self._result_label = f"m/z {self._result_mz:.6f} [{pol_sign}]"
+
+        self._result_ppm = self.ppm_spin.value()
+        self.accept()
+
+    def get_result(self):
+        """Return (label, mz, polarity, ppm) after the dialog was accepted."""
+        return (self._result_label, self._result_mz, self._result_polarity, self._result_ppm)
 
 
 class EmbeddedScatterPlotView(QWidget):

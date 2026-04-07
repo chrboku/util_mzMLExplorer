@@ -6131,6 +6131,49 @@ class EICWindow(QWidget):
         context_menu = QMenu(self)
         has_extra = bool(self._extra_eic_traces)
 
+        # Determine the m/z and polarity that MS1/MSMS lookups should use.
+        # When the menu was triggered from an extra-trace chart view we use
+        # that trace's m/z, not the main window's target m/z.
+        _ctx_mz = self.target_mz
+        _ctx_polarity = self.polarity
+        if source_chart_view is not None and source_chart_view is not self.chart_view:
+            for _trace in self._extra_eic_traces:
+                if _trace.get("chart_view") is source_chart_view:
+                    _ctx_mz = _trace.get("mz", self.target_mz)
+                    _ctx_polarity = _trace.get("polarity") or self.polarity
+                    break
+
+        # Helper: temporarily swap self.target_mz/polarity, call fn, then restore.
+        def _with_ctx_mz(fn, *args, **kwargs):
+            _saved_mz, _saved_pol = self.target_mz, self.polarity
+            self.target_mz, self.polarity = _ctx_mz, _ctx_polarity
+            try:
+                return fn(*args, **kwargs)
+            finally:
+                self.target_mz, self.polarity = _saved_mz, _saved_pol
+
+        # Determine the m/z and polarity that MS1/MSMS lookups should use.
+        # When the menu was triggered from an extra-trace chart view we want to
+        # search for *that* trace's precursor m/z, not the main window's m/z.
+        _ctx_mz = self.target_mz
+        _ctx_polarity = self.polarity
+        if source_chart_view is not None and source_chart_view is not self.chart_view:
+            for _trace in self._extra_eic_traces:
+                if _trace.get("chart_view") is source_chart_view:
+                    _ctx_mz = _trace.get("mz", self.target_mz)
+                    _ctx_polarity = _trace.get("polarity") or self.polarity
+                    break
+
+        # Helper: temporarily swap self.target_mz/polarity, call fn, then restore.
+        # This lets all existing finder/viewer methods work without modification.
+        def _with_ctx_mz(fn, *args, **kwargs):
+            _saved_mz, _saved_pol = self.target_mz, self.polarity
+            self.target_mz, self.polarity = _ctx_mz, _ctx_polarity
+            try:
+                return fn(*args, **kwargs)
+            finally:
+                self.target_mz, self.polarity = _saved_mz, _saved_pol
+
         # --- View submenu at the top ---
         view_menu = context_menu.addMenu("View")
 
@@ -6155,12 +6198,6 @@ class EICWindow(QWidget):
 
         context_menu.addSeparator()
 
-        # Add RT info
-        rt_action = QAction(f"Clicked at {rt_value:.2f} min", self)
-        rt_action.setEnabled(False)  # Make it non-clickable header
-        context_menu.addAction(rt_action)
-        context_menu.addSeparator()
-
         # Add EIC trace option
         add_trace_action = QAction("Add EIC trace", self)
         add_trace_action.triggered.connect(self._show_add_eic_trace_dialog)
@@ -6178,6 +6215,12 @@ class EICWindow(QWidget):
                 act = remove_menu.addAction(f"Remove: {lbl}")
                 act.triggered.connect(lambda checked=False, idx=i: self._remove_extra_trace_at(idx))
 
+        context_menu.addSeparator()
+
+        # Add RT info
+        rt_action = QAction(f"Clicked at {rt_value:.2f} min", self)
+        rt_action.setEnabled(False)  # Make it non-clickable header
+        context_menu.addAction(rt_action)
         context_menu.addSeparator()
 
         # Peak boundary options hidden when extra traces are present
@@ -6203,7 +6246,7 @@ class EICWindow(QWidget):
 
         # Add MS1 viewing option
         ms1_action = QAction("Show MS1 spectra", self)
-        ms1_action.triggered.connect(lambda: self.view_ms1_spectra(rt_value))
+        ms1_action.triggered.connect(lambda: _with_ctx_mz(self.view_ms1_spectra, rt_value))
         context_menu.addAction(ms1_action)
 
         # Determine which MSMS actions are enabled via options
@@ -6217,26 +6260,26 @@ class EICWindow(QWidget):
             # Add MSMS viewing options (unfiltered)
             if show_msms_closest:
                 msms_closest_action = QAction("Show MSMS spectra", self)
-                msms_closest_action.triggered.connect(lambda: self.view_closest_msms_spectrum(rt_value))
+                msms_closest_action.triggered.connect(lambda: _with_ctx_mz(self.view_closest_msms_spectrum, rt_value))
                 context_menu.addAction(msms_closest_action)
 
             if show_msms_3s:
                 msms_3s_action = QAction("Show MSMS spectra (±3 sec)", self)
-                msms_3s_action.triggered.connect(lambda: self.view_msms_spectra(rt_value, 3.0 / 60.0))
+                msms_3s_action.triggered.connect(lambda: _with_ctx_mz(self.view_msms_spectra, rt_value, 3.0 / 60.0))
                 context_menu.addAction(msms_3s_action)
 
             if show_msms_6s:
                 msms_6s_action = QAction("Show MSMS spectra (±6 sec)", self)
-                msms_6s_action.triggered.connect(lambda: self.view_msms_spectra(rt_value, 6.0 / 60.0))
+                msms_6s_action.triggered.connect(lambda: _with_ctx_mz(self.view_msms_spectra, rt_value, 6.0 / 60.0))
                 context_menu.addAction(msms_6s_action)
 
             if show_msms_9s:
                 msms_9s_action = QAction("Show MSMS spectra (±9 sec)", self)
-                msms_9s_action.triggered.connect(lambda: self.view_msms_spectra(rt_value, 9.0 / 60.0))
+                msms_9s_action.triggered.connect(lambda: _with_ctx_mz(self.view_msms_spectra, rt_value, 9.0 / 60.0))
                 context_menu.addAction(msms_9s_action)
 
             # Add per-type MSMS submenus when a filter regex is configured
-            filter_types = self._get_msms_filter_types_at_rt(rt_value, 9.0 / 60.0)
+            filter_types = _with_ctx_mz(self._get_msms_filter_types_at_rt, rt_value, 9.0 / 60.0)
             if filter_types:
                 type_header = QAction("by filter-string", self)
                 type_header.setEnabled(False)
@@ -6245,7 +6288,7 @@ class EICWindow(QWidget):
                     sub = context_menu.addMenu(f"MSMS: {ftype}")
                     if show_msms_closest:
                         closest_action = sub.addAction("Closest spectrum")
-                        closest_action.triggered.connect(lambda checked=False, ft=ftype: self.view_closest_msms_spectrum(rt_value, filter_type=ft))
+                        closest_action.triggered.connect(lambda checked=False, ft=ftype: _with_ctx_mz(self.view_closest_msms_spectrum, rt_value, filter_type=ft))
                     for secs, secs_min, enabled in (
                         (3, 3.0 / 60.0, show_msms_3s),
                         (6, 6.0 / 60.0, show_msms_6s),
@@ -6253,7 +6296,7 @@ class EICWindow(QWidget):
                     ):
                         if enabled:
                             action = sub.addAction(f"±{secs} seconds")
-                            action.triggered.connect(lambda checked=False, ft=ftype, sw=secs_min: self.view_msms_spectra(rt_value, sw, filter_type=ft))
+                            action.triggered.connect(lambda checked=False, ft=ftype, sw=secs_min: _with_ctx_mz(self.view_msms_spectra, rt_value, sw, filter_type=ft))
 
         # Show the menu — use the source chart view for correct screen coordinates
         cv = source_chart_view if source_chart_view is not None else self.chart_view

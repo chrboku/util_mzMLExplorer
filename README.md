@@ -16,8 +16,13 @@ A comprehensive GUI application for visualization and analysis of LC-HRMS data f
 
 ## Installation
 ### Setup
-1. Install the uv package manager, for details refer to [https://github.com/astral-sh/uv](https://github.com/astral-sh/uv)
-2. Download the repository from [https://github.com/chrboku/util_mzMLExplorer/archive/refs/heads/master.zip](https://github.com/chrboku/util_mzMLExplorer/archive/refs/heads/master.zip) if you do not have git installed. Unpack the zip archive to a folder of your choice. Alternatively, the repository can be cloned with the command `git clone https://github.com/chrboku/util_mzmlexplorer`
+1. Install the uv package manager, for details refer to [https://github.com/astral-sh/uv](https://github.com/astral-sh/uv). 
+2. Optionally: Install git if it is not available, see [https://git-scm.com/install/](https://git-scm.com/install/) for further details. 
+3. Obtain a copy of the mzmlexplorer repository with either: 
+   - with git available: execute the command `git clone https://github.com/chrboku/util_mzmlexplorer` from a command line and the folder where you want the application to be saved. 
+   - without git: download a copy from [https://github.com/chrboku/util_mzMLExplorer/archive/refs/heads/master.zip](https://github.com/chrboku/util_mzMLExplorer/archive/refs/heads/master.zip). It will not be possible to automatically update the app.  
+
+
 
 ## Usage
 

@@ -55,6 +55,7 @@ from .file_manager import FileManager
 from .windows import EICWindow, MultiAdductWindow
 from .window_shared import CollapsibleBox
 from .window_file_explorer import MzMLFileExplorerWindow
+from .window_msms import USISpectrumComparisonWindow
 from .compound_import_dialog import (
     CompoundImportDialog,
     validate_formula_smiles_agreement,
@@ -634,6 +635,7 @@ class MzMLExplorerMainWindow(QMainWindow):
         self.files_table.customContextMenuRequested.connect(self.show_files_context_menu)
         self.files_table.verticalHeader().setDefaultSectionSize(20)
         self.files_table.verticalHeader().setMinimumSectionSize(16)
+        self.files_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         left_layout.addWidget(self.files_table)
 
         # Watermark logo shown until files are loaded
@@ -2197,6 +2199,20 @@ class MzMLExplorerMainWindow(QMainWindow):
 
             traceback.print_exc()
 
+    def _open_spectrum_comparator(self):
+        """Open an empty Spectrum Comparator window."""
+        if not hasattr(self, "_comparator_windows"):
+            self._comparator_windows = []
+        win = USISpectrumComparisonWindow(
+            file_manager=self.file_manager,
+        )
+        self._comparator_windows.append(win)
+        win.destroyed.connect(
+            lambda _, w=win: self._comparator_windows.remove(w) if hasattr(self, "_comparator_windows") and w in self._comparator_windows else None
+        )
+        win.show()
+        win.raise_()
+
     def create_menu_bar(self):
         """Create the menu bar"""
         menubar = self.menuBar()
@@ -2268,6 +2284,13 @@ class MzMLExplorerMainWindow(QMainWindow):
         fetch_info_action = QAction("Fetch compound information", self)
         fetch_info_action.triggered.connect(self.fetch_compound_information)
         tools_menu.addAction(fetch_info_action)
+
+        tools_menu.addSeparator()
+
+        comparator_action = QAction("Spectrum Comparator", self)
+        comparator_action.setToolTip("Open a window to compare two arbitrary MSMS spectra")
+        comparator_action.triggered.connect(self._open_spectrum_comparator)
+        tools_menu.addAction(comparator_action)
 
         # Help menu
         help_menu = menubar.addMenu("Help")
@@ -2547,6 +2570,9 @@ class MzMLExplorerMainWindow(QMainWindow):
             "show_msms_3s": False,
             "show_msms_6s": False,
             "show_msms_9s": False,
+            "show_msms_most_abundant_3s": False,
+            "show_msms_most_abundant_6s": False,
+            "show_msms_most_abundant_9s": False,
         }
 
     @staticmethod
@@ -2587,6 +2613,9 @@ class MzMLExplorerMainWindow(QMainWindow):
             "show_msms_3s": self.settings.value("eic/show_msms_3s", _d["show_msms_3s"], type=bool),
             "show_msms_6s": self.settings.value("eic/show_msms_6s", _d["show_msms_6s"], type=bool),
             "show_msms_9s": self.settings.value("eic/show_msms_9s", _d["show_msms_9s"], type=bool),
+            "show_msms_most_abundant_3s": self.settings.value("eic/show_msms_most_abundant_3s", _d["show_msms_most_abundant_3s"], type=bool),
+            "show_msms_most_abundant_6s": self.settings.value("eic/show_msms_most_abundant_6s", _d["show_msms_most_abundant_6s"], type=bool),
+            "show_msms_most_abundant_9s": self.settings.value("eic/show_msms_most_abundant_9s", _d["show_msms_most_abundant_9s"], type=bool),
         }
 
         # Load memory settings
@@ -2629,6 +2658,9 @@ class MzMLExplorerMainWindow(QMainWindow):
         self.settings.setValue("eic/show_msms_3s", self.eic_defaults.get("show_msms_3s", False))
         self.settings.setValue("eic/show_msms_6s", self.eic_defaults.get("show_msms_6s", False))
         self.settings.setValue("eic/show_msms_9s", self.eic_defaults.get("show_msms_9s", False))
+        self.settings.setValue("eic/show_msms_most_abundant_3s", self.eic_defaults.get("show_msms_most_abundant_3s", False))
+        self.settings.setValue("eic/show_msms_most_abundant_6s", self.eic_defaults.get("show_msms_most_abundant_6s", False))
+        self.settings.setValue("eic/show_msms_most_abundant_9s", self.eic_defaults.get("show_msms_most_abundant_9s", False))
 
     def _on_eic_settings_changed(self, key: str, value) -> None:
         """Called by an EIC window when the user changes a persistent setting."""
@@ -3534,6 +3566,23 @@ class UnifiedOptionsDialog(QDialog):
         self.show_msms_9s_cb.setChecked(self.eic_defaults.get("show_msms_9s", False))
         msms_group_layout.addRow("Show ±9 seconds around MSMS scan:", self.show_msms_9s_cb)
 
+        msms_group_layout.addRow(QLabel("<hr>"))
+        most_abundant_label = QLabel("<i>Select single most-abundant MSMS spectrum per file in RT window</i>")
+        most_abundant_label.setWordWrap(True)
+        msms_group_layout.addRow(most_abundant_label)
+
+        self.show_msms_most_abundant_3s_cb = QCheckBox()
+        self.show_msms_most_abundant_3s_cb.setChecked(self.eic_defaults.get("show_msms_most_abundant_3s", False))
+        msms_group_layout.addRow("Most abundant MSMS per file (±3 s):", self.show_msms_most_abundant_3s_cb)
+
+        self.show_msms_most_abundant_6s_cb = QCheckBox()
+        self.show_msms_most_abundant_6s_cb.setChecked(self.eic_defaults.get("show_msms_most_abundant_6s", False))
+        msms_group_layout.addRow("Most abundant MSMS per file (±6 s):", self.show_msms_most_abundant_6s_cb)
+
+        self.show_msms_most_abundant_9s_cb = QCheckBox()
+        self.show_msms_most_abundant_9s_cb.setChecked(self.eic_defaults.get("show_msms_most_abundant_9s", False))
+        msms_group_layout.addRow("Most abundant MSMS per file (±9 s):", self.show_msms_most_abundant_9s_cb)
+
         layout.addWidget(msms_group)
 
         return widget
@@ -3754,6 +3803,9 @@ class UnifiedOptionsDialog(QDialog):
         self.show_msms_3s_cb.setChecked(defaults["show_msms_3s"])
         self.show_msms_6s_cb.setChecked(defaults["show_msms_6s"])
         self.show_msms_9s_cb.setChecked(defaults["show_msms_9s"])
+        self.show_msms_most_abundant_3s_cb.setChecked(defaults.get("show_msms_most_abundant_3s", False))
+        self.show_msms_most_abundant_6s_cb.setChecked(defaults.get("show_msms_most_abundant_6s", False))
+        self.show_msms_most_abundant_9s_cb.setChecked(defaults.get("show_msms_most_abundant_9s", False))
 
     def get_values(self):
         """Get the current values from the dialog"""
@@ -3787,6 +3839,9 @@ class UnifiedOptionsDialog(QDialog):
             "show_msms_3s": self.show_msms_3s_cb.isChecked(),
             "show_msms_6s": self.show_msms_6s_cb.isChecked(),
             "show_msms_9s": self.show_msms_9s_cb.isChecked(),
+            "show_msms_most_abundant_3s": self.show_msms_most_abundant_3s_cb.isChecked(),
+            "show_msms_most_abundant_6s": self.show_msms_most_abundant_6s_cb.isChecked(),
+            "show_msms_most_abundant_9s": self.show_msms_most_abundant_9s_cb.isChecked(),
         }
 
         memory_values = {

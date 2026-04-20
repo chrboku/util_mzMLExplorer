@@ -308,3 +308,64 @@ def calculate_similarity_statistics(similarities: list) -> Dict[str, float]:
         "percentile_90": float(np.percentile(similarities, 90)),
         "max": float(np.max(similarities)),
     }
+
+
+def make_usi(spectrum_data: dict, filename: str) -> str:
+    """Generate a Unique Spectrum Identifier (USI) for a spectrum.
+
+    Format: filename:RT_min:polarity:(MS1|MS2-precursor_mz):scan_id
+
+    Short fallback if data is sparse: filename:scan_id
+
+    Args:
+        spectrum_data: Spectrum dict with keys such as ``rt``, ``polarity``,
+            ``precursor_mz``, ``scan_id``, ``ms_level``.
+        filename: Display filename (basename, not full path).
+
+    Returns:
+        A human-readable USI string.
+    """
+    if not spectrum_data or not filename:
+        return str(filename or "unknown")
+
+    parts = [str(filename)]
+
+    rt = spectrum_data.get("rt") or spectrum_data.get("scan_time")
+    if rt is not None:
+        try:
+            parts.append(f"RT{float(rt):.3f}min")
+        except (TypeError, ValueError):
+            pass
+
+    polarity = spectrum_data.get("polarity", "")
+    if isinstance(polarity, str) and polarity.strip():
+        p = polarity.strip().lower()
+        if p in {"+", "positive", "pos", "pos."}:
+            parts.append("pos")
+        elif p in {"-", "negative", "neg", "neg."}:
+            parts.append("neg")
+        else:
+            parts.append(polarity.strip())
+
+    ms_level = spectrum_data.get("ms_level")
+    precursor_mz = spectrum_data.get("precursor_mz")
+    if precursor_mz is not None:
+        try:
+            parts.append(f"MS2-{float(precursor_mz):.4f}")
+        except (TypeError, ValueError):
+            parts.append("MS2")
+    elif ms_level is not None:
+        parts.append(f"MS{int(ms_level)}")
+    else:
+        parts.append("MS1")
+
+    scan_id = spectrum_data.get("scan_id") or spectrum_data.get("id") or spectrum_data.get("index")
+    if scan_id is not None:
+        sid_str = str(scan_id)
+        # Avoid double "scan=" prefix when the stored id already contains it
+        if sid_str.lower().startswith("scan="):
+            parts.append(sid_str)
+        else:
+            parts.append(f"scan={sid_str}")
+
+    return ":".join(parts)

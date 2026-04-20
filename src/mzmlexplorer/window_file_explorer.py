@@ -33,9 +33,10 @@ from PyQt6.QtCore import Qt, QThread, pyqtSignal, QMargins, QPointF
 from PyQt6.QtCharts import QChart, QChartView, QLineSeries, QValueAxis
 from PyQt6.QtGui import QPen, QColor, QPainter
 
-from .window_msms import MSMSPopupWindow
+from .window_msms import MSMSPopupWindow, USISpectrumComparisonWindow
 from .window_shared import ANNOTATION_COLOR_PRESETS
 from .window_eic import EICWindow
+from .utils import make_usi
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -112,6 +113,7 @@ class _SpectrumChartView(QChartView):
         self._file_manager = None
         self._eic_defaults = None
         self._eic_windows = []  # keep references to prevent GC
+        self._filename = ""  # filename for USI generation
 
         # TIC hover state
         self._tic_hover_rt: float | None = None
@@ -386,6 +388,17 @@ class _SpectrumChartView(QChartView):
         mz = self._right_click_mz
         norm = self._right_click_norm
         menu = QMenu(self)
+
+        # -- USI section (always show when spec data is available) --
+        if self._spec_data is not None:
+            filename = getattr(self, "_filename", "") or ""
+            usi = make_usi(self._spec_data, filename)
+            usi_action = menu.addAction(f"USI: {usi}")
+            usi_action.setEnabled(False)
+            copy_usi = menu.addAction("Copy USI to Clipboard")
+            copy_usi.triggered.connect(lambda _c=False, u=usi: QApplication.clipboard().setText(u))
+            menu.addSeparator()
+
         if mz is not None:
             ann_menu = menu.addMenu("Annotate")
             for name, color_str in ANNOTATION_COLOR_PRESETS:
@@ -397,8 +410,27 @@ class _SpectrumChartView(QChartView):
                 eic_act.triggered.connect(lambda _c=False, m=mz: self._open_eic_window(m))
         if self._ms_level == 2 and self._open_msms_fn is not None:
             menu.addAction("Open in MSMS Spectrum Viewer").triggered.connect(lambda _checked=False: self._open_msms_fn())
+            # Open in Spectrum Comparator
+            menu.addAction("Open in Spectrum Comparator").triggered.connect(lambda _checked=False: self._open_in_comparator())
         if not menu.isEmpty():
             menu.exec(event.globalPosition().toPoint())
+
+    def _open_in_comparator(self):
+        """Open the USI Spectrum Comparator window with this spectrum pre-loaded."""
+        if self._spec_data is None:
+            return
+        filename = getattr(self, "_filename", "") or ""
+        if not hasattr(self, "_eic_windows"):
+            self._eic_windows = []
+        win = USISpectrumComparisonWindow(
+            spectrum_a=self._spec_data,
+            filename_a=filename,
+            file_manager=self._file_manager,
+        )
+        win.show()
+        win.raise_()
+        self._eic_windows.append(win)
+        win.destroyed.connect(lambda _, w=win: self._eic_windows.remove(w) if w in self._eic_windows else None)
 
     def _open_eic_window(self, mz: float):
         """Open an EICWindow for *mz*, deriving polarity from the current spectrum."""
@@ -609,7 +641,7 @@ class _ChartPanel(QFrame):
         self._current_spec = tic_data
         self._layout.addWidget(cv, stretch=1)
 
-    def set_spectrum(self, title: str, mz_array, intensity_array, ms_level: int = 1, spec=None, open_msms_fn=None, file_manager=None, eic_defaults=None):
+    def set_spectrum(self, title: str, mz_array, intensity_array, ms_level: int = 1, spec=None, open_msms_fn=None, file_manager=None, eic_defaults=None, filename: str = ""):
         """Replace the chart view with a new stick spectrum."""
         # remove old chart view / placeholder
         if self._chart_view is not None:
@@ -671,6 +703,7 @@ class _ChartPanel(QFrame):
         cv._spec_data = spec
         cv._file_manager = file_manager
         cv._eic_defaults = eic_defaults
+        cv._filename = filename
         self._chart_view = cv
         self._current_spec = spec
         self._layout.addWidget(cv, stretch=1)
@@ -1166,7 +1199,8 @@ class MzMLFileExplorerWindow(QWidget):
                     scan_id = spec.get("scan_id", "?")
                     rt = spec.get("scan_time", 0.0)
                     polarity = spec.get("polarity", "")
-                    title = f"MS{ms_level}  |  Scan: {scan_id}  |  RT: {rt:.4f} min  |  {polarity}"
+                    usi = make_usi(spec, self._filename)
+                    title = f"MS{ms_level}  |  {usi}  |  RT: {rt:.4f} min  |  {polarity}"
                     if ms_level == 2:
                         prec = spec.get("precursor_mz")
                         if prec is not None:
@@ -1185,6 +1219,7 @@ class MzMLFileExplorerWindow(QWidget):
                         open_msms_fn=open_fn,
                         file_manager=self._file_manager,
                         eic_defaults=self._eic_defaults,
+                        filename=self._filename,
                     )
 
                 # ── 3. Restore zoom + annotations if spec was shown elsewhere ──────

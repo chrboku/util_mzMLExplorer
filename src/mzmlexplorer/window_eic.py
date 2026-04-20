@@ -6263,7 +6263,10 @@ class EICWindow(QWidget):
         show_msms_3s = self.defaults.get("show_msms_3s", False)
         show_msms_6s = self.defaults.get("show_msms_6s", False)
         show_msms_9s = self.defaults.get("show_msms_9s", False)
-        any_msms_enabled = show_msms_closest or show_msms_3s or show_msms_6s or show_msms_9s
+        show_msms_most_abundant_3s = self.defaults.get("show_msms_most_abundant_3s", False)
+        show_msms_most_abundant_6s = self.defaults.get("show_msms_most_abundant_6s", False)
+        show_msms_most_abundant_9s = self.defaults.get("show_msms_most_abundant_9s", False)
+        any_msms_enabled = show_msms_closest or show_msms_3s or show_msms_6s or show_msms_9s or show_msms_most_abundant_3s or show_msms_most_abundant_6s or show_msms_most_abundant_9s
 
         if any_msms_enabled:
             # Add MSMS viewing options (unfiltered)
@@ -6286,6 +6289,21 @@ class EICWindow(QWidget):
                 msms_9s_action = QAction("Show MSMS spectra (±9 sec)", self)
                 msms_9s_action.triggered.connect(lambda: _with_ctx_mz(self.view_msms_spectra, rt_value, 9.0 / 60.0))
                 context_menu.addAction(msms_9s_action)
+
+            if show_msms_most_abundant_3s:
+                act = QAction("Most abundant MSMS per file (±3 sec)", self)
+                act.triggered.connect(lambda: _with_ctx_mz(self.view_most_abundant_msms, rt_value, 3.0 / 60.0))
+                context_menu.addAction(act)
+
+            if show_msms_most_abundant_6s:
+                act = QAction("Most abundant MSMS per file (±6 sec)", self)
+                act.triggered.connect(lambda: _with_ctx_mz(self.view_most_abundant_msms, rt_value, 6.0 / 60.0))
+                context_menu.addAction(act)
+
+            if show_msms_most_abundant_9s:
+                act = QAction("Most abundant MSMS per file (±9 sec)", self)
+                act.triggered.connect(lambda: _with_ctx_mz(self.view_most_abundant_msms, rt_value, 9.0 / 60.0))
+                context_menu.addAction(act)
 
             # Add per-type MSMS submenus when a filter regex is configured
             filter_types = _with_ctx_mz(self._get_msms_filter_types_at_rt, rt_value, 9.0 / 60.0)
@@ -6405,6 +6423,75 @@ class EICWindow(QWidget):
 
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to view closest MSMS spectrum: {str(e)}")
+
+    def view_most_abundant_msms(self, rt_center: float, rt_window: float):
+        """View the single most-abundant MSMS spectrum per file within an RT window.
+
+        Only the spectrum with the highest precursor intensity (or highest
+        total fragment intensity) in the RT window is retained per file.
+        The result is passed to MSMSViewerWindow.
+        """
+        try:
+            rt_start = rt_center - rt_window
+            rt_end = rt_center + rt_window
+
+            # Get all spectra in the window from all files
+            all_spectra = self.find_msms_spectra(rt_start, rt_end)
+
+            if not all_spectra:
+                QMessageBox.information(
+                    self,
+                    "No MSMS Found",
+                    f"No MSMS spectra found for m/z {self.target_mz:.4f} in RT window {rt_center:.2f} ± {rt_window * 60:.0f} s",
+                )
+                return
+
+            # Keep only the most abundant spectrum per file
+            most_abundant = {}
+            for filepath, data in all_spectra.items():
+                best_spec = None
+                best_intensity = -1.0
+                for spec in data["spectra"]:
+                    # Use precursor_intensity first, fall back to max fragment intensity
+                    pi = float(spec.get("precursor_intensity") or 0)
+                    if pi <= 0:
+                        ints = spec.get("intensity")
+                        pi = float(max(ints)) if ints is not None and len(ints) > 0 else 0.0
+                    if pi > best_intensity:
+                        best_intensity = pi
+                        best_spec = spec
+                if best_spec is not None:
+                    most_abundant[filepath] = {
+                        "filename": data["filename"],
+                        "group": data.get("group", "Unknown"),
+                        "spectra": [best_spec],
+                        "metadata": data.get("metadata", {}),
+                    }
+
+            if not most_abundant:
+                QMessageBox.information(self, "No MSMS Found", "No valid spectra found after filtering.")
+                return
+
+            msms_viewer = MSMSViewerWindow(
+                most_abundant,
+                self.target_mz,
+                rt_center,
+                rt_window,
+                self.compound_data["Name"],
+                self.adduct,
+                None,
+                file_manager=self.file_manager,
+                defaults=self.defaults,
+                compound_formula=self.compound_data.get("ChemicalFormula"),
+                adduct_info=self._lookup_adduct_info(),
+                compound_smiles=self.compound_data.get("SMILES"),
+            )
+            self._msms_windows.append(msms_viewer)
+            msms_viewer.destroyed.connect(lambda _, w=msms_viewer: self._msms_windows.remove(w) if w in self._msms_windows else None)
+            msms_viewer.show()
+
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to view most-abundant MSMS spectrum: {str(e)}")
 
     def view_ms1_spectra(self, rt_center: float):
         """View MS1 spectra at the specified RT for all files"""

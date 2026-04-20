@@ -6869,6 +6869,7 @@ class EICWindow(QWidget):
                                     "scan_id": spectrum_data.get("scan_id", f"RT_{spectrum_rt:.2f}"),
                                     "polarity": spectrum_polarity,
                                     "filter_string": spectrum_data.get("filter_string"),
+                                    "collision_energy": spectrum_data.get("collision_energy"),
                                 }
                                 # Apply filter-type restriction
                                 if filter_type is not None:
@@ -6929,6 +6930,7 @@ class EICWindow(QWidget):
                                         "scan_id": spectrum.ID,
                                         "polarity": spectrum_polarity,
                                         "filter_string": self.file_manager._get_filter_string(spectrum),
+                                        "collision_energy": self.file_manager._get_collision_energy(spectrum),
                                     }
                                     # Apply filter-type restriction
                                     if filter_type is not None:
@@ -7014,6 +7016,7 @@ class EICWindow(QWidget):
                                 "scan_id": spectrum_data.get("scan_id", f"RT_{spectrum_rt:.2f}"),
                                 "polarity": spectrum_polarity,
                                 "filter_string": spectrum_data.get("filter_string"),
+                                "collision_energy": spectrum_data.get("collision_energy"),
                             }
                             if filter_type is not None:
                                 parsed = self._parse_filter_string_type(candidate["filter_string"] or "")
@@ -7066,6 +7069,7 @@ class EICWindow(QWidget):
                                 "scan_id": spectrum.ID,
                                 "polarity": spectrum_polarity,
                                 "filter_string": self.file_manager._get_filter_string(spectrum),
+                                "collision_energy": self.file_manager._get_collision_energy(spectrum),
                             }
                             if filter_type is not None:
                                 parsed = self._parse_filter_string_type(candidate["filter_string"] or "")
@@ -7447,6 +7451,8 @@ class EmbeddedScatterPlotView(QWidget):
 
     def load_data(self):
         """Load and process data for the scatter plot"""
+        MAX_TOTAL_POINTS = 10000
+
         try:
             # Calculate extended m/z range (3x the extraction window)
             mz_min = self.target_mz - self.mz_tolerance
@@ -7576,8 +7582,26 @@ class EmbeddedScatterPlotView(QWidget):
                     print(f"Error processing file {filename}: {str(e)}")
                     continue
 
+            # Subsample globally to the top MAX_TOTAL_POINTS most abundant points
+            total_points = len(self.signal_data)
+            chart_title = ""
+            if total_points > MAX_TOTAL_POINTS:
+                self.signal_data.sort(key=lambda s: s["intensity"], reverse=True)
+                self.signal_data = self.signal_data[:MAX_TOTAL_POINTS]
+                # Rebuild group_signals from the subsampled data
+                group_signals = {}
+                for signal_info in self.signal_data:
+                    g = signal_info["group"]
+                    if g not in group_signals:
+                        group_signals[g] = []
+                    group_signals[g].append(signal_info)
+                chart_title = (
+                    f"{total_points:,} points total — showing {MAX_TOTAL_POINTS:,} most abundant"
+                )
+
             # Create scatter series for each group
             self.create_scatter_series(group_signals)
+            self.chart.setTitle(chart_title)
 
         except Exception as e:
             print(f"Failed to load scatter plot data: {str(e)}")

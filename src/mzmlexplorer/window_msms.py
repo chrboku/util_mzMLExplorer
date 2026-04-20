@@ -299,6 +299,30 @@ class InteractiveEICChartView(QChartView):
         ya.setRange(cy - (1.0 - ry) * nyr, cy + ry * nyr)
 
 
+def _format_collision_energy(ce, separator: str = " | ") -> str:
+    """Format a ``collision_energy`` field (dict or legacy float) into a display string.
+
+    Returns an empty string when *ce* is ``None``.
+    """
+    if ce is None:
+        return ""
+    if isinstance(ce, dict):
+        val = ce.get("value")
+        unit = ce.get("unit", "eV")
+        method = ce.get("method")
+        parts = []
+        if val is not None:
+            parts.append(f"CE: {val:.1f} {unit}")
+        if method:
+            parts.append(method)
+        return (separator + separator.join(parts)) if parts else ""
+    # Legacy float
+    try:
+        return f"{separator}CE: {float(ce):.1f} eV"
+    except (TypeError, ValueError):
+        return ""
+
+
 class MSMSPopupWindow(QWidget):
     """Popup window for displaying a single MSMS spectrum in a larger view"""
 
@@ -1210,8 +1234,10 @@ class MSMSPopupWindow(QWidget):
         precursor_intensity = self.spectrum_data.get("precursor_intensity", 0)
         intensity_text = f"{precursor_intensity:.1e}" if precursor_intensity > 0 else "N/A"
 
+        ce = self.spectrum_data.get("collision_energy")
+        ce_text = _format_collision_energy(ce)
         chart.setTitle(
-            f"MSMS Spectrum\nRT: {self.spectrum_data['rt']:.4f} min, Precursor: {self.spectrum_data['precursor_mz']:.4f}, Intensity: {intensity_text}"
+            f"MSMS Spectrum\nRT: {self.spectrum_data['rt']:.4f} min, Precursor: {self.spectrum_data['precursor_mz']:.4f}, Intensity: {intensity_text}{ce_text}"
             + (f"\nScan: {self.spectrum_data['scan_id']}" if self.spectrum_data.get("scan_id") else "")
             + (f" | Filter: {self.spectrum_data['filter_string']}" if self.spectrum_data.get("filter_string") else "")
         )
@@ -2137,8 +2163,10 @@ class MSMSViewerWindow(QWidget):
         precursor_intensity = spectrum_data.get("precursor_intensity", 0)
         intensity_text = f"{precursor_intensity:.1e}" if precursor_intensity > 0 else "N/A"
 
+        ce = spectrum_data.get("collision_energy")
+        ce_text = _format_collision_energy(ce)
         chart.setTitle(
-            f"RT: {spectrum_data['rt']:.2f} min / {spectrum_data['rt'] / 60.0:.1f} sec /  | Precursor: {spectrum_data['precursor_mz']:.4f} | Intensity: {intensity_text}"
+            f"RT: {spectrum_data['rt']:.2f} min / {spectrum_data['rt'] / 60.0:.1f} sec /  | Precursor: {spectrum_data['precursor_mz']:.4f} | Intensity: {intensity_text}{ce_text}"
             + (f"\nScan: {spectrum_data['scan_id']}" if spectrum_data.get("scan_id") else "")
             + (f" | Filter: {spectrum_data['filter_string']}" if spectrum_data.get("filter_string") else "")
         )

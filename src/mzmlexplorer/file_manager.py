@@ -137,6 +137,64 @@ class FileManager:
                     return elem.get("value")
         return None
 
+    def _get_collision_energy(self, spectrum) -> Optional[dict]:
+        """Extract collision energy, its unit, and activation method from a spectrum.
+
+        Returns a dict ``{"value": float|None, "unit": str, "method": str|None}``
+        or ``None`` when neither energy nor method is found.
+
+        Energy is taken from CV term MS:1000045 (collision energy).
+        The activation method name is taken from any other cvParam inside the
+        ``<activation>`` element (e.g. MS:1000422 beam-type CID / HCD,
+        MS:1000133 CID, MS:1000598 ETD, …).
+        """
+        if not (hasattr(spectrum, "element") and spectrum.element is not None):
+            return None
+
+        energy_value: Optional[float] = None
+        energy_unit = "eV"
+        method_name: Optional[str] = None
+
+        # Primary pass: inspect <activation> elements
+        for elem in spectrum.element.iter():
+            if not elem.tag.endswith("activation"):
+                continue
+            for cv in elem:
+                if not cv.tag.endswith("cvParam"):
+                    continue
+                acc = cv.get("accession", "")
+                if acc == "MS:1000045":
+                    try:
+                        energy_value = float(cv.get("value"))
+                        unit = cv.get("unitName")
+                        if unit:
+                            energy_unit = unit
+                    except (TypeError, ValueError):
+                        pass
+                elif method_name is None:
+                    # Any other cvParam in the activation block is the method
+                    name = cv.get("name")
+                    if name:
+                        method_name = name
+
+        # Fallback: search whole element tree for MS:1000045 if still missing
+        if energy_value is None:
+            for cv in spectrum.element.iter():
+                if cv.tag.endswith("cvParam") and cv.get("accession") == "MS:1000045":
+                    try:
+                        energy_value = float(cv.get("value"))
+                        unit = cv.get("unitName")
+                        if unit:
+                            energy_unit = unit
+                    except (TypeError, ValueError):
+                        pass
+                    break
+
+        if energy_value is None and method_name is None:
+            return None
+
+        return {"value": energy_value, "unit": energy_unit, "method": method_name}
+
     def load_single_file(self, filepath: str) -> dict:
         """Parse a single mzML file and return {"ms1": [...], "ms2": [...]}.
 
@@ -210,6 +268,7 @@ class FileManager:
                         "precursor_intensity": precursor_intensity,
                         "scan_id": spec_id if spec_id is not None else f"RT_{spectrum.scan_time_in_minutes():.2f}",
                         "filter_string": self._get_filter_string(spectrum),
+                        "collision_energy": self._get_collision_energy(spectrum),
                     }
                     ms2_spectra_data.append(spectrum_data)
                 except Exception as e:

@@ -3401,9 +3401,8 @@ class USISpectrumComparisonWindow(QWidget):
             filename = row.get("filename", "")
 
             # Match by filename or filepath basename
-            import os as _os
-            basename = _os.path.basename(str(filepath))
-            if target_filename not in (str(filename), basename, _os.path.splitext(str(filename))[0], _os.path.splitext(basename)[0]):
+            basename = os.path.basename(str(filepath))
+            if target_filename not in (str(filename), basename, os.path.splitext(str(filename))[0], os.path.splitext(basename)[0]):
                 continue
 
             # Try in-memory cache
@@ -3437,7 +3436,7 @@ class USISpectrumComparisonWindow(QWidget):
                         best_score = diff
                         best = (s, fn)
 
-            if best is not None and best_score < 0.05:  # within 3 seconds
+            if best is not None and best_score < 0.05:  # within 0.05 min (~3 seconds)
                 return best
 
         return None

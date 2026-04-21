@@ -3204,12 +3204,7 @@ class USISpectrumComparisonWindow(QWidget):
         parent=None,
     ):
         super().__init__(parent)
-        self.setWindowFlags(
-            Qt.WindowType.Window
-            | Qt.WindowType.WindowMinimizeButtonHint
-            | Qt.WindowType.WindowMaximizeButtonHint
-            | Qt.WindowType.WindowCloseButtonHint
-        )
+        self.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.WindowMinimizeButtonHint | Qt.WindowType.WindowMaximizeButtonHint | Qt.WindowType.WindowCloseButtonHint)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
 
         self._spectrum_a = spectrum_a
@@ -3422,7 +3417,7 @@ class USISpectrumComparisonWindow(QWidget):
 
             best = None
             best_score = float("inf")
-            for (s, fn) in spectra_pool:
+            for s, fn in spectra_pool:
                 # Match by scan_id first
                 if scan_hint is not None:
                     sid = str(s.get("scan_id") or s.get("id") or "")

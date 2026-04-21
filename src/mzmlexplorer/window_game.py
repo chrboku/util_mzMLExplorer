@@ -20,9 +20,9 @@ COL_TEXT = QColor("#e2e8f0")
 
 BONUS_FOOD_CHANCE = 0.05  # probability a newly spawned food is golden
 
-TICK_MS = 120       # ms per step (starting speed)
-MIN_TICK_MS = 50    # fastest allowed tick
-SPEED_UP_MS = 1     # ms shaved off per treat eaten
+TICK_MS = 120  # ms per step (starting speed)
+MIN_TICK_MS = 50  # fastest allowed tick
+SPEED_UP_MS = 1  # ms shaved off per treat eaten
 
 UP = (0, -1)
 DOWN = (0, 1)
@@ -40,7 +40,6 @@ _SNAKE_DEFS = [
     (QColor("#34d399"), QColor("#10b981"), "AI"),
     (QColor("#fb923c"), QColor("#f97316"), "AI"),
 ]
-
 
 
 # Logo bounding box in grid coordinates (inclusive) – used for visibility check
@@ -191,10 +190,10 @@ class SnakeField(QWidget):
     def _start_game(self):
         total = self._num_players + self._num_ai
         starts = self._random_start_positions(total)
-        self._snakes = (
-            [_Snake(i, is_ai=False, sx=starts[i][0], sy=starts[i][1], d=starts[i][2]) for i in range(self._num_players)] +
-            [_Snake(self._num_players + i, is_ai=True, sx=starts[self._num_players + i][0], sy=starts[self._num_players + i][1], d=starts[self._num_players + i][2]) for i in range(self._num_ai)]
-        )
+        self._snakes = [_Snake(i, is_ai=False, sx=starts[i][0], sy=starts[i][1], d=starts[i][2]) for i in range(self._num_players)] + [
+            _Snake(self._num_players + i, is_ai=True, sx=starts[self._num_players + i][0], sy=starts[self._num_players + i][1], d=starts[self._num_players + i][2])
+            for i in range(self._num_ai)
+        ]
         self._foods = {}
         for _ in range(self._num_foods):
             self._spawn_food()
@@ -567,8 +566,7 @@ class SnakeField(QWidget):
         f.setBold(True)
         painter.setFont(f)
         painter.setPen(COL_TEXT)
-        painter.drawText(QRect(0, HEIGHT // 2 - 44, WIDTH, 90), Qt.AlignmentFlag.AlignCenter,
-                         "PAUSED\n\nSPACE – resume   R – menu")
+        painter.drawText(QRect(0, HEIGHT // 2 - 44, WIDTH, 90), Qt.AlignmentFlag.AlignCenter, "PAUSED\n\nSPACE – resume   R – menu")
 
     def _paint_game_over(self, painter: QPainter):
         painter.fillRect(0, HEIGHT // 2 - 52, WIDTH, 114, QColor(26, 26, 46, 210))

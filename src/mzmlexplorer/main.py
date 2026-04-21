@@ -2207,9 +2207,7 @@ class MzMLExplorerMainWindow(QMainWindow):
             file_manager=self.file_manager,
         )
         self._comparator_windows.append(win)
-        win.destroyed.connect(
-            lambda _, w=win: self._comparator_windows.remove(w) if hasattr(self, "_comparator_windows") and w in self._comparator_windows else None
-        )
+        win.destroyed.connect(lambda _, w=win: self._comparator_windows.remove(w) if hasattr(self, "_comparator_windows") and w in self._comparator_windows else None)
         win.show()
         win.raise_()
 

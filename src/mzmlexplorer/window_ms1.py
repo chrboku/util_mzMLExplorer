@@ -1704,7 +1704,17 @@ class MS1SingleSpectrumWindow(QWidget):
     def _create_qchart(self, plot_mz, zoom_min, zoom_max):
         """Build a QChart with stick-spectrum series."""
         chart = QChart()
-        usi = make_usi({"mz": self.raw_mz, "intensity": self.intensity_arr, "scan_time": self.spectrum_data.get("rt", 0.0), "polarity": self.spectrum_data.get("polarity", ""), "scan_id": self.spectrum_data.get("scan_id"), "ms_level": 1}, self.filename)
+        usi = make_usi(
+            {
+                "mz": self.raw_mz,
+                "intensity": self.intensity_arr,
+                "scan_time": self.spectrum_data.get("rt", 0.0),
+                "polarity": self.spectrum_data.get("polarity", ""),
+                "scan_id": self.spectrum_data.get("scan_id"),
+                "ms_level": 1,
+            },
+            self.filename,
+        )
         chart.setTitle(f"MS1 — {usi}  |  {self.compound_name} ({self.adduct})")
         chart.legend().hide()
 

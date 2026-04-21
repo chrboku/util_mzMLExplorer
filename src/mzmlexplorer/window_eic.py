@@ -6266,7 +6266,9 @@ class EICWindow(QWidget):
         show_msms_most_abundant_3s = self.defaults.get("show_msms_most_abundant_3s", False)
         show_msms_most_abundant_6s = self.defaults.get("show_msms_most_abundant_6s", False)
         show_msms_most_abundant_9s = self.defaults.get("show_msms_most_abundant_9s", False)
-        any_msms_enabled = show_msms_closest or show_msms_3s or show_msms_6s or show_msms_9s or show_msms_most_abundant_3s or show_msms_most_abundant_6s or show_msms_most_abundant_9s
+        any_msms_enabled = (
+            show_msms_closest or show_msms_3s or show_msms_6s or show_msms_9s or show_msms_most_abundant_3s or show_msms_most_abundant_6s or show_msms_most_abundant_9s
+        )
 
         if any_msms_enabled:
             # Add MSMS viewing options (unfiltered)
@@ -7682,9 +7684,7 @@ class EmbeddedScatterPlotView(QWidget):
                     if g not in group_signals:
                         group_signals[g] = []
                     group_signals[g].append(signal_info)
-                chart_title = (
-                    f"{total_points:,} points total — showing {MAX_TOTAL_POINTS:,} most abundant"
-                )
+                chart_title = f"{total_points:,} points total — showing {MAX_TOTAL_POINTS:,} most abundant"
 
             # Create scatter series for each group
             self.create_scatter_series(group_signals)

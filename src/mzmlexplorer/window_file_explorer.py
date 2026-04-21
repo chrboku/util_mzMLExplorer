@@ -1208,6 +1208,7 @@ class MzMLFileExplorerWindow(QWidget):
                         ce = spec.get("collision_energy")
                         if ce is not None:
                             from .window_msms import _format_collision_energy
+
                             title += _format_collision_energy(ce, separator="  |  ")
                     open_fn = (lambda s=spec, fn=self._filename: self._open_msms_popup(s, fn)) if ms_level == 2 else None
                     panel.set_spectrum(

@@ -1559,7 +1559,7 @@ class InteractiveMSMSChartView(QChartView):
             self.is_zooming = False
             if self._right_press_start is not None:
                 dp = event.position() - self._right_press_start
-                if dp.x() ** 2 + dp.y() ** 2 < 25.0 and self._right_click_mz is not None:
+                if dp.x() ** 2 + dp.y() ** 2 < 25.0:
                     self._show_annotate_context_menu(event, self._right_click_mz, self._right_click_norm_int)
             self._right_press_start = None
 
@@ -1597,13 +1597,16 @@ class InteractiveMSMSChartView(QChartView):
         lbl.show()
         self._redraw_annotation_labels()
 
-    def _show_annotate_context_menu(self, event, mz: float, norm_int: float):
-        """Show Annotate colour submenu for a peak, plus USI and comparator options."""
+    def _show_annotate_context_menu(self, event, mz: float | None, norm_int: float):
+        """Show context menu. Annotate submenu is only shown when a peak is highlighted."""
         menu = QMenu(self)
-        ann_menu = menu.addMenu("Annotate")
-        for name, color_str in ANNOTATION_COLOR_PRESETS:
-            act = ann_menu.addAction(name)
-            act.triggered.connect(lambda _c=False, m=mz, n=norm_int, c=color_str: self._toggle_pin(m, n, c))
+
+        # -- Annotate section (only when a peak is under the cursor) --
+        if mz is not None:
+            ann_menu = menu.addMenu("Annotate")
+            for name, color_str in ANNOTATION_COLOR_PRESETS:
+                act = ann_menu.addAction(name)
+                act.triggered.connect(lambda _c=False, m=mz, n=norm_int, c=color_str: self._toggle_pin(m, n, c))
 
         # -- USI section --
         usi = getattr(self, "_usi", None)
@@ -2656,7 +2659,7 @@ class MirrorPlotChartView(InteractiveEICChartView):
         elif event.button() == Qt.MouseButton.RightButton:
             if self._right_press_start is not None:
                 dp = event.position() - self._right_press_start
-                if dp.x() ** 2 + dp.y() ** 2 < 25.0 and self._right_click_mz is not None:
+                if dp.x() ** 2 + dp.y() ** 2 < 25.0:
                     self._show_context_menu(event, self._right_click_mz, self._right_click_chart_y)
             self._right_press_start = None
         super().mouseReleaseEvent(event)
@@ -2761,16 +2764,19 @@ class MirrorPlotChartView(InteractiveEICChartView):
         lbl.show()
         self._redraw_annotation_labels()
 
-    def _show_context_menu(self, event, mz: float, chart_y: float):
-        """Context menu with Annotate → colour submenu and USI copy options."""
-        from_a = chart_y >= 0
-        row_dict, _ = self._row_for_peak(mz, from_a)
-        label_text = self._label_text(mz, row_dict, from_a)
+    def _show_context_menu(self, event, mz: float | None, chart_y: float):
+        """Context menu. Annotate submenu is only shown when a peak is highlighted."""
         menu = QMenu(self)
-        ann_menu = menu.addMenu("Annotate")
-        for name, color_str in ANNOTATION_COLOR_PRESETS:
-            act = ann_menu.addAction(name)
-            act.triggered.connect(lambda _c=False, m=mz, cy=chart_y, c=color_str, lt=label_text: self._toggle_pin(m, cy, c, lt))
+
+        # -- Annotate section (only when a peak is under the cursor) --
+        if mz is not None:
+            from_a = chart_y >= 0
+            row_dict, _ = self._row_for_peak(mz, from_a)
+            label_text = self._label_text(mz, row_dict, from_a)
+            ann_menu = menu.addMenu("Annotate")
+            for name, color_str in ANNOTATION_COLOR_PRESETS:
+                act = ann_menu.addAction(name)
+                act.triggered.connect(lambda _c=False, m=mz, cy=chart_y, c=color_str, lt=label_text: self._toggle_pin(m, cy, c, lt))
 
         # -- USI section --
         if self._usi_a or self._usi_b:

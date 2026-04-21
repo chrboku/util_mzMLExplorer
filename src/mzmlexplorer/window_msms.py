@@ -2544,6 +2544,10 @@ class MirrorPlotChartView(InteractiveEICChartView):
         self._pinned_annotations: list = []
         self._ann_labels: list = []
 
+        # USI strings — set by EnhancedMirrorPlotWindow after construction
+        self._usi_a: str | None = None
+        self._usi_b: str | None = None
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
@@ -2758,7 +2762,7 @@ class MirrorPlotChartView(InteractiveEICChartView):
         self._redraw_annotation_labels()
 
     def _show_context_menu(self, event, mz: float, chart_y: float):
-        """Context menu with Annotate → colour submenu."""
+        """Context menu with Annotate → colour submenu and USI copy options."""
         from_a = chart_y >= 0
         row_dict, _ = self._row_for_peak(mz, from_a)
         label_text = self._label_text(mz, row_dict, from_a)
@@ -2767,6 +2771,21 @@ class MirrorPlotChartView(InteractiveEICChartView):
         for name, color_str in ANNOTATION_COLOR_PRESETS:
             act = ann_menu.addAction(name)
             act.triggered.connect(lambda _c=False, m=mz, cy=chart_y, c=color_str, lt=label_text: self._toggle_pin(m, cy, c, lt))
+
+        # -- USI section --
+        if self._usi_a or self._usi_b:
+            menu.addSeparator()
+        if self._usi_a:
+            lbl_a = menu.addAction(f"USI A: {self._usi_a}")
+            lbl_a.setEnabled(False)
+            copy_a = menu.addAction("Copy USI A to Clipboard")
+            copy_a.triggered.connect(lambda _c=False, u=self._usi_a: QApplication.clipboard().setText(u))
+        if self._usi_b:
+            lbl_b = menu.addAction(f"USI B: {self._usi_b}")
+            lbl_b.setEnabled(False)
+            copy_b = menu.addAction("Copy USI B to Clipboard")
+            copy_b.triggered.connect(lambda _c=False, u=self._usi_b: QApplication.clipboard().setText(u))
+
         menu.exec(event.globalPosition().toPoint())
 
     def _redraw_annotation_labels(self):
@@ -3060,6 +3079,8 @@ class EnhancedMirrorPlotWindow(QWidget):
         self._chart_view._rel_b = self._rel_b
         self._chart_view._rows = self._rows
         self._chart_view._table = self._table
+        self._chart_view._usi_a = self.title_a
+        self._chart_view._usi_b = self.title_b
         splitter.addWidget(self._chart_view)
 
         splitter.setSizes([540, 680])
@@ -3240,10 +3261,22 @@ class USISpectrumComparisonWindow(QWidget):
         self._usi_a_edit.setPlaceholderText("USI or leave empty")
         usi_row.addWidget(self._usi_a_edit, 1)
 
+        copy_a_btn = QPushButton("⎘ Copy A")
+        copy_a_btn.setToolTip("Copy USI A to clipboard")
+        copy_a_btn.setFixedWidth(75)
+        copy_a_btn.clicked.connect(lambda: QApplication.clipboard().setText(self._usi_a_edit.text().strip()))
+        usi_row.addWidget(copy_a_btn)
+
         usi_row.addWidget(QLabel("Spectrum B (USI):"))
         self._usi_b_edit = QLineEdit(self._usi_b)
         self._usi_b_edit.setPlaceholderText("USI or leave empty")
         usi_row.addWidget(self._usi_b_edit, 1)
+
+        copy_b_btn = QPushButton("⎘ Copy B")
+        copy_b_btn.setToolTip("Copy USI B to clipboard")
+        copy_b_btn.setFixedWidth(75)
+        copy_b_btn.clicked.connect(lambda: QApplication.clipboard().setText(self._usi_b_edit.text().strip()))
+        usi_row.addWidget(copy_b_btn)
 
         tol_lbl = QLabel("Tol (Da):")
         usi_row.addWidget(tol_lbl)

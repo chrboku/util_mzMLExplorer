@@ -1,1 +1,2 @@
 uv run mzmlexplorer
+pause

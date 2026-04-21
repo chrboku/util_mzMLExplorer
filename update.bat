@@ -11,3 +11,5 @@ if errorlevel 1 (
 
 echo Pulling latest changes from the repository...
 git pull
+
+pause

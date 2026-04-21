@@ -44,7 +44,7 @@ from PyQt6.QtCore import Qt, QThread, pyqtSignal, QPointF, QMargins
 from PyQt6.QtCharts import QChart, QChartView, QLineSeries, QValueAxis
 from PyQt6.QtGui import QPen, QColor, QPainter, QMouseEvent, QAction, QBrush
 from .window_shared import CollapsibleBox, ANNOTATION_COLOR_PRESETS, BarDelegate, NumericTableWidgetItem
-from .utils import calculate_cosine_similarity, calculate_similarity_statistics
+from .utils import calculate_cosine_similarity, calculate_similarity_statistics, make_usi
 from .FormulaTools import FragmentAnnotator
 
 
@@ -359,7 +359,8 @@ class MSMSPopupWindow(QWidget):
         self._eic_frag_colors = {}  # {frag_mz: QColor}
         self._eic_worker = None
 
-        self.setWindowTitle(f"MSMS Spectrum — {filename} | Group: {self.group}")
+        self._usi = make_usi(self.spectrum_data, self.filename)
+        self.setWindowTitle(f"MSMS Spectrum — {self.filename} | Group: {self.group} | {self._usi}")
         self.setWindowFlags(Qt.WindowType.Window)  # Make it a separate window
         self.resize(1400, 800)
 
@@ -380,6 +381,8 @@ class MSMSPopupWindow(QWidget):
         chart = self.create_large_msms_chart()
         self.chart_view = InteractiveMSMSChartView(chart)
         self.chart_view.spectrum_data = self.spectrum_data  # Enable hover tooltip
+        self.chart_view._usi = self._usi
+        self.chart_view._open_comparison_fn = self._open_comparison_window
         self.chart_view.setMinimumSize(400, 300)
         splitter.addWidget(self.chart_view)
 
@@ -1226,6 +1229,21 @@ class MSMSPopupWindow(QWidget):
 
     # ------------------------------------------------------------------
 
+    def _open_comparison_window(self, second_spectrum=None, second_filename=None):
+        """Open the USI Spectrum Comparator window pre-populated with this spectrum."""
+        if not hasattr(self, "_comparison_windows"):
+            self._comparison_windows = []
+        win = USISpectrumComparisonWindow(
+            spectrum_a=self.spectrum_data,
+            filename_a=self.filename,
+            spectrum_b=second_spectrum,
+            filename_b=second_filename,
+            file_manager=self.file_manager,
+        )
+        self._comparison_windows.append(win)
+        win.destroyed.connect(lambda _, w=win: self._comparison_windows.remove(w) if w in self._comparison_windows else None)
+        win.show()
+
     def create_large_msms_chart(self):
         """Create a large MSMS spectrum chart"""
         chart = QChart()
@@ -1237,7 +1255,7 @@ class MSMSPopupWindow(QWidget):
         ce = self.spectrum_data.get("collision_energy")
         ce_text = _format_collision_energy(ce)
         chart.setTitle(
-            f"MSMS Spectrum\nRT: {self.spectrum_data['rt']:.4f} min, Precursor: {self.spectrum_data['precursor_mz']:.4f}, Intensity: {intensity_text}{ce_text}"
+            f"MSMS Spectrum — {self._usi}\nRT: {self.spectrum_data['rt']:.4f} min, Precursor: {self.spectrum_data['precursor_mz']:.4f}, Intensity: {intensity_text}{ce_text}"
             + (f"\nScan: {self.spectrum_data['scan_id']}" if self.spectrum_data.get("scan_id") else "")
             + (f" | Filter: {self.spectrum_data['filter_string']}" if self.spectrum_data.get("filter_string") else "")
         )
@@ -1541,7 +1559,7 @@ class InteractiveMSMSChartView(QChartView):
             self.is_zooming = False
             if self._right_press_start is not None:
                 dp = event.position() - self._right_press_start
-                if dp.x() ** 2 + dp.y() ** 2 < 25.0 and self._right_click_mz is not None:
+                if dp.x() ** 2 + dp.y() ** 2 < 25.0:
                     self._show_annotate_context_menu(event, self._right_click_mz, self._right_click_norm_int)
             self._right_press_start = None
 
@@ -1579,13 +1597,33 @@ class InteractiveMSMSChartView(QChartView):
         lbl.show()
         self._redraw_annotation_labels()
 
-    def _show_annotate_context_menu(self, event, mz: float, norm_int: float):
-        """Show Annotate colour submenu for a peak."""
+    def _show_annotate_context_menu(self, event, mz: float | None, norm_int: float):
+        """Show context menu. Annotate submenu is only shown when a peak is highlighted."""
         menu = QMenu(self)
-        ann_menu = menu.addMenu("Annotate")
-        for name, color_str in ANNOTATION_COLOR_PRESETS:
-            act = ann_menu.addAction(name)
-            act.triggered.connect(lambda _c=False, m=mz, n=norm_int, c=color_str: self._toggle_pin(m, n, c))
+
+        # -- Annotate section (only when a peak is under the cursor) --
+        if mz is not None:
+            ann_menu = menu.addMenu("Annotate")
+            for name, color_str in ANNOTATION_COLOR_PRESETS:
+                act = ann_menu.addAction(name)
+                act.triggered.connect(lambda _c=False, m=mz, n=norm_int, c=color_str: self._toggle_pin(m, n, c))
+
+        # -- USI section --
+        usi = getattr(self, "_usi", None)
+        if usi:
+            menu.addSeparator()
+            usi_action = menu.addAction(f"USI: {usi}")
+            usi_action.setEnabled(False)
+            copy_usi_action = menu.addAction("Copy USI to Clipboard")
+            copy_usi_action.triggered.connect(lambda _c=False, u=usi: QApplication.clipboard().setText(u))
+
+        # -- Open comparison window --
+        open_comp_fn = getattr(self, "_open_comparison_fn", None)
+        if open_comp_fn is not None:
+            menu.addSeparator()
+            comp_action = menu.addAction("Open in Spectrum Comparator")
+            comp_action.triggered.connect(lambda _c=False: open_comp_fn())
+
         menu.exec(event.globalPosition().toPoint())
 
     def _redraw_annotation_labels(self):
@@ -2165,8 +2203,9 @@ class MSMSViewerWindow(QWidget):
 
         ce = spectrum_data.get("collision_energy")
         ce_text = _format_collision_energy(ce)
+        usi = make_usi(spectrum_data, filename)
         chart.setTitle(
-            f"RT: {spectrum_data['rt']:.2f} min / {spectrum_data['rt'] / 60.0:.1f} sec /  | Precursor: {spectrum_data['precursor_mz']:.4f} | Intensity: {intensity_text}{ce_text}"
+            f"{usi}\nRT: {spectrum_data['rt']:.2f} min | Precursor: {spectrum_data['precursor_mz']:.4f} | Intensity: {intensity_text}{ce_text}"
             + (f"\nScan: {spectrum_data['scan_id']}" if spectrum_data.get("scan_id") else "")
             + (f" | Filter: {spectrum_data['filter_string']}" if spectrum_data.get("filter_string") else "")
         )
@@ -2240,6 +2279,8 @@ class MSMSViewerWindow(QWidget):
         chart_view.compound_smiles = self.compound_smiles
         chart_view.filepath = filepath
         chart_view.file_manager = self.file_manager
+        chart_view._usi = usi
+        chart_view._open_comparison_fn = lambda s=spectrum_data, fn=filename: self._open_comparison_from_viewer(s, fn)
         # all_similar_spectra will be set by the caller
         chart.legend().setVisible(False)
 
@@ -2356,8 +2397,6 @@ class MSMSViewerWindow(QWidget):
             # For diagonal, compare first two spectra from the same file
             spectrum_a = file1_data["spectra"][0]
             spectrum_b = file1_data["spectra"][1]
-            title_a = f"{file1_data['filename']} - RT: {spectrum_a['rt']:.2f} min"
-            title_b = f"{file1_data['filename']} - RT: {spectrum_b['rt']:.2f} min"
         else:
             # For off-diagonal, compare first spectrum from each file
             spectrum_a = file1_data["spectra"][0] if file1_data["spectra"] else None
@@ -2367,29 +2406,20 @@ class MSMSViewerWindow(QWidget):
                 QMessageBox.warning(self, "No Spectra", "No spectra available for comparison.")
                 return
 
-            title_a = f"{file1_data['filename']} - RT: {spectrum_a['rt']:.2f} min"
-            title_b = f"{file2_data['filename']} - RT: {spectrum_b['rt']:.2f} min"
-
-        # Calculate cosine similarity between these two spectra
-        tol = self._get_pair_mz_tolerance(spectrum_a, spectrum_b)
-        method = self.defaults.get("msms_similarity_method", "CosineHungarian")
-        similarity = calculate_cosine_similarity(spectrum_a, spectrum_b, mz_tolerance=tol, method=method)
-
-        # Open enhanced mirror plot window
         if not hasattr(self, "_open_popups"):
             self._open_popups = []
-        window = EnhancedMirrorPlotWindow(
-            spectrum_a,
-            spectrum_b,
-            title_a,
-            title_b,
-            similarity,
-            mz_tolerance=tol,
-            method=method,
+        win = USISpectrumComparisonWindow(
+            spectrum_a=spectrum_a,
+            filename_a=file1_data["filename"],
+            spectrum_b=spectrum_b,
+            filename_b=file2_data["filename"],
+            file_manager=self.file_manager,
+            mz_tolerance=self._get_pair_mz_tolerance(spectrum_a, spectrum_b),
+            method=self.defaults.get("msms_similarity_method", "CosineHungarian"),
         )
-        window.destroyed.connect(lambda: self._open_popups.remove(window) if window in self._open_popups else None)
-        self._open_popups.append(window)
-        window.show()
+        self._open_popups.append(win)
+        win.destroyed.connect(lambda: self._open_popups.remove(win) if win in self._open_popups else None)
+        win.show()
 
     def _on_similarity_cell_clicked(self, row: int, col: int):
         """Open the two representative spectra for the clicked similarity cell."""
@@ -2426,7 +2456,6 @@ class MSMSViewerWindow(QWidget):
                 return
             spec_a, spec_b = spectra1[0], spectra1[1]
             name_a = name_b = file1_data["filename"]
-            group_a = group_b = file1_data.get("group", "")
         else:
             if not spectra1 or not spectra2:
                 QMessageBox.warning(self, "No Spectra", "No spectra available.")
@@ -2435,30 +2464,34 @@ class MSMSViewerWindow(QWidget):
             spec_b = spectra2[0]
             name_a = file1_data["filename"]
             name_b = file2_data["filename"]
-            group_a = file1_data.get("group", "")
-            group_b = file2_data.get("group", "")
-
-        title_a = f"{name_a} — RT: {spec_a['rt']:.2f} min"
-        title_b = f"{name_b} — RT: {spec_b['rt']:.2f} min"
-
-        tol = self._get_pair_mz_tolerance(spec_a, spec_b)
-        method = self.defaults.get("msms_similarity_method", "CosineHungarian")
-        similarity = calculate_cosine_similarity(spec_a, spec_b, mz_tolerance=tol, method=method)
 
         if not hasattr(self, "_open_popups"):
             self._open_popups = []
-        window = EnhancedMirrorPlotWindow(
-            spec_a,
-            spec_b,
-            title_a,
-            title_b,
-            similarity,
-            mz_tolerance=tol,
-            method=method,
+        win = USISpectrumComparisonWindow(
+            spectrum_a=spec_a,
+            filename_a=name_a,
+            spectrum_b=spec_b,
+            filename_b=name_b,
+            file_manager=self.file_manager,
+            mz_tolerance=self._get_pair_mz_tolerance(spec_a, spec_b),
+            method=self.defaults.get("msms_similarity_method", "CosineHungarian"),
         )
-        window.destroyed.connect(lambda: self._open_popups.remove(window) if window in self._open_popups else None)
-        self._open_popups.append(window)
-        window.show()
+        self._open_popups.append(win)
+        win.destroyed.connect(lambda: self._open_popups.remove(win) if win in self._open_popups else None)
+        win.show()
+
+    def _open_comparison_from_viewer(self, spectrum_data, filename):
+        """Open a USISpectrumComparisonWindow pre-populated with one spectrum."""
+        if not hasattr(self, "_open_popups"):
+            self._open_popups = []
+        win = USISpectrumComparisonWindow(
+            spectrum_a=spectrum_data,
+            filename_a=filename,
+            file_manager=self.file_manager,
+        )
+        self._open_popups.append(win)
+        win.destroyed.connect(lambda: self._open_popups.remove(win) if win in self._open_popups else None)
+        win.show()
 
     def closeEvent(self, event):
         """Clean up when closing the window"""
@@ -2513,6 +2546,10 @@ class MirrorPlotChartView(InteractiveEICChartView):
         # Pinned annotations: list of (mz, chart_y, color, label_text)
         self._pinned_annotations: list = []
         self._ann_labels: list = []
+
+        # USI strings — set by EnhancedMirrorPlotWindow after construction
+        self._usi_a: str | None = None
+        self._usi_b: str | None = None
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -2622,7 +2659,7 @@ class MirrorPlotChartView(InteractiveEICChartView):
         elif event.button() == Qt.MouseButton.RightButton:
             if self._right_press_start is not None:
                 dp = event.position() - self._right_press_start
-                if dp.x() ** 2 + dp.y() ** 2 < 25.0 and self._right_click_mz is not None:
+                if dp.x() ** 2 + dp.y() ** 2 < 25.0:
                     self._show_context_menu(event, self._right_click_mz, self._right_click_chart_y)
             self._right_press_start = None
         super().mouseReleaseEvent(event)
@@ -2727,16 +2764,34 @@ class MirrorPlotChartView(InteractiveEICChartView):
         lbl.show()
         self._redraw_annotation_labels()
 
-    def _show_context_menu(self, event, mz: float, chart_y: float):
-        """Context menu with Annotate → colour submenu."""
-        from_a = chart_y >= 0
-        row_dict, _ = self._row_for_peak(mz, from_a)
-        label_text = self._label_text(mz, row_dict, from_a)
+    def _show_context_menu(self, event, mz: float | None, chart_y: float):
+        """Context menu. Annotate submenu is only shown when a peak is highlighted."""
         menu = QMenu(self)
-        ann_menu = menu.addMenu("Annotate")
-        for name, color_str in ANNOTATION_COLOR_PRESETS:
-            act = ann_menu.addAction(name)
-            act.triggered.connect(lambda _c=False, m=mz, cy=chart_y, c=color_str, lt=label_text: self._toggle_pin(m, cy, c, lt))
+
+        # -- Annotate section (only when a peak is under the cursor) --
+        if mz is not None:
+            from_a = chart_y >= 0
+            row_dict, _ = self._row_for_peak(mz, from_a)
+            label_text = self._label_text(mz, row_dict, from_a)
+            ann_menu = menu.addMenu("Annotate")
+            for name, color_str in ANNOTATION_COLOR_PRESETS:
+                act = ann_menu.addAction(name)
+                act.triggered.connect(lambda _c=False, m=mz, cy=chart_y, c=color_str, lt=label_text: self._toggle_pin(m, cy, c, lt))
+
+        # -- USI section --
+        if self._usi_a or self._usi_b:
+            menu.addSeparator()
+        if self._usi_a:
+            lbl_a = menu.addAction(f"USI A: {self._usi_a}")
+            lbl_a.setEnabled(False)
+            copy_a = menu.addAction("Copy USI A to Clipboard")
+            copy_a.triggered.connect(lambda _c=False, u=self._usi_a: QApplication.clipboard().setText(u))
+        if self._usi_b:
+            lbl_b = menu.addAction(f"USI B: {self._usi_b}")
+            lbl_b.setEnabled(False)
+            copy_b = menu.addAction("Copy USI B to Clipboard")
+            copy_b.triggered.connect(lambda _c=False, u=self._usi_b: QApplication.clipboard().setText(u))
+
         menu.exec(event.globalPosition().toPoint())
 
     def _redraw_annotation_labels(self):
@@ -2957,7 +3012,7 @@ class EnhancedMirrorPlotWindow(QWidget):
         # wrong rows and leaving most cells empty.
         self._table.setSortingEnabled(False)
         hh = self._table.horizontalHeader()
-        hh.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        hh.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         hh.setStretchLastSection(True)
         self._table.verticalHeader().setDefaultSectionSize(20)
 
@@ -3030,6 +3085,8 @@ class EnhancedMirrorPlotWindow(QWidget):
         self._chart_view._rel_b = self._rel_b
         self._chart_view._rows = self._rows
         self._chart_view._table = self._table
+        self._chart_view._usi_a = self.title_a
+        self._chart_view._usi_b = self.title_b
         splitter.addWidget(self._chart_view)
 
         splitter.setSizes([540, 680])
@@ -3145,3 +3202,275 @@ class EnhancedMirrorPlotWindow(QWidget):
         # Re-position any pinned annotation labels after the chart rebuild
         if self._chart_view._pinned_annotations:
             self._chart_view._redraw_annotation_labels()
+
+
+# ===========================================================================
+# USI-based arbitrary MSMS Spectrum Comparison Window
+# ===========================================================================
+
+
+class USISpectrumComparisonWindow(QWidget):
+    """Compare two arbitrary MSMS spectra side-by-side via a mirror plot.
+
+    Can be opened with zero, one, or two pre-populated spectra.  The user can
+    also paste USI strings to look up spectra inside the loaded files (when a
+    ``file_manager`` is provided).
+
+    The mirror plot and fragment table are reused from ``EnhancedMirrorPlotWindow``.
+    """
+
+    def __init__(
+        self,
+        spectrum_a=None,
+        filename_a=None,
+        spectrum_b=None,
+        filename_b=None,
+        file_manager=None,
+        mz_tolerance: float = 0.02,
+        method: str = "CosineHungarian",
+        parent=None,
+    ):
+        super().__init__(parent)
+        self.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.WindowMinimizeButtonHint | Qt.WindowType.WindowMaximizeButtonHint | Qt.WindowType.WindowCloseButtonHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+
+        self._spectrum_a = spectrum_a
+        self._filename_a = filename_a or ""
+        self._spectrum_b = spectrum_b
+        self._filename_b = filename_b or ""
+        self._file_manager = file_manager
+        self._mz_tolerance = mz_tolerance
+        self._method = method
+
+        self._usi_a = make_usi(spectrum_a, filename_a) if spectrum_a else ""
+        self._usi_b = make_usi(spectrum_b, filename_b) if spectrum_b else ""
+
+        # Keep child windows alive
+        self._child_windows: list = []
+
+        self.setWindowTitle("Spectrum Comparator")
+        self.resize(1500, 780)
+        self._init_ui()
+
+    # ------------------------------------------------------------------
+    def _init_ui(self):
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(8, 6, 8, 8)
+        outer.setSpacing(6)
+
+        # ---- USI input row ----
+        usi_row = QHBoxLayout()
+        usi_row.setSpacing(8)
+
+        usi_row.addWidget(QLabel("Spectrum A (USI):"))
+        self._usi_a_edit = QLineEdit(self._usi_a)
+        self._usi_a_edit.setPlaceholderText("USI or leave empty")
+        usi_row.addWidget(self._usi_a_edit, 1)
+
+        copy_a_btn = QPushButton("⎘ Copy A")
+        copy_a_btn.setToolTip("Copy USI A to clipboard")
+        copy_a_btn.setFixedWidth(75)
+        copy_a_btn.clicked.connect(lambda: QApplication.clipboard().setText(self._usi_a_edit.text().strip()))
+        usi_row.addWidget(copy_a_btn)
+
+        usi_row.addWidget(QLabel("Spectrum B (USI):"))
+        self._usi_b_edit = QLineEdit(self._usi_b)
+        self._usi_b_edit.setPlaceholderText("USI or leave empty")
+        usi_row.addWidget(self._usi_b_edit, 1)
+
+        copy_b_btn = QPushButton("⎘ Copy B")
+        copy_b_btn.setToolTip("Copy USI B to clipboard")
+        copy_b_btn.setFixedWidth(75)
+        copy_b_btn.clicked.connect(lambda: QApplication.clipboard().setText(self._usi_b_edit.text().strip()))
+        usi_row.addWidget(copy_b_btn)
+
+        tol_lbl = QLabel("Tol (Da):")
+        usi_row.addWidget(tol_lbl)
+        self._tol_spin = QDoubleSpinBox()
+        self._tol_spin.setRange(0.001, 2.0)
+        self._tol_spin.setDecimals(4)
+        self._tol_spin.setSingleStep(0.005)
+        self._tol_spin.setValue(self._mz_tolerance)
+        self._tol_spin.setFixedWidth(90)
+        usi_row.addWidget(self._tol_spin)
+
+        compare_btn = QPushButton("Compare")
+        compare_btn.clicked.connect(self._on_compare)
+        usi_row.addWidget(compare_btn)
+
+        outer.addLayout(usi_row)
+
+        # ---- placeholder for the mirror plot ----
+        self._plot_container = QWidget()
+        self._plot_layout = QVBoxLayout(self._plot_container)
+        self._plot_layout.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(self._plot_container, 1)
+
+        # If both spectra were already provided, show the mirror plot immediately
+        if self._spectrum_a and self._spectrum_b:
+            self._show_mirror()
+
+    # ------------------------------------------------------------------
+    def _on_compare(self):
+        """Triggered by the Compare button — look up spectra from USI text if needed."""
+        usi_a_text = self._usi_a_edit.text().strip()
+        usi_b_text = self._usi_b_edit.text().strip()
+
+        # If the USI in the text boxes differs from what we already have,
+        # try to look up the spectrum from the loaded files.
+        if usi_a_text and usi_a_text != self._usi_a:
+            result = self._lookup_by_usi(usi_a_text)
+            if result is not None:
+                self._spectrum_a, self._filename_a = result
+                self._usi_a = usi_a_text
+            else:
+                QMessageBox.warning(
+                    self,
+                    "Spectrum not found",
+                    f"Could not locate spectrum A from USI:\n{usi_a_text}\n\nMake sure the file is loaded in the main window.",
+                )
+                return
+
+        if usi_b_text and usi_b_text != self._usi_b:
+            result = self._lookup_by_usi(usi_b_text)
+            if result is not None:
+                self._spectrum_b, self._filename_b = result
+                self._usi_b = usi_b_text
+            else:
+                QMessageBox.warning(
+                    self,
+                    "Spectrum not found",
+                    f"Could not locate spectrum B from USI:\n{usi_b_text}\n\nMake sure the file is loaded in the main window.",
+                )
+                return
+
+        self._mz_tolerance = self._tol_spin.value()
+
+        if not self._spectrum_a or not self._spectrum_b:
+            QMessageBox.warning(self, "Missing spectra", "Please provide both spectrum A and spectrum B.")
+            return
+
+        self._show_mirror()
+
+    # ------------------------------------------------------------------
+    def _show_mirror(self):
+        """Build / rebuild the EnhancedMirrorPlotWindow-equivalent inside this window."""
+        # Remove previous plot widget if any
+        while self._plot_layout.count():
+            item = self._plot_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        spec_a = self._spectrum_a
+        spec_b = self._spectrum_b
+        tol = self._mz_tolerance
+        method = self._method
+        similarity = calculate_cosine_similarity(spec_a, spec_b, mz_tolerance=tol, method=method)
+
+        title_a = make_usi(spec_a, self._filename_a)
+        title_b = make_usi(spec_b, self._filename_b)
+
+        self.setWindowTitle(f"Spectrum Comparator — {title_a}  vs  {title_b}")
+
+        # Reuse the EnhancedMirrorPlotWindow as an embedded widget (no parent window)
+        mirror = EnhancedMirrorPlotWindow(
+            spec_a,
+            spec_b,
+            title_a,
+            title_b,
+            similarity,
+            mz_tolerance=tol,
+            method=method,
+            parent=None,  # will be re-parented below
+        )
+        # Embed by changing window flags so it acts as a plain widget
+        mirror.setWindowFlags(Qt.WindowType.Widget)
+        mirror.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
+        self._plot_layout.addWidget(mirror)
+        mirror.show()
+        self._child_windows.append(mirror)
+
+    # ------------------------------------------------------------------
+    def _lookup_by_usi(self, usi: str):
+        """Try to find a spectrum matching *usi* in the loaded files.
+
+        The lookup is best-effort: it parses the filename segment, RT, and
+        scan_id from the USI and searches the file_manager's cached data.
+
+        Returns ``(spectrum_dict, filename)`` or ``None``.
+        """
+        if self._file_manager is None:
+            return None
+
+        parts = usi.split(":")
+        if len(parts) < 2:
+            return None
+
+        target_filename = parts[0].strip()
+        # Collect all remaining parts for secondary matching
+        usi_lower = usi.lower()
+
+        # Parse RT hint
+        rt_hint = None
+        for p in parts[1:]:
+            if p.startswith("RT") and "min" in p:
+                try:
+                    rt_hint = float(p[2:].replace("min", ""))
+                except ValueError:
+                    pass
+
+        # Parse scan_id hint
+        scan_hint = None
+        for p in parts:
+            if p.startswith("scan="):
+                scan_hint = p[5:]
+
+        try:
+            files_data = self._file_manager.get_files_data()
+        except Exception:
+            return None
+
+        for _, row in files_data.iterrows():
+            filepath = row.get("Filepath", "")
+            filename = row.get("filename", "")
+
+            # Match by filename or filepath basename
+            basename = os.path.basename(str(filepath))
+            if target_filename not in (str(filename), basename, os.path.splitext(str(filename))[0], os.path.splitext(basename)[0]):
+                continue
+
+            # Try in-memory cache
+            cached = None
+            if self._file_manager.keep_in_memory:
+                cached = self._file_manager.cached_data.get(filepath)
+
+            spectra_pool = []
+            if cached and isinstance(cached, dict):
+                for level_key in ("ms2", "ms1"):
+                    for s in cached.get(level_key, []):
+                        spectra_pool.append((s, str(filename)))
+
+            if not spectra_pool:
+                # Skip file-based reading (too slow from UI thread)
+                continue
+
+            best = None
+            best_score = float("inf")
+            for s, fn in spectra_pool:
+                # Match by scan_id first
+                if scan_hint is not None:
+                    sid = str(s.get("scan_id") or s.get("id") or "")
+                    if sid == scan_hint:
+                        return (s, fn)
+                # Otherwise match by RT proximity
+                if rt_hint is not None:
+                    s_rt = float(s.get("scan_time") or s.get("rt") or 0)
+                    diff = abs(s_rt - rt_hint)
+                    if diff < best_score:
+                        best_score = diff
+                        best = (s, fn)
+
+            if best is not None and best_score < 0.05:  # within 0.05 min (~3 seconds)
+                return best
+
+        return None

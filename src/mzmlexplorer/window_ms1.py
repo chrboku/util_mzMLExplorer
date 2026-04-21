@@ -22,7 +22,7 @@ from PyQt6.QtCore import Qt, QPointF
 from PyQt6.QtCharts import QChart, QChartView, QLineSeries, QValueAxis
 from PyQt6.QtGui import QPen, QColor, QPainter, QMouseEvent
 from .window_shared import ClickableLabel, ANNOTATION_COLOR_PRESETS
-from .utils import parse_molecular_formula
+from .utils import parse_molecular_formula, make_usi
 
 
 def _make_vline():
@@ -213,7 +213,8 @@ class MS1ViewerWindow(QWidget):
     def create_ms1_chart(self, spectrum, filename):
         """Create a chart for MS1 spectrum"""
         chart = QChart()
-        chart.setTitle(f"MS1 Spectrum - {filename}")
+        usi = make_usi(spectrum, filename)
+        chart.setTitle(f"MS1 — {usi}")
         chart.legend().hide()
 
         # Create series for the spectrum
@@ -1703,8 +1704,18 @@ class MS1SingleSpectrumWindow(QWidget):
     def _create_qchart(self, plot_mz, zoom_min, zoom_max):
         """Build a QChart with stick-spectrum series."""
         chart = QChart()
-        display_name = self.filename.split(".")[0] if "." in self.filename else self.filename
-        chart.setTitle(f"MS1 – {display_name}  |  {self.compound_name} ({self.adduct})")
+        usi = make_usi(
+            {
+                "mz": self.raw_mz,
+                "intensity": self.intensity_arr,
+                "scan_time": self.spectrum_data.get("rt", 0.0),
+                "polarity": self.spectrum_data.get("polarity", ""),
+                "scan_id": self.spectrum_data.get("scan_id"),
+                "ms_level": 1,
+            },
+            self.filename,
+        )
+        chart.setTitle(f"MS1 — {usi}  |  {self.compound_name} ({self.adduct})")
         chart.legend().hide()
 
         # Main spectrum series

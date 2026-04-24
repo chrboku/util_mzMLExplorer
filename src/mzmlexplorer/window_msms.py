@@ -323,6 +323,24 @@ def _format_collision_energy(ce, separator: str = " | ") -> str:
         return ""
 
 
+def _spectrum_to_massbank_text(spectrum_data: dict) -> str | None:
+    """Convert a spectrum dict to a MassBank peak list string.
+
+    Returns a multi-line string where each line is ``<m/z> <relative_intensity>``,
+    with intensities scaled so that the base peak equals 100.  Returns ``None``
+    when the spectrum contains no peaks.
+    """
+    mz_array = np.array(spectrum_data.get("mz", []), dtype=float)
+    intensity_array = np.array(spectrum_data.get("intensity", []), dtype=float)
+    if len(mz_array) == 0:
+        return None
+    max_int = float(np.max(intensity_array))
+    if max_int <= 0:
+        return None
+    rel = intensity_array / max_int * 100.0
+    return "\n".join(f"{mz:.5f} {ri:.2f}" for mz, ri in zip(mz_array, rel))
+
+
 class MSMSPopupWindow(QWidget):
     """Popup window for displaying a single MSMS spectrum in a larger view"""
 
@@ -463,6 +481,14 @@ class MSMSPopupWindow(QWidget):
         )
         copy_eic_r_btn.clicked.connect(self._copy_eic_r)
         copy_layout.addWidget(copy_eic_r_btn)
+
+        copy_massbank_btn = QPushButton("Copy for MassBank")
+        copy_massbank_btn.setToolTip(
+            "Copy the MSMS spectrum as a MassBank peak list.\n"
+            "Format: one fragment per line — m/z value, space, relative intensity (scaled to 100 for the base peak)."
+        )
+        copy_massbank_btn.clicked.connect(self._copy_for_massbank)
+        copy_layout.addWidget(copy_massbank_btn)
 
         copy_layout.addStretch()
         layout.addLayout(copy_layout)
@@ -1227,6 +1253,16 @@ class MSMSPopupWindow(QWidget):
         r_code = f"eic <- data.frame(\n  mz = c({mz_vals}),\n  rt_min = c({rt_vals}),\n  {intensity_col} = c({int_vals}),\n  stringsAsFactors = FALSE\n)"
         QApplication.clipboard().setText(r_code)
 
+    def _copy_for_massbank(self):
+        """Copy the MSMS spectrum to clipboard in MassBank peak list format.
+
+        Format: one fragment per line, <m/z> <relative_intensity_scaled_to_100>.
+        The most abundant signal is scaled to 100.
+        """
+        text = _spectrum_to_massbank_text(self.spectrum_data)
+        if text is not None:
+            QApplication.clipboard().setText(text)
+
     # ------------------------------------------------------------------
 
     def _open_comparison_window(self, second_spectrum=None, second_filename=None):
@@ -1608,6 +1644,12 @@ class InteractiveMSMSChartView(QChartView):
                 act = ann_menu.addAction(name)
                 act.triggered.connect(lambda _c=False, m=mz, n=norm_int, c=color_str: self._toggle_pin(m, n, c))
 
+        # -- Copy for MassBank --
+        if self.spectrum_data is not None:
+            menu.addSeparator()
+            massbank_action = menu.addAction("Copy for MassBank")
+            massbank_action.triggered.connect(self._copy_for_massbank)
+
         # -- USI section --
         usi = getattr(self, "_usi", None)
         if usi:
@@ -1625,6 +1667,17 @@ class InteractiveMSMSChartView(QChartView):
             comp_action.triggered.connect(lambda _c=False: open_comp_fn())
 
         menu.exec(event.globalPosition().toPoint())
+
+    def _copy_for_massbank(self):
+        """Copy the spectrum to clipboard in MassBank peak list format.
+
+        Format: one fragment per line, <m/z> <relative_intensity_scaled_to_100>.
+        """
+        if self.spectrum_data is None:
+            return
+        text = _spectrum_to_massbank_text(self.spectrum_data)
+        if text is not None:
+            QApplication.clipboard().setText(text)
 
     def _redraw_annotation_labels(self):
         """Reposition all pinned annotation labels to match current chart coordinates."""
@@ -2622,6 +2675,10 @@ class MirrorPlotChartView(InteractiveEICChartView):
         self._usi_a: str | None = None
         self._usi_b: str | None = None
 
+        # Raw spectrum dicts — set by EnhancedMirrorPlotWindow for MassBank copy
+        self._spectrum_a: dict | None = None
+        self._spectrum_b: dict | None = None
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
@@ -2849,6 +2906,18 @@ class MirrorPlotChartView(InteractiveEICChartView):
                 act = ann_menu.addAction(name)
                 act.triggered.connect(lambda _c=False, m=mz, cy=chart_y, c=color_str, lt=label_text: self._toggle_pin(m, cy, c, lt))
 
+        # -- Copy for MassBank --
+        spec_a = getattr(self, "_spectrum_a", None)
+        spec_b = getattr(self, "_spectrum_b", None)
+        if spec_a is not None or spec_b is not None:
+            menu.addSeparator()
+            if spec_a is not None:
+                copy_a_action = menu.addAction("Copy Spectrum A for MassBank")
+                copy_a_action.triggered.connect(lambda _c=False, s=spec_a: self._copy_spectrum_for_massbank(s))
+            if spec_b is not None:
+                copy_b_action = menu.addAction("Copy Spectrum B for MassBank")
+                copy_b_action.triggered.connect(lambda _c=False, s=spec_b: self._copy_spectrum_for_massbank(s))
+
         # -- USI section --
         if self._usi_a or self._usi_b:
             menu.addSeparator()
@@ -2864,6 +2933,13 @@ class MirrorPlotChartView(InteractiveEICChartView):
             copy_b.triggered.connect(lambda _c=False, u=self._usi_b: QApplication.clipboard().setText(u))
 
         menu.exec(event.globalPosition().toPoint())
+
+    @staticmethod
+    def _copy_spectrum_for_massbank(spectrum_data: dict) -> None:
+        """Copy a spectrum dict to clipboard in MassBank peak list format."""
+        text = _spectrum_to_massbank_text(spectrum_data)
+        if text is not None:
+            QApplication.clipboard().setText(text)
 
     def _redraw_annotation_labels(self):
         """Reposition all pinned labels to match current chart coordinates."""
@@ -3158,6 +3234,8 @@ class EnhancedMirrorPlotWindow(QWidget):
         self._chart_view._table = self._table
         self._chart_view._usi_a = self.title_a
         self._chart_view._usi_b = self.title_b
+        self._chart_view._spectrum_a = self.spectrum_a
+        self._chart_view._spectrum_b = self.spectrum_b
         splitter.addWidget(self._chart_view)
 
         splitter.setSizes([540, 680])

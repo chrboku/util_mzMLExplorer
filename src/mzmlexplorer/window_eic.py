@@ -1107,7 +1107,7 @@ class EICWindow(QWidget):
         group.set_expanded(False)
 
         # EIC calculation method
-        self.eic_method_combo = QComboBox()
+        self.eic_method_combo = NoScrollComboBox()
         self.eic_method_combo.addItems(["Sum of all signals", "Most intensive signal"])
         default_eic_method = self.defaults.get("eic_method", "Sum of all signals")
         idx = self.eic_method_combo.findText(default_eic_method)
@@ -1140,7 +1140,7 @@ class EICWindow(QWidget):
         self.update_mz_tolerance_da()
 
         # Grouping column selector
-        self.grouping_column_combo = QComboBox()
+        self.grouping_column_combo = NoScrollComboBox()
         self._populate_grouping_columns()
         self.grouping_column_combo.currentTextChanged.connect(self.on_grouping_column_changed)
         layout.addRow("Group by Column:", self.grouping_column_combo)
@@ -1152,7 +1152,7 @@ class EICWindow(QWidget):
             _gcol_label.setVisible(False)
 
         # Separation mode
-        self.separation_mode_combo = QComboBox()
+        self.separation_mode_combo = NoScrollComboBox()
         self.separation_mode_combo.addItems(
             [
                 "None",
@@ -1195,7 +1195,7 @@ class EICWindow(QWidget):
         layout.addRow(self.normalize_cb)
 
         # Legend position
-        self.legend_position_combo = QComboBox()
+        self.legend_position_combo = NoScrollComboBox()
         self.legend_position_combo.addItems(["Right", "Top", "Off"])
         default_legend = self.defaults.get("legend_position", "Right")
         idx = self.legend_position_combo.findText(default_legend)
@@ -1207,7 +1207,9 @@ class EICWindow(QWidget):
         # RT unit selector
         self.rt_unit_combo = NoScrollComboBox()
         self.rt_unit_combo.addItems(["min", "s"])
-        self.rt_unit_combo.setCurrentText("min")
+        _default_rt_unit = self.defaults.get("rt_unit", "min")
+        self.rt_unit_combo.setCurrentText(_default_rt_unit)
+        self._rt_unit = _default_rt_unit
         self.rt_unit_combo.currentTextChanged.connect(self._on_rt_unit_changed)
         layout.addRow("RT unit:", self.rt_unit_combo)
 
@@ -1249,6 +1251,7 @@ class EICWindow(QWidget):
     def _on_rt_unit_changed(self, unit: str) -> None:
         """Handle RT unit change. Triggers a full redraw with the new unit."""
         self._rt_unit = unit
+        self._notify_setting("rt_unit", unit)
         self.update_plot()
 
     @property
@@ -2343,14 +2346,14 @@ class EICWindow(QWidget):
 
         # Model selection
         calibration_controls.addWidget(QLabel("Regression Model:"))
-        self.regression_model_combo = QComboBox()
+        self.regression_model_combo = NoScrollComboBox()
         self.regression_model_combo.addItems(["Linear", "Quadratic"])
         self.regression_model_combo.currentTextChanged.connect(self._update_calibration_plot)
         calibration_controls.addWidget(self.regression_model_combo)
 
         # Axis transformation selection
         calibration_controls.addWidget(QLabel("Axis Scale:"))
-        self.axis_transform_combo = QComboBox()
+        self.axis_transform_combo = NoScrollComboBox()
         self.axis_transform_combo.addItems(["Linear", "Log2/Log2", "Log10/Log10"])
         self.axis_transform_combo.currentTextChanged.connect(self._update_calibration_plot)
         calibration_controls.addWidget(self.axis_transform_combo)
@@ -7741,7 +7744,7 @@ class _AddEICTraceDialog(QDialog):
         self.mz_spin.setValue(200.0)
         form0.addRow("m/z value:", self.mz_spin)
 
-        self.polarity_combo = QComboBox()
+        self.polarity_combo = NoScrollComboBox()
         self.polarity_combo.addItem("Positive", "positive")
         self.polarity_combo.addItem("Negative", "negative")
         form0.addRow("Polarity:", self.polarity_combo)
@@ -7767,7 +7770,7 @@ class _AddEICTraceDialog(QDialog):
         self.mass_spin.setSpecialValueText("(derive from formula)")
         form1.addRow("Neutral Mass:", self.mass_spin)
 
-        self.adduct_combo = QComboBox()
+        self.adduct_combo = NoScrollComboBox()
         self._fill_adducts_combo(self.adduct_combo)
         form1.addRow("Adduct:", self.adduct_combo)
 

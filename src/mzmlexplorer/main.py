@@ -2580,6 +2580,7 @@ class MzMLExplorerMainWindow(QMainWindow):
             "show_msms_most_abundant_6s": False,
             "show_msms_most_abundant_9s": False,
             "settings_templates": [],
+            "rt_unit": "min",
         }
 
     @staticmethod
@@ -2624,6 +2625,7 @@ class MzMLExplorerMainWindow(QMainWindow):
             "show_msms_most_abundant_6s": self.settings.value("eic/show_msms_most_abundant_6s", _d["show_msms_most_abundant_6s"], type=bool),
             "show_msms_most_abundant_9s": self.settings.value("eic/show_msms_most_abundant_9s", _d["show_msms_most_abundant_9s"], type=bool),
             "settings_templates": json.loads(self.settings.value("eic/settings_templates", json.dumps(_d["settings_templates"]))),
+            "rt_unit": self.settings.value("eic/rt_unit", _d["rt_unit"]),
         }
 
         # Load memory settings
@@ -2670,6 +2672,7 @@ class MzMLExplorerMainWindow(QMainWindow):
         self.settings.setValue("eic/show_msms_most_abundant_6s", self.eic_defaults.get("show_msms_most_abundant_6s", False))
         self.settings.setValue("eic/show_msms_most_abundant_9s", self.eic_defaults.get("show_msms_most_abundant_9s", False))
         self.settings.setValue("eic/settings_templates", json.dumps(self.eic_defaults.get("settings_templates", [])))
+        self.settings.setValue("eic/rt_unit", self.eic_defaults.get("rt_unit", "min"))
 
     def _on_eic_settings_changed(self, key: str, value) -> None:
         """Called by an EIC window when the user changes a persistent setting."""
@@ -3553,6 +3556,12 @@ class UnifiedOptionsDialog(QDialog):
         self.normalize_cb.setChecked(self.eic_defaults["normalize_samples"])
         form_layout.addRow("Normalize to Max per Sample:", self.normalize_cb)
 
+        # RT unit selector
+        self.rt_unit_combo = NoScrollComboBox()
+        self.rt_unit_combo.addItems(["min", "s"])
+        self.rt_unit_combo.setCurrentText(self.eic_defaults.get("rt_unit", "min"))
+        form_layout.addRow("RT axis unit:", self.rt_unit_combo)
+
         layout.addLayout(form_layout)
 
         # MSMS context-menu options
@@ -3815,6 +3824,7 @@ class UnifiedOptionsDialog(QDialog):
         self.show_msms_most_abundant_3s_cb.setChecked(defaults.get("show_msms_most_abundant_3s", False))
         self.show_msms_most_abundant_6s_cb.setChecked(defaults.get("show_msms_most_abundant_6s", False))
         self.show_msms_most_abundant_9s_cb.setChecked(defaults.get("show_msms_most_abundant_9s", False))
+        self.rt_unit_combo.setCurrentText(defaults.get("rt_unit", "min"))
 
     def get_values(self):
         """Get the current values from the dialog"""
@@ -3851,6 +3861,7 @@ class UnifiedOptionsDialog(QDialog):
             "show_msms_most_abundant_3s": self.show_msms_most_abundant_3s_cb.isChecked(),
             "show_msms_most_abundant_6s": self.show_msms_most_abundant_6s_cb.isChecked(),
             "show_msms_most_abundant_9s": self.show_msms_most_abundant_9s_cb.isChecked(),
+            "rt_unit": self.rt_unit_combo.currentText(),
         }
 
         memory_values = {

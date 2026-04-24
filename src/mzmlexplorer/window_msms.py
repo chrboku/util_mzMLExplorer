@@ -1930,6 +1930,7 @@ class MSMSViewerWindow(QWidget):
                     start_col: Starting grid column for this file's content.
                     col_span: Number of columns the header label should span.
                 """
+                filename = file_data["filename"]
                 spectra = file_data["spectra"]
 
                 similarity_info = ""

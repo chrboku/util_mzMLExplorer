@@ -6327,7 +6327,7 @@ class EICWindow(QWidget):
                 self,
                 "EIC Trace - Partial Failure",
                 f"Extracted {n_loaded}/{n_total} files for '{label}' (m/z {target_mz:.4f}).\n"
-                f"{len(failed_files)} file(s) failed: {', '.join(failed_files[:3])}{'...' if len(failed_files) > 3 else ''}",
+                f"{len(failed_files)} file(s) failed: {', '.join(failed_files[:3])}{'…' if len(failed_files) > 3 else ''}",
             )
 
     def _update_extra_trace_chart(self, trace_info: dict):

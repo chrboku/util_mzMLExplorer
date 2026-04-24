@@ -6027,7 +6027,7 @@ class EICWindow(QWidget):
         eic_data = {}
         files_data = self.file_manager.get_files_data()
         total_files = len(files_data)
-        progress = QProgressDialog(f"Extracting EIC for {label} (m/z {target_mz:.4f})…", "Cancel", 0, total_files, self)
+        progress = QProgressDialog(f"Extracting EIC for {label} (m/z {target_mz:.4f})...", "Cancel", 0, total_files, self)
         progress.setWindowTitle("Adding EIC Trace")
         progress.setWindowModality(Qt.WindowModality.WindowModal)
         progress.setMinimumDuration(0)
@@ -6055,7 +6055,7 @@ class EICWindow(QWidget):
                     "metadata": row.to_dict(),
                 }
             except Exception as e:
-                failed_files.append(str(row.get("filename", filepath)))
+                failed_files.append(str(row.get("filename", os.path.basename(filepath))))
                 print(f"[Extra EIC trace] failed for {filepath}: {e}")
         progress.setValue(total_files)
         progress.close()

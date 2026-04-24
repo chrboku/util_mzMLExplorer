@@ -1870,8 +1870,7 @@ class MSMSViewerWindow(QWidget):
         scroll_vbox.setContentsMargins(2, 2, 2, 2)
 
         # Organize files by group first
-        from collections import OrderedDict
-        groups_dict = OrderedDict()
+        groups_dict = {}
         for filepath, file_data in self.processed_data:
             group = file_data.get("group", "Unknown")
             if group not in groups_dict:

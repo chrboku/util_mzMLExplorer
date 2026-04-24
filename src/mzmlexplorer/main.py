@@ -587,12 +587,10 @@ class MzMLExplorerMainWindow(QMainWindow):
         # Initialize settings
         # On Windows, use IniFormat in AppData/Local/mzmlexplorer for a predictable location.
         # On other platforms keep the default native format.
-        import sys as _sys
-        if _sys.platform == "win32":
-            import os as _os
-            _appdata = _os.environ.get("LOCALAPPDATA", _os.path.expanduser("~"))
-            _ini_path = _os.path.join(_appdata, "mzmlexplorer", "settings.ini")
-            _os.makedirs(_os.path.dirname(_ini_path), exist_ok=True)
+        if sys.platform == "win32":
+            _appdata = os.environ.get("LOCALAPPDATA", os.path.expanduser("~"))
+            _ini_path = os.path.join(_appdata, "mzmlexplorer", "settings.ini")
+            os.makedirs(os.path.dirname(_ini_path), exist_ok=True)
             self.settings = QSettings(_ini_path, QSettings.Format.IniFormat)
         else:
             self.settings = QSettings("mzMLExplorer", "mzMLExplorer")

@@ -43,7 +43,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QPointF, QMargins
 from PyQt6.QtCharts import QChart, QChartView, QLineSeries, QValueAxis
 from PyQt6.QtGui import QPen, QColor, QPainter, QMouseEvent, QAction, QBrush
-from .window_shared import CollapsibleBox, ANNOTATION_COLOR_PRESETS, BarDelegate, NumericTableWidgetItem
+from .window_shared import CollapsibleBox, ANNOTATION_COLOR_PRESETS, BarDelegate, NumericTableWidgetItem, NoScrollSpinBox, NoScrollDoubleSpinBox
 from .utils import calculate_cosine_similarity, calculate_similarity_statistics, make_usi
 from .FormulaTools import FragmentAnnotator
 
@@ -402,7 +402,7 @@ class MSMSPopupWindow(QWidget):
         # Annotation controls and close button
         button_layout = QHBoxLayout()
         ppm_label = QLabel("Tolerance:")
-        self.ppm_spinbox = QDoubleSpinBox()
+        self.ppm_spinbox = NoScrollDoubleSpinBox()
         self.ppm_spinbox.setRange(0.1, 2000.0)
         self.ppm_spinbox.setValue(5.0)
         self.ppm_spinbox.setSuffix(" ppm")
@@ -805,7 +805,7 @@ class MSMSPopupWindow(QWidget):
         # ---- Controls row 2: RT window + top-N ----
         ctrl_row2 = QHBoxLayout()
         rt_lbl = QLabel("RT ±")
-        self._eic_rt_window_sb = QDoubleSpinBox()
+        self._eic_rt_window_sb = NoScrollDoubleSpinBox()
         self._eic_rt_window_sb.setRange(0.05, 30.0)
         self._eic_rt_window_sb.setValue(1.0)
         self._eic_rt_window_sb.setSingleStep(0.25)
@@ -818,7 +818,7 @@ class MSMSPopupWindow(QWidget):
         ctrl_row2.addWidget(self._eic_rt_window_sb)
 
         topn_lbl = QLabel("Top N:")
-        self._eic_top_n_sb = QSpinBox()
+        self._eic_top_n_sb = NoScrollSpinBox()
         self._eic_top_n_sb.setRange(0, 999)
         self._eic_top_n_sb.setValue(0)
         self._eic_top_n_sb.setSpecialValueText("all")
@@ -829,7 +829,7 @@ class MSMSPopupWindow(QWidget):
         ctrl_row2.addWidget(self._eic_top_n_sb)
 
         ppm_lbl = QLabel("Bin ±")
-        self._eic_ppm_sb = QDoubleSpinBox()
+        self._eic_ppm_sb = NoScrollDoubleSpinBox()
         self._eic_ppm_sb.setRange(0.1, 500.0)
         self._eic_ppm_sb.setValue(10.0)
         self._eic_ppm_sb.setSingleStep(1.0)
@@ -3286,7 +3286,7 @@ class USISpectrumComparisonWindow(QWidget):
 
         tol_lbl = QLabel("Tol (Da):")
         usi_row.addWidget(tol_lbl)
-        self._tol_spin = QDoubleSpinBox()
+        self._tol_spin = NoScrollDoubleSpinBox()
         self._tol_spin.setRange(0.001, 2.0)
         self._tol_spin.setDecimals(4)
         self._tol_spin.setSingleStep(0.005)

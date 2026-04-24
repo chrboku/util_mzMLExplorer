@@ -2564,13 +2564,14 @@ class MzMLExplorerMainWindow(QMainWindow):
                 {"filter_type": "ITMS", "mz_tolerance": 0.5},
                 {"filter_type": "FTMS", "mz_tolerance": 0.01},
             ],
-            "show_msms_closest": True,
+            "show_msms_closest": False,
             "show_msms_3s": False,
             "show_msms_6s": False,
             "show_msms_9s": False,
-            "show_msms_most_abundant_3s": False,
+            "show_msms_most_abundant_3s": True,
             "show_msms_most_abundant_6s": False,
             "show_msms_most_abundant_9s": False,
+            "settings_templates": [],
         }
 
     @staticmethod
@@ -2614,6 +2615,7 @@ class MzMLExplorerMainWindow(QMainWindow):
             "show_msms_most_abundant_3s": self.settings.value("eic/show_msms_most_abundant_3s", _d["show_msms_most_abundant_3s"], type=bool),
             "show_msms_most_abundant_6s": self.settings.value("eic/show_msms_most_abundant_6s", _d["show_msms_most_abundant_6s"], type=bool),
             "show_msms_most_abundant_9s": self.settings.value("eic/show_msms_most_abundant_9s", _d["show_msms_most_abundant_9s"], type=bool),
+            "settings_templates": json.loads(self.settings.value("eic/settings_templates", json.dumps(_d["settings_templates"]))),
         }
 
         # Load memory settings
@@ -2659,6 +2661,7 @@ class MzMLExplorerMainWindow(QMainWindow):
         self.settings.setValue("eic/show_msms_most_abundant_3s", self.eic_defaults.get("show_msms_most_abundant_3s", False))
         self.settings.setValue("eic/show_msms_most_abundant_6s", self.eic_defaults.get("show_msms_most_abundant_6s", False))
         self.settings.setValue("eic/show_msms_most_abundant_9s", self.eic_defaults.get("show_msms_most_abundant_9s", False))
+        self.settings.setValue("eic/settings_templates", json.dumps(self.eic_defaults.get("settings_templates", [])))
 
     def _on_eic_settings_changed(self, key: str, value) -> None:
         """Called by an EIC window when the user changes a persistent setting."""

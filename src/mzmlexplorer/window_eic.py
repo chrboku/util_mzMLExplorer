@@ -53,6 +53,7 @@ from PyQt6.QtCharts import QChart, QChartView, QLineSeries, QValueAxis
 from PyQt6.QtGui import QPen, QColor, QPainter, QMouseEvent, QAction, QBrush
 from .window_shared import BarDelegate, CenteredBarDelegate, CollapsibleBox
 from .window_shared import NumericTableWidgetItem
+from .window_shared import NoScrollSpinBox, NoScrollDoubleSpinBox
 from .window_ms1 import MS1ViewerWindow
 from .window_msms import MSMSViewerWindow
 from .utils import (
@@ -731,6 +732,7 @@ class EICWindow(QWidget):
 
         # Initialize group settings for EIC plotting
         self.group_settings = {}  # Will be populated when EIC data is loaded
+        self._group_update_in_progress = False  # Guard flag to avoid re-entrant redraws
 
         # Initialize sample settings for EIC plotting (persisted across windows via defaults)
         self.sample_settings = dict(defaults.get("sample_settings", {})) if defaults else {}
@@ -819,10 +821,14 @@ class EICWindow(QWidget):
         self.create_sample_settings_table()
         layout.addWidget(self.sample_settings_box)
 
+        # Settings template button
+        template_btn = QPushButton("💾  Save current settings as template")
+        template_btn.setToolTip("Save current EIC extraction, group, and sample settings as a reusable template")
+        template_btn.clicked.connect(self._save_settings_template)
+        layout.addWidget(template_btn)
+
         layout.addStretch()
         return panel
-
-    def create_right_panel(self) -> QWidget:
         """Create the right panel with the chart and boxplot"""
         panel = QWidget()
         layout = QVBoxLayout(panel)
@@ -1107,7 +1113,7 @@ class EICWindow(QWidget):
         layout.addRow("EIC Method:", self.eic_method_combo)
 
         # m/z tolerance in ppm (primary)
-        self.mz_tolerance_ppm_spin = QDoubleSpinBox()
+        self.mz_tolerance_ppm_spin = NoScrollDoubleSpinBox()
         self.mz_tolerance_ppm_spin.setRange(0.1, 10000.0)
         self.mz_tolerance_ppm_spin.setValue(self.defaults["mz_tolerance_ppm"])  # Use default
         self.mz_tolerance_ppm_spin.setSuffix(" ppm")
@@ -1118,7 +1124,7 @@ class EICWindow(QWidget):
         layout.addRow("m/z Tolerance (ppm):", self.mz_tolerance_ppm_spin)
 
         # m/z tolerance in Da (linked to ppm)
-        self.mz_tolerance_da_spin = QDoubleSpinBox()
+        self.mz_tolerance_da_spin = NoScrollDoubleSpinBox()
         self.mz_tolerance_da_spin.setRange(0.0001, 1.0)
         self.mz_tolerance_da_spin.setSuffix(" Da")
         self.mz_tolerance_da_spin.setDecimals(4)
@@ -1162,7 +1168,7 @@ class EICWindow(QWidget):
         layout.addRow("Separation:", self.separation_mode_combo)
 
         # RT shift for group separation (more flexible range)
-        self.rt_shift_spin = QDoubleSpinBox()
+        self.rt_shift_spin = NoScrollDoubleSpinBox()
         self.rt_shift_spin.setRange(0.0, 60.0)  # Allow up to 60 minutes
         self.rt_shift_spin.setValue(self.defaults["rt_shift_min"])  # Use default
         self.rt_shift_spin.setSuffix(" min")
@@ -1316,7 +1322,7 @@ class EICWindow(QWidget):
             table.setItem(row, 0, group_item)
 
             # Column 1: Scaling factor (QDoubleSpinBox)
-            scaling_spin = QDoubleSpinBox()
+            scaling_spin = NoScrollDoubleSpinBox()
             scaling_spin.setRange(0.00001, 100000.0)
             scaling_spin.setValue(self.group_settings[group]["scaling"])
             scaling_spin.setDecimals(5)
@@ -1349,7 +1355,7 @@ class EICWindow(QWidget):
             table.setCellWidget(row, 3, neg_checkbox_widget)
 
             # Column 4: Line width (QDoubleSpinBox)
-            width_spin = QDoubleSpinBox()
+            width_spin = NoScrollDoubleSpinBox()
             width_spin.setRange(0.5, 10.0)
             width_spin.setValue(self.group_settings[group]["line_width"])
             width_spin.setDecimals(1)
@@ -1409,24 +1415,32 @@ class EICWindow(QWidget):
             return
         self.group_settings[group][setting] = value
 
-        # Propagate to sample settings for every file belonging to this group
-        if hasattr(self.file_manager, "files_data") and self.file_manager.files_data is not None:
-            df = self.file_manager.files_data
-            group_col = self.grouping_column if self.grouping_column in df.columns else None
-            if group_col is not None:
-                matching_files = df[df[group_col].astype(str) == group]
-                for _, frow in matching_files.iterrows():
-                    fn = str(frow.get("filename", ""))
-                    if not fn:
-                        continue
-                    if fn not in self.sample_settings:
-                        self.sample_settings[fn] = {"scaling": 1.0, "plot": True, "negative": False, "line_width": 1.0}
-                    self.sample_settings[fn][setting] = value
+        # Temporarily block sample-setting change handler to avoid redundant redraws
+        self._group_update_in_progress = True
+        try:
+            # Propagate to sample settings for every file belonging to this group
+            if hasattr(self.file_manager, "files_data") and self.file_manager.files_data is not None:
+                df = self.file_manager.files_data
+                group_col = self.grouping_column if self.grouping_column in df.columns else None
+                if group_col is not None:
+                    matching_files = df[df[group_col].astype(str) == group]
+                    for _, frow in matching_files.iterrows():
+                        fn = str(frow.get("filename", ""))
+                        if not fn:
+                            continue
+                        if fn not in self.sample_settings:
+                            self.sample_settings[fn] = {"scaling": 1.0, "plot": True, "negative": False, "line_width": 1.0}
+                        self.sample_settings[fn][setting] = value
 
-        # Silently update all sample table widgets (signals blocked → no cascade redraws)
-        self._sync_sample_table_from_settings()
+            # Silently update all sample table widgets (signals blocked → no cascade redraws)
+            self._sync_sample_table_from_settings()
+        finally:
+            self._group_update_in_progress = False
 
-        # Trigger a single redraw
+        # Persist the updated sample settings
+        self._notify_setting("sample_settings", dict(self.sample_settings))
+
+        # Trigger a single redraw now that all control values have been updated
         self.update_plot(preserve_view=True)
 
     def _sync_sample_table_from_settings(self):
@@ -1470,6 +1484,147 @@ class EICWindow(QWidget):
                 lw_widget.blockSignals(True)
                 lw_widget.setValue(ss.get("line_width", 1.0))
                 lw_widget.blockSignals(False)
+
+    def _sync_group_table_from_settings(self):
+        """Refresh group table widgets from self.group_settings without triggering per-row plot updates."""
+        table = self.group_settings_table
+        if table is None:
+            return
+        for row in range(table.rowCount()):
+            name_item = table.item(row, 0)
+            if name_item is None:
+                continue
+            grp = name_item.text()
+            if grp not in self.group_settings:
+                continue
+            gs = self.group_settings[grp]
+            # Column 1: Scaling spinbox
+            scale_widget = table.cellWidget(row, 1)
+            if scale_widget is not None and isinstance(scale_widget, QDoubleSpinBox):
+                scale_widget.blockSignals(True)
+                scale_widget.setValue(gs.get("scaling", 1.0))
+                scale_widget.blockSignals(False)
+            # Column 2: Plot checkbox
+            cb_widget = table.cellWidget(row, 2)
+            if cb_widget is not None:
+                cb = cb_widget.findChild(QCheckBox)
+                if cb is not None:
+                    cb.blockSignals(True)
+                    cb.setChecked(gs.get("plot", True))
+                    cb.blockSignals(False)
+            # Column 3: Neg. checkbox
+            neg_widget = table.cellWidget(row, 3)
+            if neg_widget is not None:
+                neg_cb = neg_widget.findChild(QCheckBox)
+                if neg_cb is not None:
+                    neg_cb.blockSignals(True)
+                    neg_cb.setChecked(gs.get("negative", False))
+                    neg_cb.blockSignals(False)
+            # Column 4: Line width spinbox
+            lw_widget = table.cellWidget(row, 4)
+            if lw_widget is not None and isinstance(lw_widget, QDoubleSpinBox):
+                lw_widget.blockSignals(True)
+                lw_widget.setValue(gs.get("line_width", 1.0))
+                lw_widget.blockSignals(False)
+
+    def _save_settings_template(self):
+        """Open a dialog to save current settings as a named template."""
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QCheckBox, QPushButton, QMessageBox
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Save Settings Template")
+        dialog.setMinimumWidth(350)
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(QLabel("Template name:"))
+        name_edit = QLineEdit()
+        name_edit.setPlaceholderText("Enter a name for this template")
+        layout.addWidget(name_edit)
+        layout.addWidget(QLabel("Include in template:"))
+        cb_extraction = QCheckBox("EIC extraction settings (m/z tolerance, method, separation, RT shift…)")
+        cb_extraction.setChecked(True)
+        layout.addWidget(cb_extraction)
+        cb_group = QCheckBox("Group display settings (scaling, visibility, line width)")
+        cb_group.setChecked(True)
+        layout.addWidget(cb_group)
+        cb_sample = QCheckBox("Sample display settings (scaling, visibility, line width)")
+        cb_sample.setChecked(True)
+        layout.addWidget(cb_sample)
+        btn_layout = QHBoxLayout()
+        ok_btn = QPushButton("Save")
+        cancel_btn = QPushButton("Cancel")
+        btn_layout.addStretch()
+        btn_layout.addWidget(ok_btn)
+        btn_layout.addWidget(cancel_btn)
+        layout.addLayout(btn_layout)
+        ok_btn.clicked.connect(dialog.accept)
+        cancel_btn.clicked.connect(dialog.reject)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        tname = name_edit.text().strip()
+        if not tname:
+            QMessageBox.warning(self, "Invalid Name", "Please enter a template name.")
+            return
+        template = {"name": tname}
+        if cb_extraction.isChecked():
+            template["eic_extraction"] = {
+                "mz_tolerance_ppm": self.mz_tolerance_ppm_spin.value() if hasattr(self, "mz_tolerance_ppm_spin") else self.defaults.get("mz_tolerance_ppm", 5.0),
+                "eic_method": self.eic_method_combo.currentText() if hasattr(self, "eic_method_combo") else self.defaults.get("eic_method", "Sum of all signals"),
+                "separation_mode": self.separation_mode_combo.currentText() if hasattr(self, "separation_mode_combo") else self.defaults.get("separation_mode", "None"),
+                "rt_shift_min": self.rt_shift_spin.value() if hasattr(self, "rt_shift_spin") else self.defaults.get("rt_shift_min", 1.0),
+                "crop_rt_window": self.crop_rt_cb.isChecked() if hasattr(self, "crop_rt_cb") else self.defaults.get("crop_rt_window", False),
+                "normalize_samples": self.normalize_cb.isChecked() if hasattr(self, "normalize_cb") else self.defaults.get("normalize_samples", False),
+                "legend_position": self.legend_position_combo.currentText() if hasattr(self, "legend_position_combo") else self.defaults.get("legend_position", "Right"),
+            }
+        if cb_group.isChecked():
+            template["group_settings"] = dict(self.group_settings)
+        if cb_sample.isChecked():
+            template["sample_settings"] = dict(self.sample_settings)
+        # Store in defaults
+        templates = list(self.defaults.get("settings_templates", []))
+        # Replace if same name already exists
+        templates = [t for t in templates if t.get("name") != tname]
+        templates.append(template)
+        self.defaults["settings_templates"] = templates
+        self._notify_setting("settings_templates", templates)
+        QMessageBox.information(self, "Template Saved", f"Template '{tname}' has been saved.")
+
+    def _apply_settings_template(self, template: dict):
+        """Apply a settings template to the current EIC window."""
+        extraction = template.get("eic_extraction")
+        if extraction:
+            if hasattr(self, "mz_tolerance_ppm_spin") and "mz_tolerance_ppm" in extraction:
+                self.mz_tolerance_ppm_spin.setValue(extraction["mz_tolerance_ppm"])
+            if hasattr(self, "eic_method_combo") and "eic_method" in extraction:
+                idx = self.eic_method_combo.findText(extraction["eic_method"])
+                if idx >= 0:
+                    self.eic_method_combo.setCurrentIndex(idx)
+            if hasattr(self, "separation_mode_combo") and "separation_mode" in extraction:
+                idx = self.separation_mode_combo.findText(extraction["separation_mode"])
+                if idx >= 0:
+                    self.separation_mode_combo.setCurrentIndex(idx)
+            if hasattr(self, "rt_shift_spin") and "rt_shift_min" in extraction:
+                self.rt_shift_spin.setValue(extraction["rt_shift_min"])
+            if hasattr(self, "crop_rt_cb") and "crop_rt_window" in extraction:
+                self.crop_rt_cb.setChecked(extraction["crop_rt_window"])
+            if hasattr(self, "normalize_cb") and "normalize_samples" in extraction:
+                self.normalize_cb.setChecked(extraction["normalize_samples"])
+            if hasattr(self, "legend_position_combo") and "legend_position" in extraction:
+                idx = self.legend_position_combo.findText(extraction["legend_position"])
+                if idx >= 0:
+                    self.legend_position_combo.setCurrentIndex(idx)
+        group_settings = template.get("group_settings")
+        if group_settings:
+            for grp, settings in group_settings.items():
+                if grp in self.group_settings:
+                    self.group_settings[grp].update(settings)
+            # Sync group table
+            self._sync_group_table_from_settings()
+        sample_settings = template.get("sample_settings")
+        if sample_settings:
+            for fn, settings in sample_settings.items():
+                if fn in self.sample_settings:
+                    self.sample_settings[fn].update(settings)
+            self._sync_sample_table_from_settings()
+        self.update_plot(preserve_view=True)
 
     def create_sample_settings_table(self):
         """Create the sample settings table for per-sample display controls"""
@@ -1541,7 +1696,7 @@ class EICWindow(QWidget):
             table.setItem(row, 0, name_item)
 
             # Column 1: Scaling spinbox
-            scaling_spin = QDoubleSpinBox()
+            scaling_spin = NoScrollDoubleSpinBox()
             scaling_spin.setRange(0.00001, 100000.0)
             scaling_spin.setValue(self.sample_settings[filename]["scaling"])
             scaling_spin.setDecimals(5)
@@ -1572,7 +1727,7 @@ class EICWindow(QWidget):
             table.setCellWidget(row, 3, neg_checkbox_widget)
 
             # Column 4: Line width spinbox
-            width_spin = QDoubleSpinBox()
+            width_spin = NoScrollDoubleSpinBox()
             width_spin.setRange(0.5, 10.0)
             width_spin.setValue(self.sample_settings[filename]["line_width"])
             width_spin.setDecimals(1)
@@ -1597,6 +1752,8 @@ class EICWindow(QWidget):
 
     def on_sample_setting_changed(self, filename: str, setting: str, value) -> None:
         """Handle changes to per-sample display settings"""
+        if self._group_update_in_progress:
+            return
         if filename not in self.sample_settings:
             self.sample_settings[filename] = {"scaling": 1.0, "plot": True, "negative": False, "line_width": 1.0}
         self.sample_settings[filename][setting] = value
@@ -5937,6 +6094,12 @@ class EICWindow(QWidget):
         # Add the chart view to the charts splitter
         self._eic_charts_splitter.addWidget(trace_chart_view)
 
+        # Move legend to Top automatically when the user adds the first extra trace
+        # and the legend is currently on the Right (it would overlap extra charts).
+        if len(self._extra_eic_traces) == 1 and hasattr(self, "legend_position_combo"):
+            if self.legend_position_combo.currentText() == "Right":
+                self.legend_position_combo.setCurrentText("Top")
+
         # Equalise heights: give each pane roughly equal space
         n = self._eic_charts_splitter.count()
         if n > 1:
@@ -6207,10 +6370,70 @@ class EICWindow(QWidget):
 
         context_menu.addSeparator()
 
-        # Add EIC trace option
-        add_trace_action = QAction("Add EIC trace", self)
-        add_trace_action.triggered.connect(self._show_add_eic_trace_dialog)
-        context_menu.addAction(add_trace_action)
+        # Add EIC trace - show submenu if formula/adducts are available
+        if has_extra or (self._adducts_data is not None and not self._adducts_data.empty and self.compound_data.get("ChemicalFormula")):
+            add_trace_menu = context_menu.addMenu("Add EIC trace")
+            # Top option: open dialog (always available)
+            custom_action = QAction("Custom (dialog)…", self)
+            custom_action.triggered.connect(self._show_add_eic_trace_dialog)
+            add_trace_menu.addAction(custom_action)
+
+            formula = self.compound_data.get("ChemicalFormula", "")
+            if formula and self._adducts_data is not None and not self._adducts_data.empty:
+                add_trace_menu.addSeparator()
+                # Other adducts of this compound
+                adducts_header = QAction("— Other adducts —", self)
+                adducts_header.setEnabled(False)
+                add_trace_menu.addAction(adducts_header)
+                for _, adduct_row in self._adducts_data.iterrows():
+                    adduct_name = str(adduct_row.get("Adduct", ""))
+                    if adduct_name == self.adduct:
+                        continue  # skip current adduct
+                    try:
+                        from .utils import calculate_mz_from_formula
+                        mz_val = calculate_mz_from_formula(formula, adduct_name, self._adducts_data)
+                        if mz_val > 0:
+                            polarity = "positive" if "+" in adduct_name.rstrip("+").rstrip("-") else "negative"
+                            if adduct_name.endswith("-"):
+                                polarity = "negative"
+                            elif adduct_name.endswith("+"):
+                                polarity = "positive"
+                            act = QAction(f"{adduct_name}  (m/z {mz_val:.4f})", self)
+                            ppm = self.defaults.get("mz_tolerance_ppm", 5.0)
+                            act.triggered.connect(lambda checked=False, _lbl=adduct_name, _mz=mz_val, _ppm=ppm, _pol=polarity: self._add_extra_eic_trace(_lbl, _mz, _ppm, _pol))
+                            add_trace_menu.addAction(act)
+                    except Exception:
+                        pass
+
+                # Isotopologs: M+0, M+1, M+2 ... up to number of carbons or 5
+                try:
+                    from .utils import parse_molecular_formula, calculate_mz_from_formula, adduct_mass_change
+                    parsed = parse_molecular_formula(formula)
+                    # Max isotopologs = min(number of heaviest element, 5)
+                    max_iso = min(max(parsed.get("C", 0), parsed.get("N", 0), parsed.get("S", 0)), 5)
+                    if max_iso > 0:
+                        add_trace_menu.addSeparator()
+                        iso_header = QAction("— Isotopologs —", self)
+                        iso_header.setEnabled(False)
+                        add_trace_menu.addAction(iso_header)
+                        # base m/z is self.target_mz (M+0 for current adduct)
+                        adduct_row_cur = self._adducts_data[self._adducts_data["Adduct"] == self.adduct]
+                        if not adduct_row_cur.empty:
+                            _mc, _charge, _mult = adduct_mass_change(adduct_row_cur.iloc[0])
+                            NEUTRON_MASS = 1.003355  # Da, C13-C12 difference
+                            for iso_n in range(0, max_iso + 1):
+                                iso_mz = self.target_mz + iso_n * NEUTRON_MASS / abs(_charge)
+                                iso_label = f"M+{iso_n} ({self.adduct})"
+                                ppm = self.defaults.get("mz_tolerance_ppm", 5.0)
+                                act = QAction(f"{iso_label}  (m/z {iso_mz:.4f})", self)
+                                act.triggered.connect(lambda checked=False, _lbl=iso_label, _mz=iso_mz, _ppm=ppm, _pol=self.polarity: self._add_extra_eic_trace(_lbl, _mz, _ppm, _pol))
+                                add_trace_menu.addAction(act)
+                except Exception:
+                    pass
+        else:
+            add_trace_action = QAction("Add EIC trace", self)
+            add_trace_action.triggered.connect(self._show_add_eic_trace_dialog)
+            context_menu.addAction(add_trace_action)
 
         if has_extra:
             # Submenu for removing individual traces
@@ -6223,6 +6446,15 @@ class EICWindow(QWidget):
                 lbl = trace.get("label", f"Trace {i + 1}")
                 act = remove_menu.addAction(f"Remove: {lbl}")
                 act.triggered.connect(lambda checked=False, idx=i: self._remove_extra_trace_at(idx))
+
+        # Settings template submenu
+        templates = self.defaults.get("settings_templates", [])
+        if templates:
+            template_menu = context_menu.addMenu("Settings template")
+            for tmpl in templates:
+                tname = tmpl.get("name", "Unnamed")
+                act = template_menu.addAction(tname)
+                act.triggered.connect(lambda checked=False, t=tmpl: self._apply_settings_template(t))
 
         context_menu.addSeparator()
 
@@ -6403,9 +6635,22 @@ class EICWindow(QWidget):
                 for s in entry["spectra"]:
                     max_offset = max(max_offset, abs(s["rt"] - rt_center))
 
+            # Warn if the nearest spectrum is more than 5 seconds from the clicked RT
+            if max_offset * 60 > 5.0:
+                reply = QMessageBox.question(
+                    self,
+                    "Distant MSMS Spectrum",
+                    f"The nearest MSMS spectrum found is {max_offset * 60:.1f} seconds away from "
+                    f"the clicked retention time ({rt_center:.2f} min).\n\n"
+                    "This spectrum may not be representative. Do you still want to view it?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.Yes,
+                )
+                if reply == QMessageBox.StandardButton.No:
+                    return
+
             # Independent top-level window (parent=None)
             msms_viewer = MSMSViewerWindow(
-                msms_spectra,
                 self.target_mz,
                 rt_center,
                 max_offset,
@@ -6473,6 +6718,24 @@ class EICWindow(QWidget):
             if not most_abundant:
                 QMessageBox.information(self, "No MSMS Found", "No valid spectra found after filtering.")
                 return
+
+            # Warn if any selected spectrum is more than 5 seconds from the clicked RT
+            max_rt_offset = 0.0
+            for data in most_abundant.values():
+                for spec in data["spectra"]:
+                    max_rt_offset = max(max_rt_offset, abs(spec["rt"] - rt_center))
+            if max_rt_offset * 60 > 5.0:
+                reply = QMessageBox.question(
+                    self,
+                    "Distant MSMS Spectrum",
+                    f"The most abundant MSMS spectrum found is {max_rt_offset * 60:.1f} seconds away from "
+                    f"the clicked retention time ({rt_center:.2f} min).\n\n"
+                    "This spectrum may not be representative. Do you still want to view it?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.Yes,
+                )
+                if reply == QMessageBox.StandardButton.No:
+                    return
 
             msms_viewer = MSMSViewerWindow(
                 most_abundant,
@@ -7240,7 +7503,7 @@ class _AddEICTraceDialog(QDialog):
         form0.setContentsMargins(12, 12, 12, 12)
         form0.setVerticalSpacing(8)
 
-        self.mz_spin = QDoubleSpinBox()
+        self.mz_spin = NoScrollDoubleSpinBox()
         self.mz_spin.setRange(0.001, 100000.0)
         self.mz_spin.setDecimals(6)
         self.mz_spin.setSuffix(" m/z")
@@ -7265,7 +7528,7 @@ class _AddEICTraceDialog(QDialog):
         self.formula_edit.setPlaceholderText("e.g. C6H12O6")
         form1.addRow("Chemical Formula:", self.formula_edit)
 
-        self.mass_spin = QDoubleSpinBox()
+        self.mass_spin = NoScrollDoubleSpinBox()
         self.mass_spin.setRange(0.0, 100000.0)
         self.mass_spin.setDecimals(6)
         self.mass_spin.setSuffix(" Da")
@@ -7292,7 +7555,7 @@ class _AddEICTraceDialog(QDialog):
         # ---- Shared ppm tolerance spinner ----
         ppm_layout = QHBoxLayout()
         ppm_label = QLabel("m/z Tolerance:")
-        self.ppm_spin = QDoubleSpinBox()
+        self.ppm_spin = NoScrollDoubleSpinBox()
         self.ppm_spin.setRange(0.1, 500.0)
         self.ppm_spin.setDecimals(1)
         self.ppm_spin.setSingleStep(1.0)

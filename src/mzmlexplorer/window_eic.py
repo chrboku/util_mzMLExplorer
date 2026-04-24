@@ -6139,7 +6139,7 @@ class EICWindow(QWidget):
         n_total = len(files_data)
         status_parts = [f"'{label}' (m/z {target_mz:.4f}): {n_loaded}/{n_total} files"]
         if failed_files:
-            status_parts.append(f"  {len(failed_files)} file(s) failed: {', '.join(failed_files[:3])}{'…' if len(failed_files) > 3 else ''}")
+            status_parts.append(f"{len(failed_files)} file(s) failed: {', '.join(failed_files[:3])}{'…' if len(failed_files) > 3 else ''}")
         QMessageBox.information(
             self,
             "EIC Trace Added",
@@ -6463,12 +6463,9 @@ class EICWindow(QWidget):
                                 iso_mz = self.target_mz + iso_n * elem_mass_step / abs(_charge)
                                 if iso_mz <= 0:
                                     continue
-                                if iso_n < 0:
-                                    iso_label = f"M{iso_n}{elem} ({self.adduct})"
-                                    entry_text = f"M{iso_n}{elem}  (m/z {iso_mz:.4f})"
-                                else:
-                                    iso_label = f"M+{iso_n}{elem} ({self.adduct})"
-                                    entry_text = f"M+{iso_n}{elem}  (m/z {iso_mz:.4f})"
+                                sign = "+" if iso_n >= 0 else ""
+                                iso_label = f"M{sign}{iso_n}{elem} ({self.adduct})"
+                                entry_text = f"M{sign}{iso_n}{elem}  (m/z {iso_mz:.4f})"
                                 act = QAction(entry_text, self)
                                 act.triggered.connect(
                                     lambda checked=False, _lbl=iso_label, _mz=iso_mz, _ppm=ppm, _pol=self.polarity: self._add_extra_eic_trace(_lbl, _mz, _ppm, _pol)

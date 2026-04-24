@@ -61,6 +61,7 @@ from .utils import (
     format_retention_time,
     adduct_mass_change,
     calculate_molecular_mass,
+    calculate_mz_from_formula,
     parse_molecular_formula,
 )
 from .compound_manager import CompoundManager
@@ -6390,7 +6391,6 @@ class EICWindow(QWidget):
                     if adduct_name == self.adduct:
                         continue  # skip current adduct
                     try:
-                        from .utils import calculate_mz_from_formula
                         mz_val = calculate_mz_from_formula(formula, adduct_name, self._adducts_data)
                         if mz_val > 0:
                             if adduct_name.endswith("-"):
@@ -6406,7 +6406,6 @@ class EICWindow(QWidget):
 
                 # Isotopologs: M+0, M+1, M+2 ... up to number of carbons or 5
                 try:
-                    from .utils import parse_molecular_formula, calculate_mz_from_formula, adduct_mass_change
                     parsed = parse_molecular_formula(formula)
                     # Max isotopologs = min(number of heaviest element, 5)
                     max_iso = min(max(parsed.get("C", 0), parsed.get("N", 0), parsed.get("S", 0)), 5)

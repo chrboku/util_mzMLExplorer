@@ -53,7 +53,7 @@ from PyQt6.QtCharts import QChart, QChartView, QLineSeries, QValueAxis
 from PyQt6.QtGui import QPen, QColor, QPainter, QMouseEvent, QAction, QBrush
 from .window_shared import BarDelegate, CenteredBarDelegate, CollapsibleBox
 from .window_shared import NumericTableWidgetItem
-from .window_shared import NoScrollSpinBox, NoScrollDoubleSpinBox
+from .window_shared import NoScrollSpinBox, NoScrollDoubleSpinBox, NoScrollComboBox
 from .window_ms1 import MS1ViewerWindow
 from .window_msms import MSMSViewerWindow
 from .utils import (
@@ -734,6 +734,7 @@ class EICWindow(QWidget):
         # Initialize group settings for EIC plotting
         self.group_settings = {}  # Will be populated when EIC data is loaded
         self._group_update_in_progress = False  # Guard flag to avoid re-entrant redraws
+        self._rt_unit = "min"  # "min" or "s"
 
         # Initialize sample settings for EIC plotting (persisted across windows via defaults)
         self.sample_settings = dict(defaults.get("sample_settings", {})) if defaults else {}
@@ -1203,6 +1204,13 @@ class EICWindow(QWidget):
         self.legend_position_combo.currentTextChanged.connect(lambda v: self._notify_setting("legend_position", v))
         layout.addRow("Legend:", self.legend_position_combo)
 
+        # RT unit selector
+        self.rt_unit_combo = NoScrollComboBox()
+        self.rt_unit_combo.addItems(["min", "s"])
+        self.rt_unit_combo.setCurrentText("min")
+        self.rt_unit_combo.currentTextChanged.connect(self._on_rt_unit_changed)
+        layout.addRow("RT unit:", self.rt_unit_combo)
+
         # Logarithmic Y-axis option
         self.log_y_cb = QCheckBox("Log\u2081\u2080 Y-axis")
         self.log_y_cb.setChecked(False)
@@ -1238,6 +1246,21 @@ class EICWindow(QWidget):
 
         return group
 
+    def _on_rt_unit_changed(self, unit: str) -> None:
+        """Handle RT unit change. Triggers a full redraw with the new unit."""
+        self._rt_unit = unit
+        self.update_plot()
+
+    @property
+    def _rt_factor(self) -> float:
+        """Multiplier to convert stored RT values (minutes) to the current display unit."""
+        return 60.0 if getattr(self, "_rt_unit", "min") == "s" else 1.0
+
+    @property
+    def _rt_label(self) -> str:
+        """Unit abbreviation for x-axis titles based on the current RT unit selection."""
+        return "s" if getattr(self, "_rt_unit", "min") == "s" else "min"
+
     def create_group_settings_table(self):
         """Create the group settings table for EIC display controls"""
         # Create a collapsible box for the table
@@ -1263,6 +1286,10 @@ class EICWindow(QWidget):
         self.group_settings_table.setColumnWidth(2, 30)  # Plot checkbox column
         self.group_settings_table.setColumnWidth(3, 30)  # Negative checkbox column
         self.group_settings_table.setColumnWidth(4, 80)  # Line Width column
+
+        # Enable context menu
+        self.group_settings_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.group_settings_table.customContextMenuRequested.connect(self._group_settings_context_menu)
 
         # Add table to collapsible box
         self.group_settings_box.add_widget(self.group_settings_table)
@@ -1365,6 +1392,108 @@ class EICWindow(QWidget):
             width_spin.setSingleStep(0.5)
             width_spin.valueChanged.connect(lambda value, g=group: self.on_group_setting_changed(g, "line_width", value))
             table.setCellWidget(row, 4, width_spin)
+
+    def _group_settings_context_menu(self, pos) -> None:
+        """Show context menu on the group settings table."""
+        menu = QMenu(self)
+
+        def _set_all_groups(visible: bool):
+            table = self.group_settings_table
+            self._group_update_in_progress = True
+            try:
+                for row in range(table.rowCount()):
+                    group_item = table.item(row, 0)
+                    if group_item is None:
+                        continue
+                    grp = group_item.text()
+                    if grp not in self.group_settings:
+                        continue
+                    self.group_settings[grp]["plot"] = visible
+                    if hasattr(self.file_manager, "files_data") and self.file_manager.files_data is not None:
+                        df = self.file_manager.files_data
+                        group_col = self.grouping_column if self.grouping_column in df.columns else None
+                        if group_col is not None:
+                            matching_files = df[df[group_col].astype(str) == grp]
+                            for _, frow in matching_files.iterrows():
+                                fn = str(frow.get("filename", ""))
+                                if fn and fn in self.sample_settings:
+                                    self.sample_settings[fn]["plot"] = visible
+                    cell_widget = table.cellWidget(row, 2)
+                    if cell_widget is not None:
+                        cb = cell_widget.findChild(QCheckBox)
+                        if cb is not None:
+                            cb.blockSignals(True)
+                            cb.setChecked(visible)
+                            cb.blockSignals(False)
+            finally:
+                self._group_update_in_progress = False
+            self._sync_sample_table_from_settings()
+            self._notify_setting("sample_settings", dict(self.sample_settings))
+            self.update_plot(preserve_view=True)
+
+        def _reset_all_group_views():
+            table = self.group_settings_table
+            self._group_update_in_progress = True
+            try:
+                for row in range(table.rowCount()):
+                    group_item = table.item(row, 0)
+                    if group_item is None:
+                        continue
+                    grp = group_item.text()
+                    defaults = {"scaling": 1.0, "plot": True, "negative": False, "line_width": 1.0}
+                    self.group_settings[grp] = dict(defaults)
+                    if hasattr(self.file_manager, "files_data") and self.file_manager.files_data is not None:
+                        df = self.file_manager.files_data
+                        group_col = self.grouping_column if self.grouping_column in df.columns else None
+                        if group_col is not None:
+                            matching_files = df[df[group_col].astype(str) == grp]
+                            for _, frow in matching_files.iterrows():
+                                fn = str(frow.get("filename", ""))
+                                if fn:
+                                    self.sample_settings[fn] = dict(defaults)
+                    scaling_widget = table.cellWidget(row, 1)
+                    if scaling_widget is not None and hasattr(scaling_widget, "setValue"):
+                        scaling_widget.blockSignals(True)
+                        scaling_widget.setValue(1.0)
+                        scaling_widget.blockSignals(False)
+                    plot_widget = table.cellWidget(row, 2)
+                    if plot_widget is not None:
+                        cb = plot_widget.findChild(QCheckBox)
+                        if cb is not None:
+                            cb.blockSignals(True)
+                            cb.setChecked(True)
+                            cb.blockSignals(False)
+                    neg_widget = table.cellWidget(row, 3)
+                    if neg_widget is not None:
+                        cb = neg_widget.findChild(QCheckBox)
+                        if cb is not None:
+                            cb.blockSignals(True)
+                            cb.setChecked(False)
+                            cb.blockSignals(False)
+                    width_widget = table.cellWidget(row, 4)
+                    if width_widget is not None and hasattr(width_widget, "setValue"):
+                        width_widget.blockSignals(True)
+                        width_widget.setValue(1.0)
+                        width_widget.blockSignals(False)
+            finally:
+                self._group_update_in_progress = False
+            self._sync_sample_table_from_settings()
+            self._notify_setting("sample_settings", dict(self.sample_settings))
+            self.update_plot(preserve_view=True)
+
+        show_all_action = QAction("Show all", self)
+        hide_all_action = QAction("Hide all", self)
+        reset_action = QAction("Reset all views", self)
+
+        show_all_action.triggered.connect(lambda: _set_all_groups(True))
+        hide_all_action.triggered.connect(lambda: _set_all_groups(False))
+        reset_action.triggered.connect(_reset_all_group_views)
+
+        menu.addAction(show_all_action)
+        menu.addAction(hide_all_action)
+        menu.addSeparator()
+        menu.addAction(reset_action)
+        menu.exec(self.group_settings_table.viewport().mapToGlobal(pos))
 
     def _populate_grouping_columns(self):
         """Populate the grouping column selector with available columns"""
@@ -1673,7 +1802,20 @@ class EICWindow(QWidget):
                     if filename:
                         samples.append(str(filename))
 
-        sorted_samples = natsorted(samples)
+        # Sort by group first, then by filename within each group
+        if hasattr(self.file_manager, "files_data") and self.file_manager.files_data is not None:
+            df = self.file_manager.files_data
+            if "filename" in df.columns and "group" in df.columns:
+                sample_groups = {str(r["filename"]): str(r.get("group", "")) for _, r in df.iterrows()}
+            elif "filename" in df.columns:
+                sample_groups = {str(r["filename"]): "" for _, r in df.iterrows()}
+            else:
+                sample_groups = {}
+        else:
+            sample_groups = {}
+        natsort_key_fn = natsort_keygen()
+        precomputed_keys = {fn: (natsort_key_fn(sample_groups.get(fn, "")), natsort_key_fn(fn)) for fn in samples}
+        sorted_samples = sorted(samples, key=lambda fn: precomputed_keys[fn])
 
         table.setSortingEnabled(False)
         table.setRowCount(len(sorted_samples))
@@ -1800,8 +1942,51 @@ class EICWindow(QWidget):
 
         show_all_action.triggered.connect(lambda: _set_all(True))
         hide_all_action.triggered.connect(lambda: _set_all(False))
+
+        def _reset_all_samples():
+            table = self.sample_settings_table
+            for row in range(table.rowCount()):
+                name_item = table.item(row, 0)
+                if name_item is None:
+                    continue
+                fn = name_item.data(Qt.ItemDataRole.UserRole)
+                if fn is None:
+                    continue
+                defaults = {"scaling": 1.0, "plot": True, "negative": False, "line_width": 1.0}
+                self.sample_settings[fn] = dict(defaults)
+                scaling_widget = table.cellWidget(row, 1)
+                if scaling_widget is not None and hasattr(scaling_widget, "setValue"):
+                    scaling_widget.blockSignals(True)
+                    scaling_widget.setValue(1.0)
+                    scaling_widget.blockSignals(False)
+                plot_widget = table.cellWidget(row, 2)
+                if plot_widget is not None:
+                    cb = plot_widget.findChild(QCheckBox)
+                    if cb is not None:
+                        cb.blockSignals(True)
+                        cb.setChecked(True)
+                        cb.blockSignals(False)
+                neg_widget = table.cellWidget(row, 3)
+                if neg_widget is not None:
+                    cb = neg_widget.findChild(QCheckBox)
+                    if cb is not None:
+                        cb.blockSignals(True)
+                        cb.setChecked(False)
+                        cb.blockSignals(False)
+                width_widget = table.cellWidget(row, 4)
+                if width_widget is not None and hasattr(width_widget, "setValue"):
+                    width_widget.blockSignals(True)
+                    width_widget.setValue(1.0)
+                    width_widget.blockSignals(False)
+            self._notify_setting("sample_settings", dict(self.sample_settings))
+            self.update_plot(preserve_view=True)
+
+        reset_action = QAction("Reset all views", self)
+        reset_action.triggered.connect(_reset_all_samples)
         menu.addAction(show_all_action)
         menu.addAction(hide_all_action)
+        menu.addSeparator()
+        menu.addAction(reset_action)
         menu.exec(self.sample_settings_table.viewport().mapToGlobal(pos))
 
     def create_boxplot_widget(self):
@@ -4891,7 +5076,7 @@ class EICWindow(QWidget):
         # Create axes with better formatting
         self.x_axis = QValueAxis()
         self.x_axis.setTitleText("Retention Time (min)")
-        self.x_axis.setLabelFormat("%.1f")  # One decimal place
+        self.x_axis.setLabelFormat("%.2f")  # Two decimal places
         self.x_axis.setTickCount(8)  # Reasonable number of ticks
         self.chart.addAxis(self.x_axis, Qt.AlignmentFlag.AlignBottom)
 
@@ -5480,7 +5665,7 @@ class EICWindow(QWidget):
 
                 # Add data points for this file
                 for x, y in zip(rt, intensity):
-                    series.append(float(x), float(y))
+                    series.append(float(x) * self._rt_factor, float(y))
 
                 # Apply group color with transparency and per-sample line width
                 _effective_lw = _ss.get("line_width", 1.0)
@@ -5532,11 +5717,11 @@ class EICWindow(QWidget):
         is_separated = sep_mode != "None"
         if is_separated:
             rt_shift = self.rt_shift_spin.value()
-            self.x_axis.setTitleText(f"Retention Time (min) + i \u00d7 {rt_shift:.1f} min")
+            self.x_axis.setTitleText(f"Retention Time ({self._rt_label}) + i \u00d7 {rt_shift:.1f} {self._rt_label}")
             self.x_axis.setTickCount(2)  # Only two silent anchors; labels are hidden
             self.x_axis.setLabelsVisible(False)
         else:
-            self.x_axis.setTitleText("Retention Time (min)")
+            self.x_axis.setTitleText(f"Retention Time ({self._rt_label})")
             self.x_axis.setTickCount(8)
             self.x_axis.setLabelsVisible(True)
 
@@ -6072,7 +6257,7 @@ class EICWindow(QWidget):
 
         trace_x_axis = QValueAxis()
         trace_x_axis.setTitleText("Retention Time (min)")
-        trace_x_axis.setLabelFormat("%.1f")
+        trace_x_axis.setLabelFormat("%.2f")
         trace_x_axis.setTickCount(8)
         trace_chart.addAxis(trace_x_axis, Qt.AlignmentFlag.AlignBottom)
 
@@ -6134,17 +6319,16 @@ class EICWindow(QWidget):
 
         QTimer.singleShot(200, self._equalize_y_axis_widths)
 
-        # Show brief completion status
-        n_loaded = len(eic_data)
-        n_total = len(files_data)
-        status_parts = [f"'{label}' (m/z {target_mz:.4f}): {n_loaded}/{n_total} files"]
+        # Warn only if some files failed
         if failed_files:
-            status_parts.append(f"{len(failed_files)} file(s) failed: {', '.join(failed_files[:3])}{'…' if len(failed_files) > 3 else ''}")
-        QMessageBox.information(
-            self,
-            "EIC Trace Added",
-            f"Added EIC trace {' | '.join(status_parts)}.",
-        )
+            n_loaded = len(eic_data)
+            n_total = len(files_data)
+            QMessageBox.warning(
+                self,
+                "EIC Trace - Partial Failure",
+                f"Extracted {n_loaded}/{n_total} files for '{label}' (m/z {target_mz:.4f}).\n"
+                f"{len(failed_files)} file(s) failed: {', '.join(failed_files[:3])}{'...' if len(failed_files) > 3 else ''}",
+            )
 
     def _update_extra_trace_chart(self, trace_info: dict):
         """Populate a trace chart with EIC series for all files,
@@ -6188,11 +6372,11 @@ class EICWindow(QWidget):
         # Update x-axis title exactly as the main chart does
         if sep_mode != "None":
             rt_shift = self.rt_shift_spin.value()
-            trace_x_axis.setTitleText(f"Retention Time (min) + i \u00d7 {rt_shift:.1f} min")
+            trace_x_axis.setTitleText(f"Retention Time ({self._rt_label}) + i \u00d7 {rt_shift:.1f} {self._rt_label}")
             trace_x_axis.setTickCount(2)
             trace_x_axis.setLabelsVisible(False)
         else:
-            trace_x_axis.setTitleText("Retention Time (min)")
+            trace_x_axis.setTitleText(f"Retention Time ({self._rt_label})")
             trace_x_axis.setTickCount(8)
             trace_x_axis.setLabelsVisible(True)
 
@@ -6256,7 +6440,7 @@ class EICWindow(QWidget):
             series = QLineSeries()
             series.setProperty("sample_filename", fn)
             for x, y in zip(rt_plot, intensity_plot):
-                series.append(float(x), float(y))
+                series.append(float(x) * self._rt_factor, float(y))
 
             # Use the group color (same as main chart) with partial opacity
             group_color_raw = self._get_group_color(group)
@@ -8107,7 +8291,7 @@ class EmbeddedScatterPlotView(QWidget):
         x_axis.setTitleText("Retention Time (min)")
         x_axis.setRange(self.rt_min, self.rt_max)
         x_axis.setTickCount(6)  # Fewer ticks for embedded view
-        x_axis.setLabelFormat("%.1f")
+        x_axis.setLabelFormat("%.2f")
 
         # Configure Y-axis (m/z)
         mz_padding = self.mz_tolerance * 0.1  # 10% padding

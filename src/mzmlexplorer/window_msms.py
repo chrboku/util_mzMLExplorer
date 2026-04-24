@@ -1913,11 +1913,25 @@ class MSMSViewerWindow(QWidget):
             grid_layout.setVerticalSpacing(0)
 
             row = 0
-            for filepath, file_data in group_files:
-                filename = file_data["filename"]
+
+            # Separate files with 1 spectrum from files with multiple spectra
+            multi_spectra_files = [(fp, fd) for fp, fd in group_files if len(fd["spectra"]) > 1]
+            single_spectra_files = [(fp, fd) for fp, fd in group_files if len(fd["spectra"]) == 1]
+
+            SINGLE_SPECTRA_PER_ROW = 3
+
+            def _add_file_to_grid(filepath, file_data, start_row, start_col, col_span):
+                """Add one file's header label and spectrum charts to the grid layout.
+
+                Args:
+                    filepath: Absolute path to the source file.
+                    file_data: Dict with 'filename' and 'spectra' keys.
+                    start_row: Grid row for the header; charts go in start_row + 1.
+                    start_col: Starting grid column for this file's content.
+                    col_span: Number of columns the header label should span.
+                """
                 spectra = file_data["spectra"]
 
-                # File header row
                 similarity_info = ""
                 if filename in self.intra_file_similarities:
                     stats = self.intra_file_similarities[filename]
@@ -1945,15 +1959,25 @@ class MSMSViewerWindow(QWidget):
                 """)
                 file_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
                 file_label.setMaximumHeight(18)
-                grid_layout.addWidget(file_label, row, 0, 1, max(1, len(spectra)))
-                row += 1
+                grid_layout.addWidget(file_label, start_row, start_col, 1, col_span)
 
-                for col, spectrum_data in enumerate(spectra):
+                for col_offset, spectrum_data in enumerate(spectra):
                     chart_widget = self.create_msms_chart(spectrum_data, filename, group, filepath=filepath)
                     chart_widget.all_similar_spectra = spectra
-                    grid_layout.addWidget(chart_widget, row, col)
+                    grid_layout.addWidget(chart_widget, start_row + 1, start_col + col_offset)
 
-                row += 1
+            # Add multi-spectrum files (one per row)
+            for filepath, file_data in multi_spectra_files:
+                n_spectra = len(file_data["spectra"])
+                _add_file_to_grid(filepath, file_data, row, 0, n_spectra)
+                row += 2
+
+            # Add single-spectrum files in groups of SINGLE_SPECTRA_PER_ROW
+            for batch_start in range(0, len(single_spectra_files), SINGLE_SPECTRA_PER_ROW):
+                batch = single_spectra_files[batch_start: batch_start + SINGLE_SPECTRA_PER_ROW]
+                for col_offset, (filepath, file_data) in enumerate(batch):
+                    _add_file_to_grid(filepath, file_data, row, col_offset, 1)
+                row += 2
 
             group_box.add_widget(inner_widget)
             scroll_vbox.addWidget(group_box)
@@ -2131,10 +2155,11 @@ class MSMSViewerWindow(QWidget):
                     hi = QTableWidgetItem(short)
                     if grp_color:
                         c = QColor(grp_color)
-                        c.setAlphaF(0.5)
+                        c.setAlphaF(0.85)
                         hi.setBackground(c)
-                        # Set text color to the group color (full opacity) for readability
-                        text_color = QColor(grp_color)
+                        # Choose white or black text based on background luminance
+                        lum = 0.299 * c.redF() + 0.587 * c.greenF() + 0.114 * c.blueF()
+                        text_color = QColor("black") if lum > 0.5 else QColor("white")
                         hi.setForeground(text_color)
                     fnt = hi.font()
                     fnt.setBold(True)

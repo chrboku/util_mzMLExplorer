@@ -830,6 +830,8 @@ class EICWindow(QWidget):
 
         layout.addStretch()
         return panel
+
+    def create_right_panel(self) -> QWidget:
         """Create the right panel with the chart and boxplot"""
         panel = QWidget()
         layout = QVBoxLayout(panel)
@@ -6404,10 +6406,10 @@ class EICWindow(QWidget):
                     except Exception:
                         pass
 
-                # Isotopologs: M+0, M+1, M+2 ... up to number of carbons or 5
+                # Isotopologs: M+0, M+1, M+2 ... up to the count of C, N, or S (max 5)
                 try:
                     parsed = parse_molecular_formula(formula)
-                    # Max isotopologs = min(number of heaviest element, 5)
+                    # Max isotopologs = min(largest heavy-atom count among C, N, S; capped at 5)
                     max_iso = min(max(parsed.get("C", 0), parsed.get("N", 0), parsed.get("S", 0)), 5)
                     if max_iso > 0:
                         add_trace_menu.addSeparator()
@@ -6417,7 +6419,7 @@ class EICWindow(QWidget):
                         # base m/z is self.target_mz (M+0 for current adduct)
                         adduct_row_cur = self._adducts_data[self._adducts_data["Adduct"] == self.adduct]
                         if not adduct_row_cur.empty:
-                            _mc, _charge, _mult = adduct_mass_change(adduct_row_cur.iloc[0])
+                            _, _charge, _ = adduct_mass_change(adduct_row_cur.iloc[0])
                             NEUTRON_MASS = 1.003355  # Da, C13-C12 difference
                             for iso_n in range(0, max_iso + 1):
                                 iso_mz = self.target_mz + iso_n * NEUTRON_MASS / abs(_charge)
@@ -6633,8 +6635,8 @@ class EICWindow(QWidget):
                 for s in entry["spectra"]:
                     max_offset = max(max_offset, abs(s["rt"] - rt_center))
 
-            # Warn if the nearest spectrum is more than 5 seconds from the clicked RT
-            if max_offset * 60 > 5.0:
+            # Warn if the nearest spectrum is more than the warning threshold from the clicked RT
+            if max_offset * 60 > _MSMS_RT_WARNING_THRESHOLD_S:
                 reply = QMessageBox.question(
                     self,
                     "Distant MSMS Spectrum",
@@ -6718,12 +6720,12 @@ class EICWindow(QWidget):
                 QMessageBox.information(self, "No MSMS Found", "No valid spectra found after filtering.")
                 return
 
-            # Warn if any selected spectrum is more than 5 seconds from the clicked RT
+            # Warn if any selected spectrum is more than the warning threshold from the clicked RT
             max_rt_offset = 0.0
             for data in most_abundant.values():
                 for spec in data["spectra"]:
                     max_rt_offset = max(max_rt_offset, abs(spec["rt"] - rt_center))
-            if max_rt_offset * 60 > 5.0:
+            if max_rt_offset * 60 > _MSMS_RT_WARNING_THRESHOLD_S:
                 reply = QMessageBox.question(
                     self,
                     "Distant MSMS Spectrum",
@@ -7450,6 +7452,9 @@ class EICWindow(QWidget):
 
         return msms_spectra
 
+
+# Number of seconds threshold for warning about distant MSMS spectra
+_MSMS_RT_WARNING_THRESHOLD_S = 5.0
 
 # Distinct colors cycled for extra EIC traces (colorblind-friendly)
 _EXTRA_TRACE_COLORS = [

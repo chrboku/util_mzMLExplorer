@@ -6393,10 +6393,9 @@ class EICWindow(QWidget):
                         from .utils import calculate_mz_from_formula
                         mz_val = calculate_mz_from_formula(formula, adduct_name, self._adducts_data)
                         if mz_val > 0:
-                            polarity = "positive" if "+" in adduct_name.rstrip("+").rstrip("-") else "negative"
                             if adduct_name.endswith("-"):
                                 polarity = "negative"
-                            elif adduct_name.endswith("+"):
+                            else:
                                 polarity = "positive"
                             act = QAction(f"{adduct_name}  (m/z {mz_val:.4f})", self)
                             ppm = self.defaults.get("mz_tolerance_ppm", 5.0)
@@ -6651,6 +6650,7 @@ class EICWindow(QWidget):
 
             # Independent top-level window (parent=None)
             msms_viewer = MSMSViewerWindow(
+                msms_spectra,
                 self.target_mz,
                 rt_center,
                 max_offset,

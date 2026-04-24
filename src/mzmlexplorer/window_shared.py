@@ -201,6 +201,7 @@ class CollapsibleBox(QWidget):
 
 class NoScrollSpinBox(QSpinBox):
     """Integer spin box that ignores wheel events unless Ctrl is held."""
+
     def wheelEvent(self, event):
         if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
             super().wheelEvent(event)
@@ -210,6 +211,7 @@ class NoScrollSpinBox(QSpinBox):
 
 class NoScrollDoubleSpinBox(QDoubleSpinBox):
     """Float spin box that ignores wheel events unless Ctrl is held."""
+
     def wheelEvent(self, event):
         if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
             super().wheelEvent(event)

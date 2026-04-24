@@ -1533,6 +1533,7 @@ class EICWindow(QWidget):
     def _save_settings_template(self):
         """Open a dialog to save current settings as a named template."""
         from PyQt6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QCheckBox, QPushButton, QMessageBox
+
         dialog = QDialog(self)
         dialog.setWindowTitle("Save Settings Template")
         dialog.setMinimumWidth(350)
@@ -6426,7 +6427,9 @@ class EICWindow(QWidget):
                                 iso_label = f"M+{iso_n} ({self.adduct})"
                                 ppm = self.defaults.get("mz_tolerance_ppm", 5.0)
                                 act = QAction(f"{iso_label}  (m/z {iso_mz:.4f})", self)
-                                act.triggered.connect(lambda checked=False, _lbl=iso_label, _mz=iso_mz, _ppm=ppm, _pol=self.polarity: self._add_extra_eic_trace(_lbl, _mz, _ppm, _pol))
+                                act.triggered.connect(
+                                    lambda checked=False, _lbl=iso_label, _mz=iso_mz, _ppm=ppm, _pol=self.polarity: self._add_extra_eic_trace(_lbl, _mz, _ppm, _pol)
+                                )
                                 add_trace_menu.addAction(act)
                 except Exception:
                     pass

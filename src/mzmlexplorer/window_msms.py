@@ -1865,58 +1865,101 @@ class MSMSViewerWindow(QWidget):
         scroll_area.setWidget(scroll_widget)
         scroll_area.setWidgetResizable(True)
 
-        grid_layout = QGridLayout(scroll_widget)
-        grid_layout.setSpacing(1)
-        grid_layout.setContentsMargins(1, 1, 1, 1)
-        grid_layout.setVerticalSpacing(0)
+        scroll_vbox = QVBoxLayout(scroll_widget)
+        scroll_vbox.setSpacing(2)
+        scroll_vbox.setContentsMargins(2, 2, 2, 2)
 
-        # Organize files and create charts
-        row = 0
+        # Organize files by group first
+        from collections import OrderedDict
+        groups_dict = OrderedDict()
         for filepath, file_data in self.processed_data:
-            filename = file_data["filename"]
             group = file_data.get("group", "Unknown")
-            spectra = file_data["spectra"]
+            if group not in groups_dict:
+                groups_dict[group] = []
+            groups_dict[group].append((filepath, file_data))
 
-            # File header with filename, group, and similarity statistics
-            similarity_info = ""
-            if filename in self.intra_file_similarities:
-                stats = self.intra_file_similarities[filename]
-                similarity_info = f" | Sim: Med:{stats['median']:.3f} 90%:{stats['percentile_90']:.3f}"
-
-            display_name = filename.split(".")[0] if "." in filename else filename
-            file_header_text = f"<b>{display_name}</b> | {group} | {len(spectra)} spectra{similarity_info}"
-            file_label = QLabel(file_header_text)
-
-            # Colour header by group
+        # Create a collapsible box per group
+        for group, group_files in groups_dict.items():
             grp_color = self._group_color_for(group)
+            # Build group header title with file count
+            group_box = CollapsibleBox(f"{group}  ({len(group_files)} file(s))")
+            # Color the header button background
             if grp_color:
                 c = QColor(grp_color)
-                c.setAlphaF(0.5)
+                c.setAlphaF(0.3)
                 r, g, b, a = c.red(), c.green(), c.blue(), c.alpha()
                 bg_css = f"rgba({r},{g},{b},{a})"
             else:
-                bg_css = "#f1f3f4"
-
-            file_label.setStyleSheet(f"""
-                QLabel {{
+                bg_css = "#e8eaed"
+            group_box.toggle_button.setStyleSheet(f"""
+                QPushButton {{
                     background-color: {bg_css};
-                    padding: 2px 4px;
-                    margin: 0px;
-                    border-bottom: 1px solid #dadce0;
+                    border: none;
+                    padding: 4px 6px;
+                    text-align: left;
+                    font-weight: bold;
+                }}
+                QPushButton:hover {{
+                    background-color: {bg_css};
+                    border: 1px solid #aaa;
                 }}
             """)
-            file_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
-            file_label.setMaximumHeight(18)
-            grid_layout.addWidget(file_label, row, 0, 1, max(1, len(spectra)))
-            row += 1
+            group_box.set_expanded(True)  # expanded by default
 
-            # Add spectra horizontally for this file (sorted by intensity)
-            for col, spectrum_data in enumerate(spectra):
-                chart_widget = self.create_msms_chart(spectrum_data, filename, group, filepath=filepath)
-                chart_widget.all_similar_spectra = spectra  # all spectra for this file / precursor
-                grid_layout.addWidget(chart_widget, row, col)
+            # Inner grid for files within this group
+            inner_widget = QWidget()
+            grid_layout = QGridLayout(inner_widget)
+            grid_layout.setSpacing(1)
+            grid_layout.setContentsMargins(1, 1, 1, 1)
+            grid_layout.setVerticalSpacing(0)
 
-            row += 1
+            row = 0
+            for filepath, file_data in group_files:
+                filename = file_data["filename"]
+                spectra = file_data["spectra"]
+
+                # File header row
+                similarity_info = ""
+                if filename in self.intra_file_similarities:
+                    stats = self.intra_file_similarities[filename]
+                    similarity_info = f" | Sim: Med:{stats['median']:.3f} 90%:{stats['percentile_90']:.3f}"
+
+                display_name = filename.split(".")[0] if "." in filename else filename
+                file_header_text = f"<b>{display_name}</b> | {len(spectra)} spectra{similarity_info}"
+                file_label = QLabel(file_header_text)
+
+                if grp_color:
+                    c = QColor(grp_color)
+                    c.setAlphaF(0.35)
+                    r, g, b, a = c.red(), c.green(), c.blue(), c.alpha()
+                    file_bg_css = f"rgba({r},{g},{b},{a})"
+                else:
+                    file_bg_css = "#f1f3f4"
+
+                file_label.setStyleSheet(f"""
+                    QLabel {{
+                        background-color: {file_bg_css};
+                        padding: 2px 4px;
+                        margin: 0px;
+                        border-bottom: 1px solid #dadce0;
+                    }}
+                """)
+                file_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
+                file_label.setMaximumHeight(18)
+                grid_layout.addWidget(file_label, row, 0, 1, max(1, len(spectra)))
+                row += 1
+
+                for col, spectrum_data in enumerate(spectra):
+                    chart_widget = self.create_msms_chart(spectrum_data, filename, group, filepath=filepath)
+                    chart_widget.all_similar_spectra = spectra
+                    grid_layout.addWidget(chart_widget, row, col)
+
+                row += 1
+
+            group_box.add_widget(inner_widget)
+            scroll_vbox.addWidget(group_box)
+
+        scroll_vbox.addStretch()
 
         # Add scroll area to splitter
         main_splitter.addWidget(scroll_area)
@@ -2091,8 +2134,11 @@ class MSMSViewerWindow(QWidget):
                         c = QColor(grp_color)
                         c.setAlphaF(0.5)
                         hi.setBackground(c)
+                        # Set text color to the group color (full opacity) for readability
+                        text_color = QColor(grp_color)
+                        hi.setForeground(text_color)
                     fnt = hi.font()
-                    # fnt.setPointSize(7)
+                    fnt.setBold(True)
                     hi.setFont(fnt)
                     if make_h:
                         inter_table.setHorizontalHeaderItem(idx, hi)

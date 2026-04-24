@@ -6026,7 +6026,18 @@ class EICWindow(QWidget):
         # Extract EIC data for every loaded file synchronously
         eic_data = {}
         files_data = self.file_manager.get_files_data()
-        for _, row in files_data.iterrows():
+        total_files = len(files_data)
+        progress = QProgressDialog(f"Extracting EIC for {label} (m/z {target_mz:.4f})…", "Cancel", 0, total_files, self)
+        progress.setWindowTitle("Adding EIC Trace")
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.setValue(0)
+        failed_files = []
+        for file_idx, (_, row) in enumerate(files_data.iterrows()):
+            if progress.wasCanceled():
+                progress.close()
+                return
+            progress.setValue(file_idx)
             filepath = row["Filepath"]
             try:
                 rt, intensity = self.file_manager.extract_eic(
@@ -6044,7 +6055,10 @@ class EICWindow(QWidget):
                     "metadata": row.to_dict(),
                 }
             except Exception as e:
+                failed_files.append(str(row.get("filename", filepath)))
                 print(f"[Extra EIC trace] failed for {filepath}: {e}")
+        progress.setValue(total_files)
+        progress.close()
 
         if not eic_data:
             QMessageBox.warning(self, "No Data", f"No EIC data found for m/z {target_mz:.4f}.")
@@ -6119,6 +6133,18 @@ class EICWindow(QWidget):
         from PyQt6.QtCore import QTimer
 
         QTimer.singleShot(200, self._equalize_y_axis_widths)
+
+        # Show brief completion status
+        n_loaded = len(eic_data)
+        n_total = len(files_data)
+        status_parts = [f"'{label}' (m/z {target_mz:.4f}): {n_loaded}/{n_total} files"]
+        if failed_files:
+            status_parts.append(f"  {len(failed_files)} file(s) failed: {', '.join(failed_files[:3])}{'…' if len(failed_files) > 3 else ''}")
+        QMessageBox.information(
+            self,
+            "EIC Trace Added",
+            f"Added EIC trace {' | '.join(status_parts)}.",
+        )
 
     def _update_extra_trace_chart(self, trace_info: dict):
         """Populate a trace chart with EIC series for all files,
@@ -6407,30 +6433,47 @@ class EICWindow(QWidget):
                     except Exception:
                         pass
 
-                # Isotopologs: M+0, M+1, M+2 ... up to the count of C, N, or S (max 5)
+                # Isotopologs: per-element submenu with values -2,-1,0,1,...n,n+1,n+2
                 try:
                     parsed = parse_molecular_formula(formula)
-                    # Max isotopologs = min(largest heavy-atom count among C, N, S; capped at 5)
-                    max_iso = min(max(parsed.get("C", 0), parsed.get("N", 0), parsed.get("S", 0)), 5)
-                    if max_iso > 0:
+                    # Isotopic mass shifts for common elements (monoisotopic spacing in Da)
+                    _ISO_MASSES = {
+                        "C": 1.003355,   # 13C - 12C
+                        "N": 0.997035,   # 15N - 14N
+                        "O": 2.004244,   # 18O - 16O (most common heavy isotope)
+                        "S": 1.995796,   # 34S - 32S
+                        "H": 1.006277,   # 2H - 1H
+                    }
+                    adduct_row_cur = self._adducts_data[self._adducts_data["Adduct"] == self.adduct]
+                    if not adduct_row_cur.empty and any(el in parsed for el in _ISO_MASSES):
+                        _, _charge, _ = adduct_mass_change(adduct_row_cur.iloc[0])
+                        ppm = self.defaults.get("mz_tolerance_ppm", 5.0)
+
                         add_trace_menu.addSeparator()
-                        iso_header = QAction("— Isotopologs —", self)
-                        iso_header.setEnabled(False)
-                        add_trace_menu.addAction(iso_header)
-                        # base m/z is self.target_mz (M+0 for current adduct)
-                        adduct_row_cur = self._adducts_data[self._adducts_data["Adduct"] == self.adduct]
-                        if not adduct_row_cur.empty:
-                            _, _charge, _ = adduct_mass_change(adduct_row_cur.iloc[0])
-                            NEUTRON_MASS = 1.003355  # Da, C13-C12 difference
-                            for iso_n in range(0, max_iso + 1):
-                                iso_mz = self.target_mz + iso_n * NEUTRON_MASS / abs(_charge)
-                                iso_label = f"M+{iso_n} ({self.adduct})"
-                                ppm = self.defaults.get("mz_tolerance_ppm", 5.0)
-                                act = QAction(f"{iso_label}  (m/z {iso_mz:.4f})", self)
+                        iso_menu = add_trace_menu.addMenu("— Isotopologs —")
+
+                        for elem, elem_mass_step in _ISO_MASSES.items():
+                            n_elem = parsed.get(elem, 0)
+                            if n_elem == 0:
+                                continue
+                            elem_menu = iso_menu.addMenu(f"{elem} (n={n_elem})")
+                            # Include values: -2,-1, 0,1,...,n, n+1,n+2
+                            iso_values = list(range(-2, n_elem + 3))
+                            for iso_n in iso_values:
+                                iso_mz = self.target_mz + iso_n * elem_mass_step / abs(_charge)
+                                if iso_mz <= 0:
+                                    continue
+                                if iso_n < 0:
+                                    iso_label = f"M{iso_n}{elem} ({self.adduct})"
+                                    entry_text = f"M{iso_n}{elem}  (m/z {iso_mz:.4f})"
+                                else:
+                                    iso_label = f"M+{iso_n}{elem} ({self.adduct})"
+                                    entry_text = f"M+{iso_n}{elem}  (m/z {iso_mz:.4f})"
+                                act = QAction(entry_text, self)
                                 act.triggered.connect(
                                     lambda checked=False, _lbl=iso_label, _mz=iso_mz, _ppm=ppm, _pol=self.polarity: self._add_extra_eic_trace(_lbl, _mz, _ppm, _pol)
                                 )
-                                add_trace_menu.addAction(act)
+                                elem_menu.addAction(act)
                 except Exception:
                     pass
         else:

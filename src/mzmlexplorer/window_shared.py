@@ -12,6 +12,7 @@ from PyQt6.QtWidgets import (
     QStyleOptionViewItem,
     QSpinBox,
     QDoubleSpinBox,
+    QComboBox,
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QRect
 from PyQt6.QtGui import QPainter, QColor
@@ -211,6 +212,16 @@ class NoScrollSpinBox(QSpinBox):
 
 class NoScrollDoubleSpinBox(QDoubleSpinBox):
     """Float spin box that ignores wheel events unless Ctrl is held."""
+
+    def wheelEvent(self, event):
+        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            super().wheelEvent(event)
+        else:
+            event.ignore()
+
+
+class NoScrollComboBox(QComboBox):
+    """Combo box that ignores wheel events unless Ctrl is held."""
 
     def wheelEvent(self, event):
         if event.modifiers() & Qt.KeyboardModifier.ControlModifier:

@@ -53,7 +53,7 @@ import pandas as pd
 from .compound_manager import CompoundManager
 from .file_manager import FileManager
 from .windows import EICWindow, MultiAdductWindow
-from .window_shared import CollapsibleBox
+from .window_shared import CollapsibleBox, NoScrollComboBox, NoScrollSpinBox, NoScrollDoubleSpinBox
 from .window_file_explorer import MzMLFileExplorerWindow
 from .window_msms import USISpectrumComparisonWindow
 from .compound_import_dialog import (
@@ -262,14 +262,14 @@ class CustomEICDialog(QDialog):
         form2.setContentsMargins(12, 12, 12, 12)
         form2.setVerticalSpacing(8)
 
-        self.mz_spin = QDoubleSpinBox()
+        self.mz_spin = NoScrollDoubleSpinBox()
         self.mz_spin.setRange(0.001, 100000.0)
         self.mz_spin.setDecimals(6)
         self.mz_spin.setSuffix(" m/z")
         self.mz_spin.setValue(200.0)
         form2.addRow("m/z value:", self.mz_spin)
 
-        self.polarity_combo = QComboBox()
+        self.polarity_combo = NoScrollComboBox()
         self.polarity_combo.addItem("Positive", "positive")
         self.polarity_combo.addItem("Negative", "negative")
         form2.addRow("Polarity:", self.polarity_combo)
@@ -291,7 +291,7 @@ class CustomEICDialog(QDialog):
         self.smiles_edit.setPlaceholderText("Optional \u2013 validated with RDKit when filled")
         form1.addRow("SMILES:", self.smiles_edit)
 
-        self.mass_spin = QDoubleSpinBox()
+        self.mass_spin = NoScrollDoubleSpinBox()
         self.mass_spin.setRange(0.0, 100000.0)
         self.mass_spin.setDecimals(6)
         self.mass_spin.setSuffix(" Da")
@@ -300,7 +300,7 @@ class CustomEICDialog(QDialog):
         self.mass_spin.setToolTip("Enter a monoisotopic neutral mass directly. Leave at 0 to derive it automatically from the chemical formula above.")
         form1.addRow("Neutral Mass:", self.mass_spin)
 
-        self.adduct_combo1 = QComboBox()
+        self.adduct_combo1 = NoScrollComboBox()
         self._fill_adducts_combo(self.adduct_combo1)
         form1.addRow("Adduct:", self.adduct_combo1)
 
@@ -323,7 +323,7 @@ class CustomEICDialog(QDialog):
         # ---- Shared ppm tolerance spinner ----
         ppm_layout = QHBoxLayout()
         ppm_label = QLabel("m/z Tolerance:")
-        self.ppm_spin = QDoubleSpinBox()
+        self.ppm_spin = NoScrollDoubleSpinBox()
         self.ppm_spin.setRange(0.1, 500.0)
         self.ppm_spin.setDecimals(1)
         self.ppm_spin.setSingleStep(1.0)
@@ -585,7 +585,15 @@ class MzMLExplorerMainWindow(QMainWindow):
         self.setAcceptDrops(True)
 
         # Initialize settings
-        self.settings = QSettings("mzMLExplorer", "mzMLExplorer")
+        # On Windows, use IniFormat in AppData/Local/mzmlexplorer for a predictable location.
+        # On other platforms keep the default native format.
+        if sys.platform == "win32":
+            _appdata = os.environ.get("LOCALAPPDATA", os.path.expanduser("~"))
+            _ini_path = os.path.join(_appdata, "mzmlexplorer", "settings.ini")
+            os.makedirs(os.path.dirname(_ini_path), exist_ok=True)
+            self.settings = QSettings(_ini_path, QSettings.Format.IniFormat)
+        else:
+            self.settings = QSettings("mzMLExplorer", "mzMLExplorer")
 
         # Data storage (initialize before loading settings that depend on it)
         self.file_manager = FileManager()
@@ -2564,13 +2572,15 @@ class MzMLExplorerMainWindow(QMainWindow):
                 {"filter_type": "ITMS", "mz_tolerance": 0.5},
                 {"filter_type": "FTMS", "mz_tolerance": 0.01},
             ],
-            "show_msms_closest": True,
+            "show_msms_closest": False,
             "show_msms_3s": False,
             "show_msms_6s": False,
             "show_msms_9s": False,
-            "show_msms_most_abundant_3s": False,
+            "show_msms_most_abundant_3s": True,
             "show_msms_most_abundant_6s": False,
             "show_msms_most_abundant_9s": False,
+            "settings_templates": [],
+            "rt_unit": "min",
         }
 
     @staticmethod
@@ -2614,6 +2624,8 @@ class MzMLExplorerMainWindow(QMainWindow):
             "show_msms_most_abundant_3s": self.settings.value("eic/show_msms_most_abundant_3s", _d["show_msms_most_abundant_3s"], type=bool),
             "show_msms_most_abundant_6s": self.settings.value("eic/show_msms_most_abundant_6s", _d["show_msms_most_abundant_6s"], type=bool),
             "show_msms_most_abundant_9s": self.settings.value("eic/show_msms_most_abundant_9s", _d["show_msms_most_abundant_9s"], type=bool),
+            "settings_templates": json.loads(self.settings.value("eic/settings_templates", json.dumps(_d["settings_templates"]))),
+            "rt_unit": self.settings.value("eic/rt_unit", _d["rt_unit"]),
         }
 
         # Load memory settings
@@ -2659,6 +2671,8 @@ class MzMLExplorerMainWindow(QMainWindow):
         self.settings.setValue("eic/show_msms_most_abundant_3s", self.eic_defaults.get("show_msms_most_abundant_3s", False))
         self.settings.setValue("eic/show_msms_most_abundant_6s", self.eic_defaults.get("show_msms_most_abundant_6s", False))
         self.settings.setValue("eic/show_msms_most_abundant_9s", self.eic_defaults.get("show_msms_most_abundant_9s", False))
+        self.settings.setValue("eic/settings_templates", json.dumps(self.eic_defaults.get("settings_templates", [])))
+        self.settings.setValue("eic/rt_unit", self.eic_defaults.get("rt_unit", "min"))
 
     def _on_eic_settings_changed(self, key: str, value) -> None:
         """Called by an EIC window when the user changes a persistent setting."""
@@ -3453,7 +3467,7 @@ class UnifiedOptionsDialog(QDialog):
         form_layout.addRow("Keep all mzML data in memory:", self.keep_in_memory_cb)
 
         # Parallel tasks spinbox
-        self.parallel_tasks_spin = QSpinBox()
+        self.parallel_tasks_spin = NoScrollSpinBox()
         self.parallel_tasks_spin.setRange(1, 32)
         self.parallel_tasks_spin.setValue(self.memory_settings.get("parallel_tasks", 4))
         self.parallel_tasks_spin.setSuffix(" threads")
@@ -3511,7 +3525,7 @@ class UnifiedOptionsDialog(QDialog):
         form_layout = QFormLayout()
 
         # m/z Tolerance (ppm)
-        self.mz_tolerance_spin = QDoubleSpinBox()
+        self.mz_tolerance_spin = NoScrollDoubleSpinBox()
         self.mz_tolerance_spin.setRange(0.1, 10000.0)
         self.mz_tolerance_spin.setValue(self.eic_defaults["mz_tolerance_ppm"])
         self.mz_tolerance_spin.setSuffix(" ppm")
@@ -3525,7 +3539,7 @@ class UnifiedOptionsDialog(QDialog):
         form_layout.addRow("Separate by groups:", self.separate_groups_cb)
 
         # Group RT Shift
-        self.rt_shift_spin = QDoubleSpinBox()
+        self.rt_shift_spin = NoScrollDoubleSpinBox()
         self.rt_shift_spin.setRange(0.0, 60.0)
         self.rt_shift_spin.setValue(self.eic_defaults["rt_shift_min"])
         self.rt_shift_spin.setSuffix(" min")
@@ -3541,6 +3555,12 @@ class UnifiedOptionsDialog(QDialog):
         self.normalize_cb = QCheckBox()
         self.normalize_cb.setChecked(self.eic_defaults["normalize_samples"])
         form_layout.addRow("Normalize to Max per Sample:", self.normalize_cb)
+
+        # RT unit selector
+        self.rt_unit_combo = NoScrollComboBox()
+        self.rt_unit_combo.addItems(["min", "s"])
+        self.rt_unit_combo.setCurrentText(self.eic_defaults.get("rt_unit", "min"))
+        form_layout.addRow("RT axis unit:", self.rt_unit_combo)
 
         layout.addLayout(form_layout)
 
@@ -3645,7 +3665,7 @@ class UnifiedOptionsDialog(QDialog):
 
         form_layout = QFormLayout()
 
-        self.msms_similarity_method_combo = QComboBox()
+        self.msms_similarity_method_combo = NoScrollComboBox()
         self.msms_similarity_method_combo.addItems(["CosineHungarian", "CosineGreedy"])
         current_method = self.eic_defaults.get("msms_similarity_method", "CosineHungarian")
         idx = self.msms_similarity_method_combo.findText(current_method)
@@ -3653,7 +3673,7 @@ class UnifiedOptionsDialog(QDialog):
             self.msms_similarity_method_combo.setCurrentIndex(idx)
         form_layout.addRow("Scoring method:", self.msms_similarity_method_combo)
 
-        self.msms_similarity_default_tol_spin = QDoubleSpinBox()
+        self.msms_similarity_default_tol_spin = NoScrollDoubleSpinBox()
         self.msms_similarity_default_tol_spin.setRange(0.0001, 1.0)
         self.msms_similarity_default_tol_spin.setDecimals(4)
         self.msms_similarity_default_tol_spin.setSingleStep(0.005)
@@ -3804,6 +3824,7 @@ class UnifiedOptionsDialog(QDialog):
         self.show_msms_most_abundant_3s_cb.setChecked(defaults.get("show_msms_most_abundant_3s", False))
         self.show_msms_most_abundant_6s_cb.setChecked(defaults.get("show_msms_most_abundant_6s", False))
         self.show_msms_most_abundant_9s_cb.setChecked(defaults.get("show_msms_most_abundant_9s", False))
+        self.rt_unit_combo.setCurrentText(defaults.get("rt_unit", "min"))
 
     def get_values(self):
         """Get the current values from the dialog"""
@@ -3840,6 +3861,7 @@ class UnifiedOptionsDialog(QDialog):
             "show_msms_most_abundant_3s": self.show_msms_most_abundant_3s_cb.isChecked(),
             "show_msms_most_abundant_6s": self.show_msms_most_abundant_6s_cb.isChecked(),
             "show_msms_most_abundant_9s": self.show_msms_most_abundant_9s_cb.isChecked(),
+            "rt_unit": self.rt_unit_combo.currentText(),
         }
 
         memory_values = {
@@ -3870,7 +3892,7 @@ class EICDefaultsDialog(QDialog):
         form_layout = QFormLayout()
 
         # m/z Tolerance (ppm)
-        self.mz_tolerance_spin = QDoubleSpinBox()
+        self.mz_tolerance_spin = NoScrollDoubleSpinBox()
         self.mz_tolerance_spin.setRange(0.1, 10000.0)
         self.mz_tolerance_spin.setValue(self.current_defaults["mz_tolerance_ppm"])
         self.mz_tolerance_spin.setSuffix(" ppm")
@@ -3884,7 +3906,7 @@ class EICDefaultsDialog(QDialog):
         form_layout.addRow("Separate by groups:", self.separate_groups_cb)
 
         # Group RT Shift
-        self.rt_shift_spin = QDoubleSpinBox()
+        self.rt_shift_spin = NoScrollDoubleSpinBox()
         self.rt_shift_spin.setRange(0.0, 60.0)
         self.rt_shift_spin.setValue(self.current_defaults["rt_shift_min"])
         self.rt_shift_spin.setSuffix(" min")

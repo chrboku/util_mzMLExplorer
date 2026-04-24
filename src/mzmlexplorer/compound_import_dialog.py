@@ -25,6 +25,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QTimer
 from typing import Optional, Dict, Any
 from .FormulaTools import formulaTools
+from .window_shared import NoScrollComboBox, NoScrollSpinBox, NoScrollDoubleSpinBox
 
 import traceback
 
@@ -179,7 +180,7 @@ class CompoundImportDialog(QDialog):
         layout = QFormLayout(group)
 
         # Delimiter selection
-        self.delimiter_combo = QComboBox()
+        self.delimiter_combo = NoScrollComboBox()
         self.delimiter_combo.addItems([";", ",", "\\t (Tab)", "|", ":"])
         self.delimiter_combo.currentTextChanged.connect(self.on_delimiter_changed)
         layout.addRow("Delimiter:", self.delimiter_combo)
@@ -191,43 +192,43 @@ class CompoundImportDialog(QDialog):
         layout.addRow("Name Prefix:", self.name_prefix_edit)
 
         # Column selections
-        self.name_column_combo = QComboBox()
+        self.name_column_combo = NoScrollComboBox()
         self.name_column_combo.currentTextChanged.connect(self.schedule_update)
         layout.addRow("Name Column:", self.name_column_combo)
 
-        self.mz_column_combo = QComboBox()
+        self.mz_column_combo = NoScrollComboBox()
         self.mz_column_combo.currentTextChanged.connect(self.schedule_update)
         layout.addRow("m/z Column:", self.mz_column_combo)
 
-        self.rt_column_combo = QComboBox()
+        self.rt_column_combo = NoScrollComboBox()
         self.rt_column_combo.currentTextChanged.connect(self.schedule_update)
         layout.addRow("RT Column (optional):", self.rt_column_combo)
 
         # Formula column (optional)
-        self.formula_column_combo = QComboBox()
+        self.formula_column_combo = NoScrollComboBox()
         self.formula_column_combo.currentTextChanged.connect(self.schedule_update)
         layout.addRow("Formula Column (optional):", self.formula_column_combo)
 
         # SMILES column (optional)
-        self.smiles_column_combo = QComboBox()
+        self.smiles_column_combo = NoScrollComboBox()
         self.smiles_column_combo.currentTextChanged.connect(self.schedule_update)
         layout.addRow("SMILES Column (optional):", self.smiles_column_combo)
 
         # Polarity selection
-        self.polarity_combo = QComboBox()
+        self.polarity_combo = NoScrollComboBox()
         self.polarity_combo.addItems(["Use Global Polarity", "Use Column"])
         self.polarity_combo.currentTextChanged.connect(self.on_polarity_method_changed)
         layout.addRow("Polarity Method:", self.polarity_combo)
 
         # Global polarity selection
-        self.global_polarity_combo = QComboBox()
+        self.global_polarity_combo = NoScrollComboBox()
         self.global_polarity_combo.addItems(["+", "-"])
         self.global_polarity_combo.currentTextChanged.connect(self.on_global_polarity_changed)
         self.global_polarity_label = QLabel("Global Polarity:")
         layout.addRow(self.global_polarity_label, self.global_polarity_combo)
 
         # Polarity column selection
-        self.polarity_column_combo = QComboBox()
+        self.polarity_column_combo = NoScrollComboBox()
         self.polarity_column_combo.currentTextChanged.connect(self.schedule_update)
         self.polarity_column_label = QLabel("Polarity Column:")
         layout.addRow(self.polarity_column_label, self.polarity_column_combo)
@@ -237,7 +238,7 @@ class CompoundImportDialog(QDialog):
         self.polarity_column_combo.setVisible(False)
 
         # RT window
-        self.rt_window_spinbox = QDoubleSpinBox()
+        self.rt_window_spinbox = NoScrollDoubleSpinBox()
         self.rt_window_spinbox.setRange(0.1, 10.0)
         self.rt_window_spinbox.setValue(0.5)
         self.rt_window_spinbox.setSuffix(" min")

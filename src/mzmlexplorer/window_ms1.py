@@ -21,7 +21,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QPointF
 from PyQt6.QtCharts import QChart, QChartView, QLineSeries, QValueAxis
 from PyQt6.QtGui import QPen, QColor, QPainter, QMouseEvent
-from .window_shared import ClickableLabel, ANNOTATION_COLOR_PRESETS
+from .window_shared import ClickableLabel, ANNOTATION_COLOR_PRESETS, NoScrollSpinBox, NoScrollDoubleSpinBox
 from .utils import parse_molecular_formula, make_usi
 
 
@@ -98,7 +98,7 @@ class MS1ViewerWindow(QWidget):
 
             # m/z tolerance for isotope matching
             controls_layout.addWidget(QLabel("Isotope m/z tolerance:"))
-            self.isotope_tolerance_ppm_spin = QDoubleSpinBox()
+            self.isotope_tolerance_ppm_spin = NoScrollDoubleSpinBox()
             self.isotope_tolerance_ppm_spin.setRange(0.1, 100.0)
             self.isotope_tolerance_ppm_spin.setValue(5.0)  # Default 5 ppm
             self.isotope_tolerance_ppm_spin.setSuffix(" ppm")
@@ -109,7 +109,7 @@ class MS1ViewerWindow(QWidget):
 
         # Number of annotated signals spinner
         controls_layout.addWidget(QLabel("Annotated signals:"))
-        self.top_n_spin = QSpinBox()
+        self.top_n_spin = NoScrollSpinBox()
         self.top_n_spin.setRange(0, 20)
         self.top_n_spin.setValue(3)
         self.top_n_spin.setFixedWidth(55)
@@ -1446,7 +1446,7 @@ class MS1SingleSpectrumWindow(QWidget):
             ctrl.addWidget(self.isotope_chk)
 
             ctrl.addWidget(QLabel("Tolerance:"))
-            self.iso_tol_spin = QDoubleSpinBox()
+            self.iso_tol_spin = NoScrollDoubleSpinBox()
             self.iso_tol_spin.setRange(0.1, 100.0)
             self.iso_tol_spin.setValue(5.0)
             self.iso_tol_spin.setSuffix(" ppm")
@@ -1460,7 +1460,7 @@ class MS1SingleSpectrumWindow(QWidget):
 
         # Top-N signals
         ctrl.addWidget(QLabel("Top signals:"))
-        self.top_n_spin = QSpinBox()
+        self.top_n_spin = NoScrollSpinBox()
         self.top_n_spin.setRange(0, 30)
         self.top_n_spin.setValue(5)
         self.top_n_spin.setFixedWidth(55)
@@ -1476,7 +1476,7 @@ class MS1SingleSpectrumWindow(QWidget):
         ctrl.addWidget(self.rel_chk)
 
         ctrl.addWidget(QLabel("Reference m/z:"))
-        self.ref_mz_spin = QDoubleSpinBox()
+        self.ref_mz_spin = NoScrollDoubleSpinBox()
         self.ref_mz_spin.setRange(0.0, 100000.0)
         self.ref_mz_spin.setDecimals(4)
         self.ref_mz_spin.setSingleStep(0.0001)

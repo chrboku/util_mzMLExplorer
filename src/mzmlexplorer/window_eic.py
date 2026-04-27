@@ -2004,8 +2004,10 @@ class EICWindow(QWidget):
 
     def create_boxplot_widget(self):
         """Create the tabbed widget for boxplots and peak area table"""
-        # Registry of (table, sample_name_col) pairs for EIC highlight
+        # Registry of (table, sample_name_col) pairs for EIC highlight (per-sample tables)
         self._peak_highlight_tables = []
+        # Registry of (table, group_name_col) pairs for EIC highlight (per-group tables)
+        self._peak_group_highlight_tables = []
 
         # Create the main tabbed widget
         self.boxplot_widget = QTabWidget()
@@ -2106,6 +2108,9 @@ class EICWindow(QWidget):
         self.summary_stats_table.horizontalHeader().setStretchLastSection(False)
         self.summary_stats_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         self.summary_stats_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        # Register for group-level EIC highlighting (group name is in column 0)
+        self._peak_group_highlight_tables.append((self.summary_stats_table, 0))
+        self.summary_stats_table.selectionModel().selectionChanged.connect(self._on_group_table_selection_changed)
 
         summary_stats_layout.addWidget(self.summary_stats_table)
 
@@ -2201,6 +2206,9 @@ class EICWindow(QWidget):
         self.mz_group_table.horizontalHeader().setStretchLastSection(False)
         self.mz_group_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         self.mz_group_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        # Register for group-level EIC highlighting (group name is in column 0)
+        self._peak_group_highlight_tables.append((self.mz_group_table, 0))
+        self.mz_group_table.selectionModel().selectionChanged.connect(self._on_group_table_selection_changed)
 
         # Compact appearance — stylesheet forces pixel font on every cell
         self.mz_group_table.verticalHeader().setDefaultSectionSize(20)
@@ -2295,6 +2303,9 @@ class EICWindow(QWidget):
         self.rt_group_table.horizontalHeader().setStretchLastSection(False)
         self.rt_group_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         self.rt_group_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        # Register for group-level EIC highlighting (group name is in column 0)
+        self._peak_group_highlight_tables.append((self.rt_group_table, 0))
+        self.rt_group_table.selectionModel().selectionChanged.connect(self._on_group_table_selection_changed)
         self.rt_group_table.verticalHeader().setDefaultSectionSize(20)
         self.rt_group_table.verticalHeader().setMinimumSectionSize(16)
         rt_group_layout.addWidget(self.rt_group_table)
@@ -2995,6 +3006,85 @@ class EICWindow(QWidget):
                 continue
             sample_fn = series.property("sample_filename") or series.name() or ""
             # Table stores names without extension; strip extension for comparison
+            base = os.path.splitext(os.path.basename(sample_fn))[0]
+            is_selected = base in selected_names
+            alpha = 1.0 if is_selected else 0.15
+            color = series.color()
+            color.setAlphaF(alpha)
+            series.setColor(color)
+            pen = series.pen()
+            pen_color = pen.color()
+            pen_color.setAlphaF(alpha)
+            pen.setColor(pen_color)
+            series.setPen(pen)
+
+    def _on_group_table_selection_changed(self):
+        """Highlight all chart series belonging to the selected group(s).
+
+        Connected to group-level summary tables (summary_stats_table,
+        mz_group_table, rt_group_table).  When a group row is selected,
+        all sample series in that group are shown at full opacity; all
+        others are dimmed to 15%.  Clearing the selection restores full
+        opacity for every series.
+        """
+        # Identify which table triggered the signal
+        sender = self.sender()
+        table = None
+        group_col = 0
+        for _t, _c in self._peak_group_highlight_tables:
+            if _t.selectionModel() is sender:
+                table = _t
+                group_col = _c
+                break
+        if table is None:
+            return
+
+        selected_rows = table.selectionModel().selectedRows()
+        if not selected_rows:
+            # Restore all series to full opacity
+            for series in self.chart.series():
+                if series.property("is_decoration"):
+                    continue
+                color = series.color()
+                color.setAlphaF(1.0)
+                series.setColor(color)
+                pen = series.pen()
+                pen_color = pen.color()
+                pen_color.setAlphaF(1.0)
+                pen.setColor(pen_color)
+                series.setPen(pen)
+            return
+
+        # Collect the selected group names
+        selected_groups = set()
+        for idx in selected_rows:
+            item = table.item(idx.row(), group_col)
+            if item:
+                selected_groups.add(item.text())
+
+        # Find all sample filenames that belong to the selected groups
+        selected_names = set()
+        if hasattr(self, "file_manager") and self.file_manager is not None:
+            fd = self.file_manager.get_files_data()
+            if not fd.empty and self.grouping_column in fd.columns:
+                for _, row in fd.iterrows():
+                    grp_val = row.get(self.grouping_column)
+                    if grp_val is None:
+                        continue
+                    if str(grp_val) in selected_groups:
+                        fn = row.get("filename") or row.get("Filename") or ""
+                        base = os.path.splitext(os.path.basename(str(fn)))[0]
+                        if base:
+                            selected_names.add(base)
+
+        if not selected_names:
+            return
+
+        # Adjust opacity: selected groups = full, others = dim
+        for series in self.chart.series():
+            if series.property("is_decoration"):
+                continue
+            sample_fn = series.property("sample_filename") or series.name() or ""
             base = os.path.splitext(os.path.basename(sample_fn))[0]
             is_selected = base in selected_names
             alpha = 1.0 if is_selected else 0.15
@@ -5168,7 +5258,7 @@ class EICWindow(QWidget):
         # Create axes with better formatting
         self.x_axis = QValueAxis()
         self.x_axis.setTitleText("Retention Time (min)")
-        self.x_axis.setLabelFormat("%.2f")  # Two decimal places
+        self.x_axis.setLabelFormat("%.3f")  # Three decimal places
         self.x_axis.setTickCount(8)  # Reasonable number of ticks
         self.chart.addAxis(self.x_axis, Qt.AlignmentFlag.AlignBottom)
 
@@ -6427,7 +6517,7 @@ class EICWindow(QWidget):
 
         trace_x_axis = QValueAxis()
         trace_x_axis.setTitleText("Retention Time (min)")
-        trace_x_axis.setLabelFormat("%.2f")
+        trace_x_axis.setLabelFormat("%.3f")
         trace_x_axis.setTickCount(8)
         trace_chart.addAxis(trace_x_axis, Qt.AlignmentFlag.AlignBottom)
 
@@ -8623,7 +8713,7 @@ class EmbeddedScatterPlotView(QWidget):
         x_axis.setTitleText("Retention Time (min)")
         x_axis.setRange(self.rt_min, self.rt_max)
         x_axis.setTickCount(6)  # Fewer ticks for embedded view
-        x_axis.setLabelFormat("%.2f")
+        x_axis.setLabelFormat("%.3f")
 
         # Configure Y-axis (m/z)
         mz_padding = self.mz_tolerance * 0.1  # 10% padding

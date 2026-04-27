@@ -1139,8 +1139,13 @@ class MSMSPopupWindow(QWidget):
         # --- top-N filtering (by peak intensity in the un-normalized full EIC) ---
         if top_n > 0 and len(sorted_mz) > top_n:
             peak_intensities = {mz: float(np.max(self._eic_data[mz][1])) if len(self._eic_data[mz][1]) else 0.0 for mz in sorted_mz}
-            sorted_mz = sorted(sorted_mz, key=lambda m: peak_intensities[m], reverse=True)[:top_n]
-            sorted_mz = sorted(sorted_mz)  # restore m/z order for colour consistency
+            top_mz = sorted(sorted_mz, key=lambda m: peak_intensities[m], reverse=True)[:top_n]
+            # Always include the currently selected fragment regardless of top-n rank
+            if self.selected_mz is not None:
+                sel_match = min(sorted_mz, key=lambda m: abs(m - self.selected_mz))
+                if abs(sel_match - self.selected_mz) < 0.02 and sel_match not in top_mz:
+                    top_mz.append(sel_match)
+            sorted_mz = sorted(top_mz)  # restore m/z order for colour consistency
 
         colors = self._get_eic_colors(len(sorted_mz))
 

@@ -3419,7 +3419,10 @@ class UnifiedOptionsDialog(QDialog):
         tab_widget = QTabWidget()
         tab_widget.setTabPosition(QTabWidget.TabPosition.West)
         tab_widget.setDocumentMode(False)
-        tab_widget.tabBar().setStyle(_HorizontalTabStyle())
+        # Keep a Python reference so the style object is not garbage-collected
+        # (Qt does NOT take ownership of the style set via setStyle).
+        self._tab_style = _HorizontalTabStyle()
+        tab_widget.tabBar().setStyle(self._tab_style)
 
         def _make_scroll_tab(content_widget):
             """Wrap *content_widget* in a scroll area suitable for a tab page."""

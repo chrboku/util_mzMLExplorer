@@ -2960,7 +2960,7 @@ class EICWindow(QWidget):
                 continue
             sample_fn = series.property("sample_filename") or series.name() or ""
             # Table stores names without extension; strip extension for comparison
-            base = sample_fn.rsplit(".", 1)[0] if "." in sample_fn else sample_fn
+            base = os.path.splitext(os.path.basename(sample_fn))[0]
             is_selected = base in selected_names
             alpha = 1.0 if is_selected else 0.15
             color = series.color()

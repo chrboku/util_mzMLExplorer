@@ -6715,21 +6715,9 @@ class EICWindow(QWidget):
 
                 _bold_font = None  # lazily created
 
-                def _make_adduct_action(adduct_name, mz_val, ppm_val, pol_str, is_predefined):
-                    nonlocal _bold_font
-                    act = QAction(f"{adduct_name}  (m/z {mz_val:.4f})", self)
-                    if is_predefined:
-                        if _bold_font is None:
-                            _bold_font = act.font()
-                            _bold_font.setBold(True)
-                        act.setFont(_bold_font)
-                    act.triggered.connect(
-                        lambda checked=False, _l=adduct_name, _m=mz_val, _p=ppm_val, _pol=pol_str:
-                            self._add_extra_eic_trace(_l, _m, _p, _pol)
-                    )
-                    return act
-
                 ppm = self.defaults.get("mz_tolerance_ppm", 5.0)
+                # Build a bold QFont once to mark predefined adducts
+                _bold_font = None
                 predefined_actions = []
                 other_actions = []
                 for _, adduct_row in self._adducts_data.iterrows():
@@ -6741,7 +6729,16 @@ class EICWindow(QWidget):
                         if mz_val > 0:
                             pol_str = "negative" if adduct_name.endswith("-") else "positive"
                             is_pred = adduct_name in _predefined_adducts
-                            act = _make_adduct_action(adduct_name, mz_val, ppm, pol_str, is_pred)
+                            act = QAction(f"{adduct_name}  (m/z {mz_val:.4f})", self)
+                            if is_pred:
+                                if _bold_font is None:
+                                    _bold_font = act.font()
+                                    _bold_font.setBold(True)
+                                act.setFont(_bold_font)
+                            act.triggered.connect(
+                                lambda checked=False, _l=adduct_name, _m=mz_val, _p=ppm, _pol=pol_str:
+                                    self._add_extra_eic_trace(_l, _m, _p, _pol)
+                            )
                             if is_pred:
                                 predefined_actions.append(act)
                             else:

@@ -3384,48 +3384,32 @@ class UnifiedOptionsDialog(QDialog):
         self.init_ui()
 
     def init_ui(self):
-        """Initialize the dialog UI"""
+        """Initialize the dialog UI with a tab control (one tab per settings category)."""
         layout = QVBoxLayout(self)
 
-        # Create scroll area for the content
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        # Tab widget — tabs are shown horizontally (default Qt behaviour)
+        tab_widget = QTabWidget()
+        tab_widget.setTabPosition(QTabWidget.TabPosition.North)
+        tab_widget.setDocumentMode(False)
 
-        content_widget = QWidget()
-        content_layout = QVBoxLayout(content_widget)
+        def _make_scroll_tab(content_widget):
+            """Wrap *content_widget* in a scroll area suitable for a tab page."""
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            outer = QWidget()
+            vb = QVBoxLayout(outer)
+            vb.addWidget(content_widget)
+            vb.addStretch()
+            scroll.setWidget(outer)
+            return scroll
 
-        # Memory Settings Section
-        memory_section = CollapsibleBox("Memory Settings")
-        memory_content = self.create_memory_settings_content()
-        memory_section.add_widget(memory_content)
-        memory_section.set_expanded(True)
-        content_layout.addWidget(memory_section)
+        tab_widget.addTab(_make_scroll_tab(self.create_memory_settings_content()), "Memory")
+        tab_widget.addTab(_make_scroll_tab(self.create_eic_defaults_content()), "EIC Defaults")
+        tab_widget.addTab(_make_scroll_tab(self.create_msms_filter_content()), "MSMS Filtering")
+        tab_widget.addTab(_make_scroll_tab(self.create_msms_similarity_content()), "MSMS Similarity")
 
-        # EIC Defaults Section
-        eic_section = CollapsibleBox("EIC Window Defaults")
-        eic_content = self.create_eic_defaults_content()
-        eic_section.add_widget(eic_content)
-        eic_section.set_expanded(True)
-        content_layout.addWidget(eic_section)
-
-        # MSMS Filter String Parsing Section
-        msms_filter_section = CollapsibleBox("MSMS Filter String Parsing")
-        msms_filter_content = self.create_msms_filter_content()
-        msms_filter_section.add_widget(msms_filter_content)
-        msms_filter_section.set_expanded(True)
-        content_layout.addWidget(msms_filter_section)
-
-        # MSMS Similarity Scoring Section
-        msms_similarity_section = CollapsibleBox("MSMS Similarity Scoring")
-        msms_similarity_content = self.create_msms_similarity_content()
-        msms_similarity_section.add_widget(msms_similarity_content)
-        msms_similarity_section.set_expanded(True)
-        content_layout.addWidget(msms_similarity_section)
-
-        content_layout.addStretch()
-        scroll.setWidget(content_widget)
-        layout.addWidget(scroll)
+        layout.addWidget(tab_widget)
 
         # Buttons
         button_layout = QHBoxLayout()

@@ -847,7 +847,7 @@ class EICWindow(QWidget):
 
         # Main chart (EIC)
         self.chart_view = self.create_chart()
-        self._eic_charts_splitter.addWidget(self.chart_view)
+        self._eic_charts_splitter.addWidget(self._main_chart_container)
 
         self.eic_boxplot_splitter.addWidget(self._eic_charts_splitter)
 
@@ -5102,7 +5102,50 @@ class EICWindow(QWidget):
         self.original_x_range = None
         self.original_y_range = None
 
+        # Build a compact title label above the main chart
+        self._main_chart_title_label = QLabel()
+        self._main_chart_title_label.setStyleSheet(
+            "QLabel { font-size: 11px; color: #333; padding: 1px 6px 0px 6px; background: transparent; }"
+        )
+        self._main_chart_title_label.setTextFormat(Qt.TextFormat.RichText)
+        self._update_main_chart_title()
+
+        # Wrap label + chart_view in a container so both live in the splitter
+        self._main_chart_container = QWidget()
+        _cc_layout = QVBoxLayout(self._main_chart_container)
+        _cc_layout.setContentsMargins(0, 0, 0, 0)
+        _cc_layout.setSpacing(0)
+        _cc_layout.addWidget(self._main_chart_title_label)
+        _cc_layout.addWidget(chart_view, stretch=1)
+
         return chart_view
+
+    def _update_main_chart_title(self):
+        """Refresh the compact info label shown above the main EIC chart."""
+        if not hasattr(self, "_main_chart_title_label"):
+            return
+        mz = getattr(self, "target_mz", 0.0)
+        ppm = None
+        if hasattr(self, "defaults") and self.defaults:
+            ppm = self.defaults.get("mz_tolerance_ppm")
+        adduct = getattr(self, "adduct", None) or ""
+        formula = ""
+        if hasattr(self, "compound_data") and self.compound_data:
+            formula = self.compound_data.get("ChemicalFormula", "") or ""
+        polarity = getattr(self, "polarity", None) or ""
+        if polarity:
+            polarity = polarity if polarity in ("+", "-") else polarity[:1]
+
+        parts = []
+        if mz:
+            parts.append(f"<b>m/z {mz:.4f}</b>")
+        if adduct:
+            parts.append(f"adduct: {adduct}")
+        if formula:
+            parts.append(f"formula: {formula}")
+        if ppm is not None:
+            parts.append(f"±{ppm} ppm")
+        self._main_chart_title_label.setText("  ".join(parts))
 
     def reset_x_axis(self):
         """Reset the X-axis to show the full extent of all plotted data."""
@@ -5150,6 +5193,8 @@ class EICWindow(QWidget):
         if normalize and not log_y_active and not ridge_active:
             # Pure normalization: fixed 0-1 range
             self.chart.axes(Qt.Orientation.Vertical)[0].setRange(-0.05, 1.05)
+            # Reset extra traces to same 0–1 range
+            self._reset_extra_trace_y_axes()
             return
 
         y_range = max_y - min_y
@@ -5160,8 +5205,36 @@ class EICWindow(QWidget):
             y_min = max(0.0, min_y - padding)
         self.chart.axes(Qt.Orientation.Vertical)[0].setRange(y_min, max_y + padding)
 
+        # Also reset extra trace charts
+        self._reset_extra_trace_y_axes()
+
+    def _reset_extra_trace_y_axes(self):
+        """Auto-fit the Y-axis of every extra EIC trace chart to its data."""
+        for trace in getattr(self, "_extra_eic_traces", []):
+            trace_chart = trace.get("chart")
+            trace_y_axis = trace.get("y_axis")
+            if trace_chart is None or trace_y_axis is None:
+                continue
+            min_y = float("inf")
+            max_y = float("-inf")
+            for series in trace_chart.series():
+                if series.property("is_decoration"):
+                    continue
+                for i in range(series.count()):
+                    pt = series.at(i)
+                    y = pt.y()
+                    if y == y:
+                        min_y = min(min_y, y)
+                        max_y = max(max_y, y)
+            if min_y == float("inf"):
+                continue
+            y_range = max_y - min_y
+            padding = y_range * 0.05 if y_range > 0 else abs(max_y) * 0.05
+            y_min = max(0.0, min_y - padding)
+            trace_y_axis.setRange(y_min, max_y + padding)
+
     def reset_view(self):
-        """Reset the chart view to show all data"""
+        """Reset the chart view to show all data (main chart + all extra trace charts)."""
         if self.chart.series():
             # Calculate the full range of all series
             min_x = float("inf")
@@ -5200,6 +5273,9 @@ class EICWindow(QWidget):
                         y_axis.setRange(min_y - y_padding, max_y + y_padding)
                     else:
                         y_axis.setRange(max(0, min_y - y_padding), max_y + y_padding)
+
+        # Also auto-fit each extra EIC trace chart
+        self._reset_extra_trace_y_axes()
 
     def extract_eic_data(self):
         """Extract EIC data in a separate thread"""
@@ -6265,8 +6341,7 @@ class EICWindow(QWidget):
         trace_chart.addAxis(trace_x_axis, Qt.AlignmentFlag.AlignBottom)
 
         trace_y_axis = QValueAxis()
-        pol_str = f" [{polarity[0].upper() if polarity else '?'}]"
-        trace_y_axis.setTitleText(f"Intensity  {label}{pol_str}")
+        trace_y_axis.setTitleText("Intensity")
         trace_y_axis.setLabelFormat("%.2e")
         trace_y_axis.setTickCount(4)
         trace_chart.addAxis(trace_y_axis, Qt.AlignmentFlag.AlignLeft)
@@ -6279,6 +6354,22 @@ class EICWindow(QWidget):
         # Connect context menu so the extra trace chart shows the same menu
         trace_chart_view.contextMenuRequested.connect(lambda rt_val, pos, cv=trace_chart_view: self.show_context_menu(rt_val, pos, source_chart_view=cv))
 
+        # Build compact info label above this trace chart
+        pol_str = f" [{polarity[0].upper() if polarity else '?'}]"
+        trace_title_label = QLabel(f"<b>m/z {target_mz:.4f}</b>  {label}{pol_str}  ±{ppm} ppm")
+        trace_title_label.setStyleSheet(
+            "QLabel { font-size: 11px; color: #333; padding: 1px 6px 0px 6px; background: transparent; }"
+        )
+        trace_title_label.setTextFormat(Qt.TextFormat.RichText)
+
+        # Wrap label + chart_view in a container
+        trace_container = QWidget()
+        _tc_layout = QVBoxLayout(trace_container)
+        _tc_layout.setContentsMargins(0, 0, 0, 0)
+        _tc_layout.setSpacing(0)
+        _tc_layout.addWidget(trace_title_label)
+        _tc_layout.addWidget(trace_chart_view, stretch=1)
+
         # Assemble trace info dict
         trace_info = {
             "label": label,
@@ -6288,6 +6379,8 @@ class EICWindow(QWidget):
             "eic_data": eic_data,
             "chart": trace_chart,
             "chart_view": trace_chart_view,
+            "title_label": trace_title_label,
+            "container": trace_container,
             "x_axis": trace_x_axis,
             "y_axis": trace_y_axis,
             "color": color,
@@ -6297,8 +6390,8 @@ class EICWindow(QWidget):
         # Populate chart with data
         self._update_extra_trace_chart(trace_info)
 
-        # Add the chart view to the charts splitter
-        self._eic_charts_splitter.addWidget(trace_chart_view)
+        # Add the container (label + chart) to the charts splitter
+        self._eic_charts_splitter.addWidget(trace_container)
 
         # Move legend to Top automatically when the user adds the first extra trace
         # and the legend is currently on the Right (it would overlap extra charts).
@@ -6358,19 +6451,25 @@ class EICWindow(QWidget):
         rt_start_crop = self.compound_data.get("RT_start_min") if crop_rt else None
         rt_end_crop = self.compound_data.get("RT_end_min") if crop_rt else None
 
-        # Update y-axis title to reflect transforms
-        pol_str = f" [{polarity[0].upper()}]" if polarity else ""
+        # Update y-axis title to reflect transforms (compound-specific info moved to title label)
         if normalize and log_y:
-            y_title = f"Log\u2081\u2080(Norm.)  {label}{pol_str}"
+            y_title = "Log\u2081\u2080(Norm. Intensity)"
         elif normalize:
-            y_title = f"Norm. Intensity  {label}{pol_str}"
+            y_title = "Norm. Intensity"
         elif log_y:
-            y_title = f"Log\u2081\u2080(Intensity)  {label}{pol_str}"
+            y_title = "Log\u2081\u2080(Intensity)"
         elif ridge:
-            y_title = f"Offset Intensity  {label}{pol_str}"
+            y_title = "Offset Intensity"
         else:
-            y_title = f"Intensity  {label}{pol_str}"
+            y_title = "Intensity"
         trace_y_axis.setTitleText(y_title)
+
+        # Update the compact title label with current transform info
+        ppm = trace_info.get("ppm", "")
+        pol_str = f" [{polarity[0].upper()}]" if polarity else ""
+        title_label = trace_info.get("title_label")
+        if title_label is not None:
+            title_label.setText(f"<b>m/z {trace_info['mz']:.4f}</b>  {label}{pol_str}  ±{ppm} ppm")
 
         # Update x-axis title exactly as the main chart does
         if sep_mode != "None":
@@ -6486,8 +6585,12 @@ class EICWindow(QWidget):
     def _remove_all_extra_traces(self):
         """Remove all extra EIC trace subplots."""
         for trace in self._extra_eic_traces:
+            container = trace.get("container")
             cv = trace.get("chart_view")
-            if cv is not None:
+            if container is not None:
+                container.setParent(None)
+                container.deleteLater()
+            elif cv is not None:
                 cv.setParent(None)
                 cv.deleteLater()
         self._extra_eic_traces.clear()
@@ -6499,8 +6602,12 @@ class EICWindow(QWidget):
         if index < 0 or index >= len(self._extra_eic_traces):
             return
         trace = self._extra_eic_traces.pop(index)
+        container = trace.get("container")
         cv = trace.get("chart_view")
-        if cv is not None:
+        if container is not None:
+            container.setParent(None)
+            container.deleteLater()
+        elif cv is not None:
             cv.setParent(None)
             cv.deleteLater()
         # Re-equalize (or reset if no more traces remain)
@@ -6598,10 +6705,33 @@ class EICWindow(QWidget):
             formula = self.compound_data.get("ChemicalFormula", "")
             if formula and self._adducts_data is not None and not self._adducts_data.empty:
                 add_trace_menu.addSeparator()
-                # Other adducts of this compound
-                adducts_header = QAction("— Other adducts —", self)
-                adducts_header.setEnabled(False)
-                add_trace_menu.addAction(adducts_header)
+
+                # Determine which adducts are "predefined" for this compound
+                _common_raw = self.compound_data.get("Common_adducts", "") or ""
+                if isinstance(_common_raw, list):
+                    _predefined_adducts = {a.strip() for a in _common_raw if isinstance(a, str)}
+                else:
+                    _predefined_adducts = {a.strip() for a in str(_common_raw).split(",") if a.strip()}
+
+                _bold_font = None  # lazily created
+
+                def _make_adduct_action(adduct_name, mz_val, ppm_val, pol_str, is_predefined):
+                    nonlocal _bold_font
+                    act = QAction(f"{adduct_name}  (m/z {mz_val:.4f})", self)
+                    if is_predefined:
+                        if _bold_font is None:
+                            _bold_font = act.font()
+                            _bold_font.setBold(True)
+                        act.setFont(_bold_font)
+                    act.triggered.connect(
+                        lambda checked=False, _l=adduct_name, _m=mz_val, _p=ppm_val, _pol=pol_str:
+                            self._add_extra_eic_trace(_l, _m, _p, _pol)
+                    )
+                    return act
+
+                ppm = self.defaults.get("mz_tolerance_ppm", 5.0)
+                predefined_actions = []
+                other_actions = []
                 for _, adduct_row in self._adducts_data.iterrows():
                     adduct_name = str(adduct_row.get("Adduct", ""))
                     if adduct_name == self.adduct:
@@ -6609,16 +6739,31 @@ class EICWindow(QWidget):
                     try:
                         mz_val = calculate_mz_from_formula(formula, adduct_name, self._adducts_data)
                         if mz_val > 0:
-                            if adduct_name.endswith("-"):
-                                polarity = "negative"
+                            pol_str = "negative" if adduct_name.endswith("-") else "positive"
+                            is_pred = adduct_name in _predefined_adducts
+                            act = _make_adduct_action(adduct_name, mz_val, ppm, pol_str, is_pred)
+                            if is_pred:
+                                predefined_actions.append(act)
                             else:
-                                polarity = "positive"
-                            act = QAction(f"{adduct_name}  (m/z {mz_val:.4f})", self)
-                            ppm = self.defaults.get("mz_tolerance_ppm", 5.0)
-                            act.triggered.connect(lambda checked=False, _lbl=adduct_name, _mz=mz_val, _ppm=ppm, _pol=polarity: self._add_extra_eic_trace(_lbl, _mz, _ppm, _pol))
-                            add_trace_menu.addAction(act)
+                                other_actions.append(act)
                     except Exception:
                         pass
+
+                if predefined_actions:
+                    predef_header = QAction("— Predefined adducts —", self)
+                    predef_header.setEnabled(False)
+                    add_trace_menu.addAction(predef_header)
+                    for act in predefined_actions:
+                        add_trace_menu.addAction(act)
+
+                if other_actions:
+                    if predefined_actions:
+                        add_trace_menu.addSeparator()
+                    other_header = QAction("— Other adducts —", self)
+                    other_header.setEnabled(False)
+                    add_trace_menu.addAction(other_header)
+                    for act in other_actions:
+                        add_trace_menu.addAction(act)
 
                 # Isotopologs: per-element submenu with values -2,-1,0,1,...n,n+1,n+2
                 try:

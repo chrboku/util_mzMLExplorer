@@ -182,6 +182,39 @@ class FragmentEICWorker(QThread):
             self.error.emit(str(exc))
 
 
+class PrecursorEICWorker(QThread):
+    """Background worker that extracts the MS1 EIC for the precursor m/z.
+
+    Uses *file_manager.extract_eic()* so it benefits from the in-memory cache.
+    Emits ``finished(rt_array, intensity_array)`` on success or
+    ``error(message_str)`` on failure.
+    """
+
+    finished = pyqtSignal(object, object)
+    error = pyqtSignal(str)
+
+    def __init__(self, filepath, file_manager, precursor_mz, polarity=None, ppm=10.0, parent=None):
+        super().__init__(parent)
+        self.filepath = filepath
+        self.file_manager = file_manager
+        self.precursor_mz = float(precursor_mz)
+        self.polarity = polarity
+        self.ppm = float(ppm)
+
+    def run(self):
+        try:
+            tol_da = self.precursor_mz * self.ppm / 1e6
+            rt, intensity = self.file_manager.extract_eic(
+                self.filepath,
+                self.precursor_mz,
+                tol_da,
+                polarity=self.polarity,
+            )
+            self.finished.emit(np.asarray(rt, dtype=float), np.asarray(intensity, dtype=float))
+        except Exception as exc:
+            self.error.emit(str(exc))
+
+
 # ---------------------------------------------------------------------------
 class InteractiveEICChartView(QChartView):
     """QChartView with left-drag pan, right-drag zoom, wheel zoom and
@@ -376,6 +409,11 @@ class MSMSPopupWindow(QWidget):
         self._eic_series = {}  # {frag_mz: QLineSeries}
         self._eic_frag_colors = {}  # {frag_mz: QColor}
         self._eic_worker = None
+
+        # Precursor EIC overlay state (MS1 data for the precursor m/z)
+        self._precursor_eic_rt = None
+        self._precursor_eic_int = None
+        self._precursor_eic_worker = None
 
         self._usi = make_usi(self.spectrum_data, self.filename)
         self.setWindowTitle(f"MSMS Spectrum — {self.filename} | Group: {self.group} | {self._usi}")
@@ -610,12 +648,12 @@ class MSMSPopupWindow(QWidget):
         header = self.table_widget.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         header.setStretchLastSection(True)
-        # Set initial column widths
-        header.resizeSection(0, 120)
-        header.resizeSection(1, 120)
-        header.resizeSection(2, 120)
-        header.resizeSection(3, 200)
-        header.resizeSection(4, 200)
+        # Set initial column widths (compact)
+        header.resizeSection(0, 80)
+        header.resizeSection(1, 90)
+        header.resizeSection(2, 90)
+        header.resizeSection(3, 150)
+        header.resizeSection(4, 150)
 
         # Set minimum height
         self.table_widget.setMinimumHeight(200)
@@ -933,6 +971,27 @@ class MSMSPopupWindow(QWidget):
         self._eic_worker.error.connect(lambda msg: self._eic_status_label.setText(f"Error: {msg}"))
         self._eic_worker.start()
 
+        # Also start precursor MS1 EIC extraction (orange overlay)
+        if precursor_mz > 0 and self.filepath and self.file_manager is not None:
+            if self._precursor_eic_worker is not None:
+                self._precursor_eic_worker.quit()
+                self._precursor_eic_worker.wait()
+            pol_str = None
+            if polarity:
+                pol_str = polarity
+            elif self.adduct:
+                pol_str = "negative" if self.adduct.strip().endswith("-") else "positive"
+            self._precursor_eic_worker = PrecursorEICWorker(
+                filepath=self.filepath,
+                file_manager=self.file_manager,
+                precursor_mz=precursor_mz,
+                polarity=pol_str,
+                ppm=self._eic_ppm_sb.value(),
+                parent=self,
+            )
+            self._precursor_eic_worker.finished.connect(self._on_precursor_eic_ready)
+            self._precursor_eic_worker.start()
+
     def _on_fragment_eic_ready(self, result):
         """Receive extracted EIC data and render the plot."""
         self._eic_data = result
@@ -943,6 +1002,12 @@ class MSMSPopupWindow(QWidget):
             self._eic_status_label.setText(f"{n_frags} fragment EICs | {n_pts} spectra")
         else:
             self._eic_status_label.setText("No matching fragments found in file.")
+        self._draw_fragment_eic_plot()
+
+    def _on_precursor_eic_ready(self, rt_arr, int_arr):
+        """Receive extracted precursor MS1 EIC and overlay it on the fragment EIC panel."""
+        self._precursor_eic_rt = rt_arr
+        self._precursor_eic_int = int_arr
         self._draw_fragment_eic_plot()
 
     # Tab-20 palette as QColor objects (matches matplotlib's default colour cycle)
@@ -1093,6 +1158,29 @@ class MSMSPopupWindow(QWidget):
         self._eic_chart.addSeries(rt_marker)
         rt_marker.attachAxis(self._eic_x_axis)
         rt_marker.attachAxis(self._eic_y_axis)
+
+        # Precursor MS1 EIC overlay — faint orange line, normalised to y_top
+        if self._precursor_eic_rt is not None and len(self._precursor_eic_rt) > 0:
+            prec_rt = self._precursor_eic_rt
+            prec_int = self._precursor_eic_int
+            # Restrict to visible RT window
+            mask = (prec_rt >= rt_min) & (prec_rt <= rt_max)
+            prec_rt_win = prec_rt[mask]
+            prec_int_win = prec_int[mask]
+            if len(prec_rt_win) > 0:
+                peak_prec = float(np.max(prec_int_win)) if np.max(prec_int_win) > 0 else 1.0
+                # Scale precursor EIC so its peak matches y_top (= overlay scale)
+                prec_scaled = prec_int_win / peak_prec * y_top
+                prec_series = QLineSeries()
+                prec_series.setName("Precursor MS1")
+                prec_pen = QPen(QColor(255, 140, 0, 120))  # semi-transparent orange
+                prec_pen.setWidth(2)
+                prec_series.setPen(prec_pen)
+                for rt_val, int_val in zip(prec_rt_win, prec_scaled):
+                    prec_series.append(float(rt_val), float(int_val))
+                self._eic_chart.addSeries(prec_series)
+                prec_series.attachAxis(self._eic_x_axis)
+                prec_series.attachAxis(self._eic_y_axis)
 
         # Update axis ranges
         self._eic_x_axis.setRange(rt_min, rt_max)
@@ -2329,7 +2417,8 @@ class MSMSViewerWindow(QWidget):
         ce_text = _format_collision_energy(ce)
         usi = make_usi(spectrum_data, filename)
         chart.setTitle(
-            f"{usi}\nRT: {spectrum_data['rt']:.2f} min | Precursor: {spectrum_data['precursor_mz']:.4f} | Intensity: {intensity_text}{ce_text}"
+            f"{usi}\nRT: {spectrum_data['rt']:.2f} min"
+            f"\nPrecursor: {spectrum_data['precursor_mz']:.4f} | Intensity: {intensity_text}{ce_text}"
             + (f"\nScan: {spectrum_data['scan_id']}" if spectrum_data.get("scan_id") else "")
             + (f" | Filter: {spectrum_data['filter_string']}" if spectrum_data.get("filter_string") else "")
         )

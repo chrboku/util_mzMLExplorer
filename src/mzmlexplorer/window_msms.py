@@ -74,6 +74,7 @@ class FragmentEICWorker(QThread):
         precursor_mz=None,
         polarity=None,
         precursor_tolerance=0.01,
+        all_precursors=False,
         parent=None,
     ):
         super().__init__(parent)
@@ -85,6 +86,7 @@ class FragmentEICWorker(QThread):
         self.precursor_mz = precursor_mz
         self.polarity = polarity
         self.precursor_tolerance = float(precursor_tolerance)
+        self.all_precursors = all_precursors
 
     def _gather_spectra(self):
         """Return a list of {rt, mz, intensity} dicts for all matching MS2 scans."""
@@ -98,7 +100,7 @@ class FragmentEICWorker(QThread):
                     pmz = spec.get("precursor_mz")
                     if pmz is None:
                         continue
-                    if self.precursor_mz is not None and abs(pmz - self.precursor_mz) > self.precursor_tolerance:
+                    if not self.all_precursors and self.precursor_mz is not None and abs(pmz - self.precursor_mz) > self.precursor_tolerance:
                         continue
                     spec_pol = spec.get("polarity")
                     if self.polarity and spec_pol and spec_pol != self.polarity:
@@ -125,7 +127,7 @@ class FragmentEICWorker(QThread):
                         pmz = spectrum.selected_precursors[0]["mz"] if spectrum.selected_precursors else None
                         if pmz is None:
                             continue
-                        if self.precursor_mz is not None and abs(pmz - self.precursor_mz) > self.precursor_tolerance:
+                        if not self.all_precursors and self.precursor_mz is not None and abs(pmz - self.precursor_mz) > self.precursor_tolerance:
                             continue
                         if self.file_manager is not None:
                             spec_pol = self.file_manager._get_spectrum_polarity(spectrum)
@@ -1754,6 +1756,12 @@ class InteractiveMSMSChartView(QChartView):
             comp_action = menu.addAction("Open in Spectrum Comparator")
             comp_action.triggered.connect(lambda _c=False: open_comp_fn())
 
+        # -- Open in MSMS popup viewer --
+        open_popup_fn = getattr(self, "_open_msms_popup_fn", None)
+        if open_popup_fn is not None:
+            open_popup_action = menu.addAction("Open in MSMS viewer")
+            open_popup_action.triggered.connect(lambda _c=False: open_popup_fn())
+
         menu.exec(event.globalPosition().toPoint())
 
     def _copy_for_massbank(self):
@@ -2104,7 +2112,7 @@ class MSMSViewerWindow(QWidget):
                 grid_layout.addWidget(file_label, start_row, start_col, 1, col_span)
 
                 for col_offset, spectrum_data in enumerate(spectra):
-                    chart_widget = self.create_msms_chart(spectrum_data, filename, group, filepath=filepath)
+                    chart_widget = self.create_msms_chart(spectrum_data, filename, group, filepath=filepath, compact=True)
                     chart_widget.all_similar_spectra = spectra
                     grid_layout.addWidget(chart_widget, start_row + 1, start_col + col_offset)
 
@@ -2297,12 +2305,12 @@ class MSMSViewerWindow(QWidget):
                     hi = QTableWidgetItem(short)
                     if grp_color:
                         c = QColor(grp_color)
-                        c.setAlphaF(0.85)
-                        hi.setBackground(c)
+                        c.setAlpha(255)
+                        hi.setData(Qt.ItemDataRole.BackgroundRole, QBrush(c))
                         # Choose white or black text based on background luminance
                         lum = 0.299 * c.redF() + 0.587 * c.greenF() + 0.114 * c.blueF()
                         text_color = QColor("black") if lum > 0.5 else QColor("white")
-                        hi.setForeground(text_color)
+                        hi.setData(Qt.ItemDataRole.ForegroundRole, QBrush(text_color))
                     fnt = hi.font()
                     fnt.setBold(True)
                     hi.setFont(fnt)
@@ -2337,7 +2345,7 @@ class MSMSViewerWindow(QWidget):
                     if i == j:
                         # Diagonal - same file vs itself: always 1.000 (perfect match)
                         item = QTableWidgetItem("1.000")
-                        item.setBackground(QColor(76, 175, 80, 200))  # Strong Green
+                        item.setData(Qt.ItemDataRole.BackgroundRole, QBrush(QColor(76, 175, 80, 255)))  # Strong Green
                     else:
                         # Off-diagonal - show inter-file median similarity with color coding
                         key1 = (file1, file2)
@@ -2361,13 +2369,13 @@ class MSMSViewerWindow(QWidget):
 
                         # Use color intensity to indicate median similarity level
                         if median_sim >= 0.8:
-                            item.setBackground(QColor(76, 175, 80, 200))  # Strong Green
+                            item.setData(Qt.ItemDataRole.BackgroundRole, QBrush(QColor(76, 175, 80, 255)))  # Strong Green
                         elif median_sim >= 0.6:
-                            item.setBackground(QColor(255, 193, 7, 200))  # Strong Amber
+                            item.setData(Qt.ItemDataRole.BackgroundRole, QBrush(QColor(255, 193, 7, 255)))  # Strong Amber
                         elif median_sim >= 0.4:
-                            item.setBackground(QColor(255, 152, 0, 200))  # Strong Orange
+                            item.setData(Qt.ItemDataRole.BackgroundRole, QBrush(QColor(255, 152, 0, 255)))  # Strong Orange
                         else:
-                            item.setBackground(QColor(244, 67, 54, 200))  # Strong Red
+                            item.setData(Qt.ItemDataRole.BackgroundRole, QBrush(QColor(244, 67, 54, 255)))  # Strong Red
 
                     item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                     item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
@@ -2404,7 +2412,7 @@ class MSMSViewerWindow(QWidget):
 
         return overview_widget
 
-    def create_msms_chart(self, spectrum_data, filename, group, filepath=None):
+    def create_msms_chart(self, spectrum_data, filename, group, filepath=None, compact=False):
         """Create a chart widget for a single MSMS spectrum"""
         # Create chart
         chart = QChart()
@@ -2417,7 +2425,7 @@ class MSMSViewerWindow(QWidget):
         ce_text = _format_collision_energy(ce)
         usi = make_usi(spectrum_data, filename)
         chart.setTitle(
-            f"{usi}\nRT: {spectrum_data['rt']:.2f} min"
+            f"RT: {spectrum_data['rt']:.2f} min"
             f"\nPrecursor: {spectrum_data['precursor_mz']:.4f} | Intensity: {intensity_text}{ce_text}"
             + (f"\nScan: {spectrum_data['scan_id']}" if spectrum_data.get("scan_id") else "")
             + (f" | Filter: {spectrum_data['filter_string']}" if spectrum_data.get("filter_string") else "")
@@ -2477,6 +2485,16 @@ class MSMSViewerWindow(QWidget):
         # Use global m/z range for consistent x-axis limits
         x_axis.setRange(self.global_mz_min, self.global_mz_max)
 
+        # In compact (overview) mode, hide axis labels and ticks to save space
+        if compact:
+            x_axis.setLabelsVisible(False)
+            y_axis.setLabelsVisible(False)
+            x_axis.setTitleText("")
+            y_axis.setTitleText("")
+            x_axis.setGridLineVisible(False)
+            y_axis.setGridLineVisible(False)
+            chart.setMargins(QMargins(2, 2, 2, 2))
+
         # Create interactive chart view with dynamic sizing
         chart_view = InteractiveMSMSChartView(chart)
         chart_view.setMinimumSize(250, 150)  # Reduced minimum size
@@ -2494,6 +2512,7 @@ class MSMSViewerWindow(QWidget):
         chart_view.file_manager = self.file_manager
         chart_view._usi = usi
         chart_view._open_comparison_fn = lambda s=spectrum_data, fn=filename: self._open_comparison_from_viewer(s, fn)
+        chart_view._open_msms_popup_fn = lambda s=spectrum_data, fn=filename, g=group, fp=filepath: self._open_msms_popup_for(s, fn, g, fp)
         # all_similar_spectra will be set by the caller
         chart.legend().setVisible(False)
 
@@ -2693,6 +2712,13 @@ class MSMSViewerWindow(QWidget):
         win.destroyed.connect(lambda: self._open_popups.remove(win) if win in self._open_popups else None)
         win.show()
 
+    def _get_spectra_for_file(self, filename: str) -> list:
+        """Return the spectra list for a given filename from processed_data, or []."""
+        for _, file_data in self.processed_data:
+            if file_data["filename"] == filename:
+                return file_data["spectra"]
+        return []
+
     def _open_comparison_from_viewer(self, spectrum_data, filename):
         """Open a USISpectrumComparisonWindow pre-populated with one spectrum."""
         if not hasattr(self, "_open_popups"):
@@ -2701,6 +2727,27 @@ class MSMSViewerWindow(QWidget):
             spectrum_a=spectrum_data,
             filename_a=filename,
             file_manager=self.file_manager,
+        )
+        self._open_popups.append(win)
+        win.destroyed.connect(lambda: self._open_popups.remove(win) if win in self._open_popups else None)
+        win.show()
+
+    def _open_msms_popup_for(self, spectrum_data, filename, group, filepath=None):
+        """Open an MSMSPopupWindow for a single spectrum from the overview grid."""
+        if not hasattr(self, "_open_popups"):
+            self._open_popups = []
+        win = MSMSPopupWindow(
+            spectrum_data,
+            filename,
+            group,
+            None,
+            compound_formula=self.compound_formula,
+            adduct=self.adduct,
+            adduct_info=self.adduct_info,
+            compound_smiles=self.compound_smiles,
+            filepath=filepath,
+            file_manager=self.file_manager,
+            all_similar_spectra=self._get_spectra_for_file(filename),
         )
         self._open_popups.append(win)
         win.destroyed.connect(lambda: self._open_popups.remove(win) if win in self._open_popups else None)

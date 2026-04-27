@@ -3376,7 +3376,7 @@ class UnifiedOptionsDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Options")
         self.setModal(True)
-        self.setMinimumSize(600, 500)
+        self.setMinimumSize(780, 500)
 
         self.eic_defaults = eic_defaults.copy()
         self.memory_settings = memory_settings.copy()
@@ -3389,7 +3389,7 @@ class UnifiedOptionsDialog(QDialog):
 
         # Tab widget — tabs are shown horizontally (default Qt behaviour)
         tab_widget = QTabWidget()
-        tab_widget.setTabPosition(QTabWidget.TabPosition.North)
+        tab_widget.setTabPosition(QTabWidget.TabPosition.West)
         tab_widget.setDocumentMode(False)
 
         def _make_scroll_tab(content_widget):

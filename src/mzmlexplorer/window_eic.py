@@ -1246,6 +1246,16 @@ class EICWindow(QWidget):
         self.extract_btn.clicked.connect(self.extract_eic_data)
         layout.addRow(self.extract_btn)
 
+        # EIC columns spinbox
+        self._eic_num_columns = 1
+        self._extra_traces_wrapper = None
+        self.eic_columns_spin = NoScrollSpinBox()
+        self.eic_columns_spin.setRange(1, 4)
+        self.eic_columns_spin.setValue(1)
+        self.eic_columns_spin.setSuffix(" cols")
+        self.eic_columns_spin.valueChanged.connect(self._on_eic_columns_changed)
+        layout.addRow("EIC columns:", self.eic_columns_spin)
+
         return group
 
     def _on_rt_unit_changed(self, unit: str) -> None:
@@ -2035,6 +2045,7 @@ class EICWindow(QWidget):
         self.peak_area_table.horizontalHeader().setStretchLastSection(False)
         self.peak_area_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         self.peak_area_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.peak_area_table.selectionModel().selectionChanged.connect(self._on_peak_table_selection_changed)
 
         peak_area_layout.addWidget(self.peak_area_table)
 
@@ -2917,6 +2928,49 @@ class EICWindow(QWidget):
         self.peak_area_table.setSortingEnabled(True)
         # Auto-resize columns to fit content
         self.peak_area_table.resizeColumnsToContents()
+
+    def _on_peak_table_selection_changed(self):
+        """Highlight chart series for files selected in the peak area table."""
+        selected_rows = self.peak_area_table.selectionModel().selectedRows()
+        if not selected_rows:
+            # Restore all series to full opacity
+            for series in self.chart.series():
+                if series.property("is_decoration"):
+                    continue
+                color = series.color()
+                color.setAlphaF(1.0)
+                series.setColor(color)
+                pen = series.pen()
+                pen_color = pen.color()
+                pen_color.setAlphaF(1.0)
+                pen.setColor(pen_color)
+                series.setPen(pen)
+            return
+
+        # Collect sample names from selected rows
+        selected_names = set()
+        for idx in selected_rows:
+            item = self.peak_area_table.item(idx.row(), 1)
+            if item:
+                selected_names.add(item.text())
+
+        # Adjust opacity: selected = full, others = dim
+        for series in self.chart.series():
+            if series.property("is_decoration"):
+                continue
+            sample_fn = series.property("sample_filename") or series.name() or ""
+            # Table stores names without extension; strip extension for comparison
+            base = sample_fn.rsplit(".", 1)[0] if "." in sample_fn else sample_fn
+            is_selected = base in selected_names
+            alpha = 1.0 if is_selected else 0.15
+            color = series.color()
+            color.setAlphaF(alpha)
+            series.setColor(color)
+            pen = series.pen()
+            pen_color = pen.color()
+            pen_color.setAlphaF(alpha)
+            pen.setColor(pen_color)
+            series.setPen(pen)
 
     def _update_summary_stats_table(self, table_data):
         """Update the summary statistics table with group-level statistics"""
@@ -5139,12 +5193,14 @@ class EICWindow(QWidget):
         parts = []
         if mz:
             parts.append(f"<b>m/z {mz:.4f}</b>")
-        if adduct:
-            parts.append(f"adduct: {adduct}")
-        if formula:
-            parts.append(f"formula: {formula}")
         if ppm is not None:
             parts.append(f"±{ppm} ppm")
+        if polarity:
+            parts.append(f"[{polarity}]")
+        if formula:
+            parts.append(f"formula: {formula}")
+        if adduct:
+            parts.append(f"adduct: {adduct}")
         self._main_chart_title_label.setText("  ".join(parts))
 
     def reset_x_axis(self):
@@ -6356,7 +6412,7 @@ class EICWindow(QWidget):
 
         # Build compact info label above this trace chart
         pol_str = f" [{polarity[0].upper() if polarity else '?'}]"
-        trace_title_label = QLabel(f"<b>m/z {target_mz:.4f}</b>  {label}{pol_str}  ±{ppm} ppm")
+        trace_title_label = QLabel(f"<b>m/z {target_mz:.4f}</b>  ±{ppm} ppm{pol_str}  {label}")
         trace_title_label.setStyleSheet(
             "QLabel { font-size: 11px; color: #333; padding: 1px 6px 0px 6px; background: transparent; }"
         )
@@ -6390,20 +6446,14 @@ class EICWindow(QWidget):
         # Populate chart with data
         self._update_extra_trace_chart(trace_info)
 
-        # Add the container (label + chart) to the charts splitter
-        self._eic_charts_splitter.addWidget(trace_container)
-
         # Move legend to Top automatically when the user adds the first extra trace
         # and the legend is currently on the Right (it would overlap extra charts).
         if len(self._extra_eic_traces) == 1 and hasattr(self, "legend_position_combo"):
             if self.legend_position_combo.currentText() == "Right":
                 self.legend_position_combo.setCurrentText("Top")
 
-        # Equalise heights: give each pane roughly equal space
-        n = self._eic_charts_splitter.count()
-        if n > 1:
-            total = 800  # nominal pixels
-            self._eic_charts_splitter.setSizes([total // n] * n)
+        # Place the container(s) in the layout (respects multi-column setting)
+        self._rearrange_extra_traces()
 
         # Sync x-axis of the new trace to the current main chart range
         if self.chart.axes(Qt.Orientation.Horizontal):
@@ -6469,7 +6519,7 @@ class EICWindow(QWidget):
         pol_str = f" [{polarity[0].upper()}]" if polarity else ""
         title_label = trace_info.get("title_label")
         if title_label is not None:
-            title_label.setText(f"<b>m/z {trace_info['mz']:.4f}</b>  {label}{pol_str}  ±{ppm} ppm")
+            title_label.setText(f"<b>m/z {trace_info['mz']:.4f}</b>  ±{ppm} ppm{pol_str}  {label}")
 
         # Update x-axis title exactly as the main chart does
         if sep_mode != "None":
@@ -6594,6 +6644,11 @@ class EICWindow(QWidget):
                 cv.setParent(None)
                 cv.deleteLater()
         self._extra_eic_traces.clear()
+        # Remove any grid wrapper from the splitter
+        if hasattr(self, "_extra_traces_wrapper") and self._extra_traces_wrapper is not None:
+            self._extra_traces_wrapper.setParent(None)
+            self._extra_traces_wrapper.deleteLater()
+            self._extra_traces_wrapper = None
         # Reset main chart margins now that there are no extra traces
         self.chart.setMargins(QMargins(0, 0, 0, 0))
 
@@ -6613,10 +6668,76 @@ class EICWindow(QWidget):
         # Re-equalize (or reset if no more traces remain)
         if not self._extra_eic_traces:
             self.chart.setMargins(QMargins(0, 0, 0, 0))
+            # Remove any grid wrapper too
+            if hasattr(self, "_extra_traces_wrapper") and self._extra_traces_wrapper is not None:
+                self._extra_traces_wrapper.setParent(None)
+                self._extra_traces_wrapper.deleteLater()
+                self._extra_traces_wrapper = None
         else:
+            self._rearrange_extra_traces()
             from PyQt6.QtCore import QTimer
 
             QTimer.singleShot(100, self._equalize_y_axis_widths)
+
+    def _on_eic_columns_changed(self, value: int):
+        """Called when the EIC columns spinbox changes."""
+        self._eic_num_columns = value
+        self._rearrange_extra_traces()
+
+    def _rearrange_extra_traces(self):
+        """Rearrange extra EIC trace containers according to _eic_num_columns.
+
+        For ncols == 1: containers are added directly to the splitter (original behaviour).
+        For ncols > 1: a single grid wrapper widget is added to the splitter and
+        containers are arranged in a QGridLayout inside it.
+        """
+        from PyQt6.QtWidgets import QGridLayout
+
+        ncols = getattr(self, "_eic_num_columns", 1)
+
+        # Remove all trace containers from their current parent without deleting them
+        for trace in self._extra_eic_traces:
+            container = trace.get("container")
+            if container is not None:
+                container.setParent(None)
+
+        # Remove any existing grid wrapper from the splitter
+        if hasattr(self, "_extra_traces_wrapper") and self._extra_traces_wrapper is not None:
+            self._extra_traces_wrapper.setParent(None)
+            self._extra_traces_wrapper.deleteLater()
+            self._extra_traces_wrapper = None
+
+        if not self._extra_eic_traces:
+            return
+
+        if ncols == 1:
+            # Add each container directly to the splitter (original behaviour)
+            for trace in self._extra_eic_traces:
+                container = trace.get("container")
+                if container is not None:
+                    self._eic_charts_splitter.addWidget(container)
+                    container.show()
+        else:
+            # Build a grid wrapper widget and arrange containers inside
+            wrapper = QWidget()
+            grid = QGridLayout(wrapper)
+            grid.setContentsMargins(0, 0, 0, 0)
+            grid.setSpacing(2)
+            for idx, trace in enumerate(self._extra_eic_traces):
+                row = idx // ncols
+                col = idx % ncols
+                container = trace.get("container")
+                if container is not None:
+                    grid.addWidget(container, row, col)
+                    container.show()
+            self._extra_traces_wrapper = wrapper
+            self._eic_charts_splitter.addWidget(wrapper)
+
+        # Equalise splitter pane heights
+        n = self._eic_charts_splitter.count()
+        if n > 1:
+            total = 800
+            self._eic_charts_splitter.setSizes([total // n] * n)
 
     def show_context_menu(self, rt_value: float, position: QPointF, source_chart_view=None):
         """Show context menu at the specified position.

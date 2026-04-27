@@ -6782,14 +6782,14 @@ class EICWindow(QWidget):
                     # Equalize column widths
                     n_cols_this_row = len([c for c in row_containers if c is not None])
                     if n_cols_this_row > 0:
-                        w = 1200 // n_cols_this_row
+                        w = _SPLITTER_REFERENCE_WIDTH // n_cols_this_row
                         h_splitter.setSizes([w] * n_cols_this_row)
                     v_splitter.addWidget(h_splitter)
 
             # Equalize row heights
             n_actual_rows = v_splitter.count()
             if n_actual_rows > 0:
-                h = 800 // n_actual_rows
+                h = _SPLITTER_REFERENCE_HEIGHT // n_actual_rows
                 v_splitter.setSizes([h] * n_actual_rows)
 
             self._extra_traces_wrapper = v_splitter
@@ -6798,7 +6798,7 @@ class EICWindow(QWidget):
         # Equalise outer splitter pane heights
         n = self._eic_charts_splitter.count()
         if n > 1:
-            total = 800
+            total = _SPLITTER_REFERENCE_HEIGHT
             self._eic_charts_splitter.setSizes([total // n] * n)
 
     def show_context_menu(self, rt_value: float, position: QPointF, source_chart_view=None):
@@ -8010,6 +8010,10 @@ class EICWindow(QWidget):
 
 # Number of seconds threshold for warning about distant MSMS spectra
 _MSMS_RT_WARNING_THRESHOLD_S = 5.0
+
+# Default reference height/width (in pixels) used when equalising splitter panes
+_SPLITTER_REFERENCE_HEIGHT = 800
+_SPLITTER_REFERENCE_WIDTH = 1200
 
 # Distinct colors cycled for extra EIC traces (colorblind-friendly)
 _EXTRA_TRACE_COLORS = [

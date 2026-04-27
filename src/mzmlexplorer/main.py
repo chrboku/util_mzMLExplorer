@@ -35,13 +35,15 @@ from PyQt6.QtWidgets import (
     QAbstractItemView,
     QWidgetAction,
     QTabWidget,
-    QProxyStyle,
     QStyleOptionTab,
-    QTabBar
+    QTabBar,
+    QStylePainter,
+    QStyle
 )
-from PyQt6.QtCore import Qt, QTimer, QSettings, QEvent
+from PyQt6.QtCore import Qt, QTimer, QSettings, QEvent, QSize, QRect
 from PyQt6.QtGui import (
     QFont,
+    QFontMetrics,
     QAction,
     QDragEnterEvent,
     QDropEvent,
@@ -3372,29 +3374,42 @@ ggplot(peak_data, aes(x = group_name, y = peak_area)) +
                 QMessageBox.critical(self, "Save Error", f"Failed to save R code:\n{str(e)}")
 
 
-class _HorizontalTabStyle(QProxyStyle):
-    """ProxyStyle that forces horizontal (non-rotated) text on West/East QTabBar tabs.
+class RotatedTabBar(QTabBar):
+    """A QTabBar that draws tab text horizontally for West-positioned tabs."""
 
-    Without this override Qt rotates the tab label 90° when the tab bar is
-    positioned on the left (West) side, making the text hard to read.
-    """
+    _H_PADDING = 10  # px – left/right padding inside tab
+    _V_PADDING = 6   # px – top/bottom padding
 
-    def sizeFromContents(self, ct, option, size, widget=None):
-        s = super().sizeFromContents(ct, option, size, widget)
-        if ct == self.ContentsType.CT_TabBarTab:
-            # The default for West/East transposes width/height.  Un-transpose
-            # so the tab is wide (to fit horizontal text) and short.
-            s.transpose()
-        return s
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setExpanding(False)
 
-    def drawControl(self, element, option, painter, widget=None):
-        if element == self.ControlElement.CE_TabBarTabLabel:
-            # Copy the option and override the shape to RoundedNorth so Qt draws
-            # the label text horizontally (without the 90° rotation it applies
-            # for West-positioned tabs).
-            option = QStyleOptionTab(option)
-            option.shape = QTabBar.Shape.RoundedNorth
-        super().drawControl(element, option, painter, widget)
+    def tabSizeHint(self, index):
+        fm = QFontMetrics(self.font())
+        text = self.tabText(index)
+        w = fm.horizontalAdvance(text) + 2 * self._H_PADDING
+        h = fm.height() + 2 * self._V_PADDING
+        return QSize(w, h)
+
+    def paintEvent(self, event):
+        painter = QStylePainter(self)
+        for i in range(self.count()):
+            opt = QStyleOptionTab()
+            self.initStyleOption(opt, i)
+            # Draw tab background without text
+            opt.text = ""
+            painter.drawControl(QStyle.ControlElement.CE_TabBarTab, opt)
+            # Draw text horizontally
+            painter.save()
+            tab_rect = self.tabRect(i)
+            text_rect = QRect(
+                tab_rect.left() + self._H_PADDING,
+                tab_rect.top(),
+                tab_rect.width() - 2 * self._H_PADDING,
+                tab_rect.height(),
+            )
+            painter.drawText(text_rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, self.tabText(i))
+            painter.restore()
 
 
 class UnifiedOptionsDialog(QDialog):
@@ -3416,13 +3431,11 @@ class UnifiedOptionsDialog(QDialog):
         layout = QVBoxLayout(self)
 
         # Tab widget — tabs on the left side with horizontal (non-rotated) text
+        self._tab_bar = RotatedTabBar()
         tab_widget = QTabWidget()
+        tab_widget.setTabBar(self._tab_bar)
         tab_widget.setTabPosition(QTabWidget.TabPosition.West)
         tab_widget.setDocumentMode(False)
-        # Keep a Python reference so the style object is not garbage-collected
-        # (Qt does NOT take ownership of the style set via setStyle).
-        self._tab_style = _HorizontalTabStyle()
-        tab_widget.tabBar().setStyle(self._tab_style)
 
         def _make_scroll_tab(content_widget):
             """Wrap *content_widget* in a scroll area suitable for a tab page."""

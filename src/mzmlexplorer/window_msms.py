@@ -571,8 +571,7 @@ class MSMSPopupWindow(QWidget):
 
         copy_massbank_btn = QPushButton("Copy for MassBank")
         copy_massbank_btn.setToolTip(
-            "Copy the MSMS spectrum as a MassBank peak list.\n"
-            "Format: one fragment per line — m/z value, space, relative intensity (scaled to 100 for the base peak)."
+            "Copy the MSMS spectrum as a MassBank peak list.\nFormat: one fragment per line — m/z value, space, relative intensity (scaled to 100 for the base peak)."
         )
         copy_massbank_btn.clicked.connect(self._copy_for_massbank)
         copy_layout.addWidget(copy_massbank_btn)
@@ -2188,7 +2187,7 @@ class MSMSViewerWindow(QWidget):
 
             # Add single-spectrum files in groups of SINGLE_SPECTRA_PER_ROW
             for batch_start in range(0, len(single_spectra_files), SINGLE_SPECTRA_PER_ROW):
-                batch = single_spectra_files[batch_start: batch_start + SINGLE_SPECTRA_PER_ROW]
+                batch = single_spectra_files[batch_start : batch_start + SINGLE_SPECTRA_PER_ROW]
                 for col_offset, (filepath, file_data) in enumerate(batch):
                     _add_file_to_grid(filepath, file_data, row, col_offset, 1)
                 row += 2

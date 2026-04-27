@@ -5283,9 +5283,7 @@ class EICWindow(QWidget):
 
         # Build a compact title label above the main chart
         self._main_chart_title_label = QLabel()
-        self._main_chart_title_label.setStyleSheet(
-            "QLabel { font-size: 11px; color: #333; padding: 1px 6px 0px 6px; background: transparent; }"
-        )
+        self._main_chart_title_label.setStyleSheet("QLabel { font-size: 11px; color: #333; padding: 1px 6px 0px 6px; background: transparent; }")
         self._main_chart_title_label.setTextFormat(Qt.TextFormat.RichText)
         self._update_main_chart_title()
 
@@ -6538,9 +6536,7 @@ class EICWindow(QWidget):
         # Build compact info label above this trace chart
         pol_str = f" [{polarity[0].upper() if polarity else '?'}]"
         trace_title_label = QLabel(f"<b>m/z {target_mz:.4f}</b>  ±{ppm} ppm{pol_str}  {label}")
-        trace_title_label.setStyleSheet(
-            "QLabel { font-size: 11px; color: #333; padding: 1px 6px 0px 6px; background: transparent; }"
-        )
+        trace_title_label.setStyleSheet("QLabel { font-size: 11px; color: #333; padding: 1px 6px 0px 6px; background: transparent; }")
         trace_title_label.setTextFormat(Qt.TextFormat.RichText)
 
         # Wrap label + chart_view in a container
@@ -6854,7 +6850,7 @@ class EICWindow(QWidget):
             n_rows = (len(containers) + ncols - 1) // ncols
 
             for r in range(n_rows):
-                row_containers = containers[r * ncols: (r + 1) * ncols]
+                row_containers = containers[r * ncols : (r + 1) * ncols]
                 if len(row_containers) == 1:
                     # Single item in a row — no need for a nested splitter
                     c = row_containers[0]
@@ -7008,10 +7004,7 @@ class EICWindow(QWidget):
                                     _bold_font = act.font()
                                     _bold_font.setBold(True)
                                 act.setFont(_bold_font)
-                            act.triggered.connect(
-                                lambda checked=False, _l=adduct_name, _m=mz_val, _p=ppm, _pol=pol_str:
-                                    self._add_extra_eic_trace(_l, _m, _p, _pol)
-                            )
+                            act.triggered.connect(lambda checked=False, _l=adduct_name, _m=mz_val, _p=ppm, _pol=pol_str: self._add_extra_eic_trace(_l, _m, _p, _pol))
                             if is_pred:
                                 predefined_actions.append(act)
                             else:
@@ -7040,11 +7033,11 @@ class EICWindow(QWidget):
                     parsed = parse_molecular_formula(formula)
                     # Isotopic mass shifts for common elements (monoisotopic spacing in Da)
                     _ISO_MASSES = {
-                        "C": 1.003355,   # 13C - 12C
-                        "N": 0.997035,   # 15N - 14N
-                        "O": 2.004244,   # 18O - 16O (most common heavy isotope)
-                        "S": 1.995796,   # 34S - 32S
-                        "H": 1.006277,   # 2H - 1H
+                        "C": 1.003355,  # 13C - 12C
+                        "N": 0.997035,  # 15N - 14N
+                        "O": 2.004244,  # 18O - 16O (most common heavy isotope)
+                        "S": 1.995796,  # 34S - 32S
+                        "H": 1.006277,  # 2H - 1H
                     }
                     adduct_row_cur = self._adducts_data[self._adducts_data["Adduct"] == self.adduct]
                     if not adduct_row_cur.empty and any(el in parsed for el in _ISO_MASSES):

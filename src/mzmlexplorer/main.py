@@ -38,7 +38,7 @@ from PyQt6.QtWidgets import (
     QStyleOptionTab,
     QTabBar,
     QStylePainter,
-    QStyle
+    QStyle,
 )
 from PyQt6.QtCore import Qt, QTimer, QSettings, QEvent, QSize, QRect
 from PyQt6.QtGui import (
@@ -3378,7 +3378,7 @@ class RotatedTabBar(QTabBar):
     """A QTabBar that draws tab text horizontally for West-positioned tabs."""
 
     _H_PADDING = 10  # px – left/right padding inside tab
-    _V_PADDING = 6   # px – top/bottom padding
+    _V_PADDING = 6  # px – top/bottom padding
 
     def __init__(self, parent=None):
         super().__init__(parent)

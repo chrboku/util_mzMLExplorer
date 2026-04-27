@@ -35,6 +35,9 @@ from PyQt6.QtWidgets import (
     QAbstractItemView,
     QWidgetAction,
     QTabWidget,
+    QProxyStyle,
+    QStyleOptionTab,
+    QTabBar,
 )
 from PyQt6.QtCore import Qt, QTimer, QSettings, QEvent
 from PyQt6.QtGui import (
@@ -3369,6 +3372,31 @@ ggplot(peak_data, aes(x = group_name, y = peak_area)) +
                 QMessageBox.critical(self, "Save Error", f"Failed to save R code:\n{str(e)}")
 
 
+class _HorizontalTabStyle(QProxyStyle):
+    """ProxyStyle that forces horizontal (non-rotated) text on West/East QTabBar tabs.
+
+    Without this override Qt rotates the tab label 90° when the tab bar is
+    positioned on the left (West) side, making the text hard to read.
+    """
+
+    def sizeFromContents(self, ct, option, size, widget=None):
+        s = super().sizeFromContents(ct, option, size, widget)
+        if ct == self.ContentsType.CT_TabBarTab:
+            # The default for West/East transposes width/height.  Un-transpose
+            # so the tab is wide (to fit horizontal text) and short.
+            s.transpose()
+        return s
+
+    def drawControl(self, element, option, painter, widget=None):
+        if element == self.ControlElement.CE_TabBarTabLabel:
+            # Copy the option and override the shape to RoundedNorth so Qt draws
+            # the label text horizontally (without the 90° rotation it applies
+            # for West-positioned tabs).
+            option = QStyleOptionTab(option)
+            option.shape = QTabBar.Shape.RoundedNorth
+        super().drawControl(element, option, painter, widget)
+
+
 class UnifiedOptionsDialog(QDialog):
     """Unified dialog for all application options with collapsible sections"""
 
@@ -3387,10 +3415,11 @@ class UnifiedOptionsDialog(QDialog):
         """Initialize the dialog UI with a tab control (one tab per settings category)."""
         layout = QVBoxLayout(self)
 
-        # Tab widget — tabs are shown horizontally (default Qt behaviour)
+        # Tab widget — tabs on the left side with horizontal (non-rotated) text
         tab_widget = QTabWidget()
         tab_widget.setTabPosition(QTabWidget.TabPosition.West)
         tab_widget.setDocumentMode(False)
+        tab_widget.tabBar().setStyle(_HorizontalTabStyle())
 
         def _make_scroll_tab(content_widget):
             """Wrap *content_widget* in a scroll area suitable for a tab page."""

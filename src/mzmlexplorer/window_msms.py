@@ -42,10 +42,57 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QPointF, QMargins
 from PyQt6.QtCharts import QChart, QChartView, QLineSeries, QValueAxis
-from PyQt6.QtGui import QPen, QColor, QPainter, QMouseEvent, QAction, QBrush
+from PyQt6.QtGui import QPen, QColor, QPainter, QMouseEvent, QAction, QBrush, QFont
 from .window_shared import CollapsibleBox, ANNOTATION_COLOR_PRESETS, BarDelegate, NumericTableWidgetItem, NoScrollSpinBox, NoScrollDoubleSpinBox
 from .utils import calculate_cosine_similarity, calculate_similarity_statistics, make_usi
 from .FormulaTools import FragmentAnnotator
+
+
+class _ColoredHeaderView(QHeaderView):
+    """QHeaderView subclass that reliably renders per-section background colours.
+
+    The default Qt style ignores ``BackgroundRole`` / ``ForegroundRole`` on
+    header items in most platform themes.  This subclass reads those roles
+    from the model and paints them explicitly in ``paintSection``.
+    """
+
+    def __init__(self, orientation, parent=None):
+        super().__init__(orientation, parent)
+        self.setSectionsClickable(True)
+
+    def paintSection(self, painter, rect, logical_index):
+        if not rect.isValid():
+            return
+        bg = self.model().headerData(logical_index, self.orientation(), Qt.ItemDataRole.BackgroundRole)
+        fg = self.model().headerData(logical_index, self.orientation(), Qt.ItemDataRole.ForegroundRole)
+        font_data = self.model().headerData(logical_index, self.orientation(), Qt.ItemDataRole.FontRole)
+        text = self.model().headerData(logical_index, self.orientation(), Qt.ItemDataRole.DisplayRole)
+
+        if not (isinstance(bg, QBrush) and bg.color().alpha() > 0):
+            # No custom background — use platform default
+            super().paintSection(painter, rect, logical_index)
+            return
+
+        painter.save()
+        # Background fill
+        painter.fillRect(rect, bg)
+        # Subtle separator lines
+        sep_color = QColor(0, 0, 0, 40)
+        painter.setPen(QPen(sep_color))
+        painter.drawLine(rect.right(), rect.top(), rect.right(), rect.bottom())
+        painter.drawLine(rect.left(), rect.bottom(), rect.right(), rect.bottom())
+        # Text
+        pen_color = fg.color() if isinstance(fg, QBrush) else QColor("black")
+        painter.setPen(QPen(pen_color))
+        if isinstance(font_data, QFont):
+            painter.setFont(font_data)
+        if text:
+            painter.drawText(
+                rect,
+                Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter,
+                str(text),
+            )
+        painter.restore()
 
 
 class FragmentEICWorker(QThread):
@@ -943,8 +990,20 @@ class MSMSPopupWindow(QWidget):
         return panel
 
     def _start_fragment_eic_extraction(self):
-        """Start background extraction of EIC traces for all fragments."""
-        mz_array = np.array(self.spectrum_data["mz"], dtype=float)
+        """Start background extraction of EIC traces for all fragments.
+
+        Collects fragment m/z values from the current (top) spectrum AND from
+        all similar spectra so that selecting a fragment not present in the
+        top spectrum still shows its EIC trace.
+        """
+        # Gather all unique fragment m/z values across all similar spectra
+        mz_set = set(float(m) for m in self.spectrum_data.get("mz", []))
+        if self.all_similar_spectra:
+            for sp in self.all_similar_spectra:
+                for m in sp.get("mz", []):
+                    mz_set.add(float(m))
+        mz_array = np.array(sorted(mz_set), dtype=float)
+
         if len(mz_array) == 0:
             self._eic_status_label.setText("No fragments to show.")
             return
@@ -2295,6 +2354,17 @@ class MSMSViewerWindow(QWidget):
         if len(files) > 1:
             inter_table = QTableWidget(len(files), len(files))
 
+            # Replace the default header views with _ColoredHeaderView so
+            # BackgroundRole / ForegroundRole data is reliably painted.
+            h_header = _ColoredHeaderView(Qt.Orientation.Horizontal, inter_table)
+            h_header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+            h_header.setDefaultSectionSize(70)
+            inter_table.setHorizontalHeader(h_header)
+
+            v_header = _ColoredHeaderView(Qt.Orientation.Vertical, inter_table)
+            v_header.setDefaultSectionSize(18)
+            inter_table.setVerticalHeader(v_header)
+
             # Set coloured header items per group
             for idx, fname in enumerate(files):
                 grp = file_group.get(fname, "Unknown")
@@ -2321,11 +2391,6 @@ class MSMSViewerWindow(QWidget):
 
             inter_table.setMinimumHeight(min(120, 24 + len(files) * 20))
             inter_table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-
-            # Set table properties for better display
-            inter_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
-            inter_table.horizontalHeader().setDefaultSectionSize(70)
-            inter_table.verticalHeader().setDefaultSectionSize(18)
 
             # Enable context menu
             inter_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)

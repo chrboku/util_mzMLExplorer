@@ -2004,6 +2004,9 @@ class EICWindow(QWidget):
 
     def create_boxplot_widget(self):
         """Create the tabbed widget for boxplots and peak area table"""
+        # Registry of (table, sample_name_col) pairs for EIC highlight
+        self._peak_highlight_tables = []
+
         # Create the main tabbed widget
         self.boxplot_widget = QTabWidget()
 
@@ -2045,6 +2048,8 @@ class EICWindow(QWidget):
         self.peak_area_table.horizontalHeader().setStretchLastSection(False)
         self.peak_area_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         self.peak_area_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        # Register table for EIC highlighting (sample name is in column 1)
+        self._peak_highlight_tables.append((self.peak_area_table, 1))
         self.peak_area_table.selectionModel().selectionChanged.connect(self._on_peak_table_selection_changed)
 
         peak_area_layout.addWidget(self.peak_area_table)
@@ -2146,6 +2151,9 @@ class EICWindow(QWidget):
         self.mz_sample_table.horizontalHeader().setStretchLastSection(False)
         self.mz_sample_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         self.mz_sample_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        # Register table for EIC highlighting (sample name is in column 1)
+        self._peak_highlight_tables.append((self.mz_sample_table, 1))
+        self.mz_sample_table.selectionModel().selectionChanged.connect(self._on_peak_table_selection_changed)
 
         # Compact appearance — stylesheet forces pixel font on every cell
         self.mz_sample_table.verticalHeader().setDefaultSectionSize(20)
@@ -2239,6 +2247,9 @@ class EICWindow(QWidget):
         self.rt_sample_table.horizontalHeader().setStretchLastSection(False)
         self.rt_sample_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         self.rt_sample_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        # Register table for EIC highlighting (sample name is in column 1)
+        self._peak_highlight_tables.append((self.rt_sample_table, 1))
+        self.rt_sample_table.selectionModel().selectionChanged.connect(self._on_peak_table_selection_changed)
         self.rt_sample_table.verticalHeader().setDefaultSectionSize(20)
         self.rt_sample_table.verticalHeader().setMinimumSectionSize(16)
         rt_sample_layout.addWidget(self.rt_sample_table)
@@ -2406,6 +2417,9 @@ class EICWindow(QWidget):
         self.calibration_table.verticalHeader().setDefaultSectionSize(20)
         self.calibration_table.verticalHeader().setMinimumSectionSize(16)
         self.calibration_table.itemChanged.connect(self._on_calibration_table_changed)
+        # Register table for EIC highlighting (sample name is in column 1)
+        self._peak_highlight_tables.append((self.calibration_table, 1))
+        self.calibration_table.selectionModel().selectionChanged.connect(self._on_peak_table_selection_changed)
         calibration_splitter.addWidget(self.calibration_table)
 
         # Calibration plot
@@ -2464,6 +2478,9 @@ class EICWindow(QWidget):
         self.calculated_abundances_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.calculated_abundances_table.verticalHeader().setDefaultSectionSize(20)
         self.calculated_abundances_table.verticalHeader().setMinimumSectionSize(16)
+        # Register table for EIC highlighting (sample name is in column 2 here)
+        self._peak_highlight_tables.append((self.calculated_abundances_table, 2))
+        self.calculated_abundances_table.selectionModel().selectionChanged.connect(self._on_peak_table_selection_changed)
         calculated_abundances_layout.addWidget(self.calculated_abundances_table)
         self.boxplot_widget.addTab(calculated_abundances_tab, "Calculated Abundances")
 
@@ -2930,8 +2947,26 @@ class EICWindow(QWidget):
         self.peak_area_table.resizeColumnsToContents()
 
     def _on_peak_table_selection_changed(self):
-        """Highlight chart series for files selected in the peak area table."""
-        selected_rows = self.peak_area_table.selectionModel().selectedRows()
+        """Highlight chart series for files selected in any peak-results table.
+
+        The method is connected (via lambda) from all per-sample tables.  Each
+        lambda passes the triggering ``table`` and the column index
+        ``name_col`` that holds the sample name (without extension).
+        """
+        # Determine which table triggered the selection change
+        sender = self.sender()
+        table = None
+        name_col = 1  # default: "Sample Name" column
+        for _t, _c in self._peak_highlight_tables:
+            if _t.selectionModel() is sender:
+                table = _t
+                name_col = _c
+                break
+        if table is None:
+            table = self.peak_area_table
+            name_col = 1
+
+        selected_rows = table.selectionModel().selectedRows()
         if not selected_rows:
             # Restore all series to full opacity
             for series in self.chart.series():
@@ -2950,7 +2985,7 @@ class EICWindow(QWidget):
         # Collect sample names from selected rows
         selected_names = set()
         for idx in selected_rows:
-            item = self.peak_area_table.item(idx.row(), 1)
+            item = table.item(idx.row(), name_col)
             if item:
                 selected_names.add(item.text())
 
@@ -6687,12 +6722,13 @@ class EICWindow(QWidget):
     def _rearrange_extra_traces(self):
         """Rearrange extra EIC trace containers according to _eic_num_columns.
 
-        For ncols == 1: containers are added directly to the splitter (original behaviour).
-        For ncols > 1: a single grid wrapper widget is added to the splitter and
-        containers are arranged in a QGridLayout inside it.
+        For ncols == 1: containers are added directly to the vertical splitter
+        (original behaviour, one chart per row with drag handles).
+        For ncols > 1: a vertical QSplitter is added to _eic_charts_splitter;
+        each row is a horizontal QSplitter so every panel can be resized both
+        horizontally and vertically using drag handles.  On add/remove all
+        panels are given equal size.
         """
-        from PyQt6.QtWidgets import QGridLayout
-
         ncols = getattr(self, "_eic_num_columns", 1)
 
         # Remove all trace containers from their current parent without deleting them
@@ -6701,7 +6737,7 @@ class EICWindow(QWidget):
             if container is not None:
                 container.setParent(None)
 
-        # Remove any existing grid wrapper from the splitter
+        # Remove any existing multi-column wrapper from the splitter
         if hasattr(self, "_extra_traces_wrapper") and self._extra_traces_wrapper is not None:
             self._extra_traces_wrapper.setParent(None)
             self._extra_traces_wrapper.deleteLater()
@@ -6711,29 +6747,55 @@ class EICWindow(QWidget):
             return
 
         if ncols == 1:
-            # Add each container directly to the splitter (original behaviour)
+            # Add each container directly to the vertical splitter (original behaviour)
             for trace in self._extra_eic_traces:
                 container = trace.get("container")
                 if container is not None:
                     self._eic_charts_splitter.addWidget(container)
                     container.show()
         else:
-            # Build a grid wrapper widget and arrange containers inside
-            wrapper = QWidget()
-            grid = QGridLayout(wrapper)
-            grid.setContentsMargins(0, 0, 0, 0)
-            grid.setSpacing(2)
-            for idx, trace in enumerate(self._extra_eic_traces):
-                row = idx // ncols
-                col = idx % ncols
-                container = trace.get("container")
-                if container is not None:
-                    grid.addWidget(container, row, col)
-                    container.show()
-            self._extra_traces_wrapper = wrapper
-            self._eic_charts_splitter.addWidget(wrapper)
+            # Build rows of horizontal splitters inside a vertical splitter so
+            # every panel has both horizontal and vertical drag handles.
+            v_splitter = QSplitter(Qt.Orientation.Vertical)
+            v_splitter.setChildrenCollapsible(False)
+            self._row_splitters = []  # keep references to prevent GC
 
-        # Equalise splitter pane heights
+            containers = [t.get("container") for t in self._extra_eic_traces]
+            n_rows = (len(containers) + ncols - 1) // ncols
+
+            for r in range(n_rows):
+                row_containers = containers[r * ncols: (r + 1) * ncols]
+                if len(row_containers) == 1:
+                    # Single item in a row — no need for a nested splitter
+                    c = row_containers[0]
+                    if c is not None:
+                        c.show()
+                        v_splitter.addWidget(c)
+                else:
+                    h_splitter = QSplitter(Qt.Orientation.Horizontal)
+                    h_splitter.setChildrenCollapsible(False)
+                    self._row_splitters.append(h_splitter)
+                    for c in row_containers:
+                        if c is not None:
+                            c.show()
+                            h_splitter.addWidget(c)
+                    # Equalize column widths
+                    n_cols_this_row = len([c for c in row_containers if c is not None])
+                    if n_cols_this_row > 0:
+                        w = 1200 // n_cols_this_row
+                        h_splitter.setSizes([w] * n_cols_this_row)
+                    v_splitter.addWidget(h_splitter)
+
+            # Equalize row heights
+            n_actual_rows = v_splitter.count()
+            if n_actual_rows > 0:
+                h = 800 // n_actual_rows
+                v_splitter.setSizes([h] * n_actual_rows)
+
+            self._extra_traces_wrapper = v_splitter
+            self._eic_charts_splitter.addWidget(v_splitter)
+
+        # Equalise outer splitter pane heights
         n = self._eic_charts_splitter.count()
         if n > 1:
             total = 800

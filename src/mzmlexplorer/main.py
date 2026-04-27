@@ -35,9 +35,9 @@ from PyQt6.QtWidgets import (
     QAbstractItemView,
     QWidgetAction,
     QTabWidget,
-    QProxyStyle,
-    QStyleOptionTab,
     QTabBar,
+    QStyle,
+    QStyleOptionTab,
 )
 from PyQt6.QtCore import Qt, QTimer, QSettings, QEvent
 from PyQt6.QtGui import (

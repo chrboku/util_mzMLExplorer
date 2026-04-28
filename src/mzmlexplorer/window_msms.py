@@ -2566,9 +2566,7 @@ class MSMSViewerWindow(QWidget):
             polarity_text = f"; {'+' if polarity == 'positive' else '-'}"
         ce = spectrum_data.get("collision_energy")
         usi = make_usi(spectrum_data, filename)
-        chart.setTitle(
-            f"{spectrum_data['rt']:.4f} min; pre-m/z {spectrum_data['precursor_mz']:.4f}; pre-int {intensity_text}{polarity_text}"
-        )
+        chart.setTitle(f"{spectrum_data['rt']:.4f} min; pre-m/z {spectrum_data['precursor_mz']:.4f}; pre-int {intensity_text}{polarity_text}")
 
         # Create series for the spectrum
         series = QLineSeries()

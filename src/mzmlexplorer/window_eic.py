@@ -1710,6 +1710,7 @@ class EICWindow(QWidget):
             QMessageBox.warning(self, "Invalid Name", "Please enter a template name.")
             return
         import copy as _copy
+
         template = {"name": tname}
         if cb_extraction.isChecked():
             template["eic_extraction"] = {
@@ -1784,6 +1785,7 @@ class EICWindow(QWidget):
             self._sync_sample_table_from_settings()
         self.update_plot(preserve_view=False)
         from PyQt6.QtCore import QTimer
+
         QTimer.singleShot(100, self.reset_view)
 
     def create_sample_settings_table(self):

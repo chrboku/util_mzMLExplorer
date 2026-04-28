@@ -42,10 +42,57 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QPointF, QMargins
 from PyQt6.QtCharts import QChart, QChartView, QLineSeries, QValueAxis
-from PyQt6.QtGui import QPen, QColor, QPainter, QMouseEvent, QAction, QBrush
-from .window_shared import CollapsibleBox, ANNOTATION_COLOR_PRESETS, BarDelegate, NumericTableWidgetItem
+from PyQt6.QtGui import QPen, QColor, QPainter, QMouseEvent, QAction, QBrush, QFont
+from .window_shared import CollapsibleBox, ANNOTATION_COLOR_PRESETS, BarDelegate, NumericTableWidgetItem, NoScrollSpinBox, NoScrollDoubleSpinBox
 from .utils import calculate_cosine_similarity, calculate_similarity_statistics, make_usi
 from .FormulaTools import FragmentAnnotator
+
+
+class _ColoredHeaderView(QHeaderView):
+    """QHeaderView subclass that reliably renders per-section background colours.
+
+    The default Qt style ignores ``BackgroundRole`` / ``ForegroundRole`` on
+    header items in most platform themes.  This subclass reads those roles
+    from the model and paints them explicitly in ``paintSection``.
+    """
+
+    def __init__(self, orientation, parent=None):
+        super().__init__(orientation, parent)
+        self.setSectionsClickable(True)
+
+    def paintSection(self, painter, rect, logical_index):
+        if not rect.isValid():
+            return
+        bg = self.model().headerData(logical_index, self.orientation(), Qt.ItemDataRole.BackgroundRole)
+        fg = self.model().headerData(logical_index, self.orientation(), Qt.ItemDataRole.ForegroundRole)
+        font_data = self.model().headerData(logical_index, self.orientation(), Qt.ItemDataRole.FontRole)
+        text = self.model().headerData(logical_index, self.orientation(), Qt.ItemDataRole.DisplayRole)
+
+        if not (isinstance(bg, QBrush) and bg.color().alpha() > 0):
+            # No custom background — use platform default
+            super().paintSection(painter, rect, logical_index)
+            return
+
+        painter.save()
+        # Background fill
+        painter.fillRect(rect, bg)
+        # Subtle separator lines
+        sep_color = QColor(0, 0, 0, 40)
+        painter.setPen(QPen(sep_color))
+        painter.drawLine(rect.right(), rect.top(), rect.right(), rect.bottom())
+        painter.drawLine(rect.left(), rect.bottom(), rect.right(), rect.bottom())
+        # Text
+        pen_color = fg.color() if isinstance(fg, QBrush) else QColor("black")
+        painter.setPen(QPen(pen_color))
+        if isinstance(font_data, QFont):
+            painter.setFont(font_data)
+        if text:
+            painter.drawText(
+                rect,
+                Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter,
+                str(text),
+            )
+        painter.restore()
 
 
 class FragmentEICWorker(QThread):
@@ -74,6 +121,7 @@ class FragmentEICWorker(QThread):
         precursor_mz=None,
         polarity=None,
         precursor_tolerance=0.01,
+        all_precursors=False,
         parent=None,
     ):
         super().__init__(parent)
@@ -85,6 +133,7 @@ class FragmentEICWorker(QThread):
         self.precursor_mz = precursor_mz
         self.polarity = polarity
         self.precursor_tolerance = float(precursor_tolerance)
+        self.all_precursors = all_precursors
 
     def _gather_spectra(self):
         """Return a list of {rt, mz, intensity} dicts for all matching MS2 scans."""
@@ -98,7 +147,7 @@ class FragmentEICWorker(QThread):
                     pmz = spec.get("precursor_mz")
                     if pmz is None:
                         continue
-                    if self.precursor_mz is not None and abs(pmz - self.precursor_mz) > self.precursor_tolerance:
+                    if not self.all_precursors and self.precursor_mz is not None and abs(pmz - self.precursor_mz) > self.precursor_tolerance:
                         continue
                     spec_pol = spec.get("polarity")
                     if self.polarity and spec_pol and spec_pol != self.polarity:
@@ -125,7 +174,7 @@ class FragmentEICWorker(QThread):
                         pmz = spectrum.selected_precursors[0]["mz"] if spectrum.selected_precursors else None
                         if pmz is None:
                             continue
-                        if self.precursor_mz is not None and abs(pmz - self.precursor_mz) > self.precursor_tolerance:
+                        if not self.all_precursors and self.precursor_mz is not None and abs(pmz - self.precursor_mz) > self.precursor_tolerance:
                             continue
                         if self.file_manager is not None:
                             spec_pol = self.file_manager._get_spectrum_polarity(spectrum)
@@ -178,6 +227,39 @@ class FragmentEICWorker(QThread):
                     )
 
             self.finished.emit(result)
+        except Exception as exc:
+            self.error.emit(str(exc))
+
+
+class PrecursorEICWorker(QThread):
+    """Background worker that extracts the MS1 EIC for the precursor m/z.
+
+    Uses *file_manager.extract_eic()* so it benefits from the in-memory cache.
+    Emits ``finished(rt_array, intensity_array)`` on success or
+    ``error(message_str)`` on failure.
+    """
+
+    finished = pyqtSignal(object, object)
+    error = pyqtSignal(str)
+
+    def __init__(self, filepath, file_manager, precursor_mz, polarity=None, ppm=10.0, parent=None):
+        super().__init__(parent)
+        self.filepath = filepath
+        self.file_manager = file_manager
+        self.precursor_mz = float(precursor_mz)
+        self.polarity = polarity
+        self.ppm = float(ppm)
+
+    def run(self):
+        try:
+            tol_da = self.precursor_mz * self.ppm / 1e6
+            rt, intensity = self.file_manager.extract_eic(
+                self.filepath,
+                self.precursor_mz,
+                tol_da,
+                polarity=self.polarity,
+            )
+            self.finished.emit(np.asarray(rt, dtype=float), np.asarray(intensity, dtype=float))
         except Exception as exc:
             self.error.emit(str(exc))
 
@@ -315,12 +397,30 @@ def _format_collision_energy(ce, separator: str = " | ") -> str:
             parts.append(f"CE: {val:.1f} {unit}")
         if method:
             parts.append(method)
-        return (separator + separator.join(parts)) if parts else ""
+        return (separator.join(parts)) if parts else ""
     # Legacy float
     try:
-        return f"{separator}CE: {float(ce):.1f} eV"
+        return f"CE: {float(ce):.1f} eV"
     except (TypeError, ValueError):
         return ""
+
+
+def _spectrum_to_massbank_text(spectrum_data: dict) -> str | None:
+    """Convert a spectrum dict to a MassBank peak list string.
+
+    Returns a multi-line string where each line is ``<m/z> <relative_intensity>``,
+    with intensities scaled so that the base peak equals 100.  Returns ``None``
+    when the spectrum contains no peaks.
+    """
+    mz_array = np.array(spectrum_data.get("mz", []), dtype=float)
+    intensity_array = np.array(spectrum_data.get("intensity", []), dtype=float)
+    if len(mz_array) == 0:
+        return None
+    max_int = float(np.max(intensity_array))
+    if max_int <= 0:
+        return None
+    rel = intensity_array / max_int * 100.0
+    return "\n".join(f"{mz:.5f} {ri:.2f}" for mz, ri in zip(mz_array, rel))
 
 
 class MSMSPopupWindow(QWidget):
@@ -359,10 +459,18 @@ class MSMSPopupWindow(QWidget):
         self._eic_frag_colors = {}  # {frag_mz: QColor}
         self._eic_worker = None
 
+        # Precursor EIC overlay state (MS1 data for the precursor m/z)
+        self._precursor_eic_rt = None
+        self._precursor_eic_int = None
+        self._precursor_eic_worker = None
+
         self._usi = make_usi(self.spectrum_data, self.filename)
         self.setWindowTitle(f"MSMS Spectrum — {self.filename} | Group: {self.group} | {self._usi}")
         self.setWindowFlags(Qt.WindowType.Window)  # Make it a separate window
         self.resize(1400, 800)
+
+        # Flag to suppress chart highlighting when selection is driven by hover
+        self._hover_updating_table = False
 
         self.setup_ui()
 
@@ -383,6 +491,7 @@ class MSMSPopupWindow(QWidget):
         self.chart_view.spectrum_data = self.spectrum_data  # Enable hover tooltip
         self.chart_view._usi = self._usi
         self.chart_view._open_comparison_fn = self._open_comparison_window
+        self.chart_view._on_hover_mz_changed = self._select_table_row_by_mz
         self.chart_view.setMinimumSize(400, 300)
         splitter.addWidget(self.chart_view)
 
@@ -402,7 +511,7 @@ class MSMSPopupWindow(QWidget):
         # Annotation controls and close button
         button_layout = QHBoxLayout()
         ppm_label = QLabel("Tolerance:")
-        self.ppm_spinbox = QDoubleSpinBox()
+        self.ppm_spinbox = NoScrollDoubleSpinBox()
         self.ppm_spinbox.setRange(0.1, 2000.0)
         self.ppm_spinbox.setValue(5.0)
         self.ppm_spinbox.setSuffix(" ppm")
@@ -463,6 +572,13 @@ class MSMSPopupWindow(QWidget):
         )
         copy_eic_r_btn.clicked.connect(self._copy_eic_r)
         copy_layout.addWidget(copy_eic_r_btn)
+
+        copy_massbank_btn = QPushButton("Copy for MassBank")
+        copy_massbank_btn.setToolTip(
+            "Copy the MSMS spectrum as a MassBank peak list.\nFormat: one fragment per line — m/z value, space, relative intensity (scaled to 100 for the base peak)."
+        )
+        copy_massbank_btn.clicked.connect(self._copy_for_massbank)
+        copy_layout.addWidget(copy_massbank_btn)
 
         copy_layout.addStretch()
         layout.addLayout(copy_layout)
@@ -584,12 +700,12 @@ class MSMSPopupWindow(QWidget):
         header = self.table_widget.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         header.setStretchLastSection(True)
-        # Set initial column widths
-        header.resizeSection(0, 120)
-        header.resizeSection(1, 120)
-        header.resizeSection(2, 120)
-        header.resizeSection(3, 200)
-        header.resizeSection(4, 200)
+        # Set initial column widths (compact)
+        header.resizeSection(0, 80)
+        header.resizeSection(1, 90)
+        header.resizeSection(2, 90)
+        header.resizeSection(3, 150)
+        header.resizeSection(4, 150)
 
         # Set minimum height
         self.table_widget.setMinimumHeight(200)
@@ -682,6 +798,9 @@ class MSMSPopupWindow(QWidget):
 
     def on_table_selection_changed(self):
         """Handle table selection changes to highlight peaks in the chart"""
+        # Skip expensive chart rebuild when selection is driven by chart hover
+        if getattr(self, "_hover_updating_table", False):
+            return
         selected_items = self.table_widget.selectedItems()
         if selected_items:
             # Get the m/z value from the first column of the selected row
@@ -699,6 +818,45 @@ class MSMSPopupWindow(QWidget):
 
         # Also update EIC highlighting
         self._update_eic_highlight()
+
+    def _select_table_row_by_mz(self, mz):
+        """Select the table row whose m/z is closest to *mz* (called from chart hover).
+
+        Passing ``None`` clears the selection.  Uses the ``_hover_updating_table``
+        flag to prevent the selection change from triggering a full chart rebuild.
+        Also updates the EIC highlight identically to a manual table row selection.
+        """
+        self._hover_updating_table = True
+        try:
+            if mz is None:
+                self.table_widget.clearSelection()
+                self.selected_mz = None
+                self._update_eic_highlight()
+                return
+            best_row = None
+            best_diff = float("inf")
+            for row in range(self.table_widget.rowCount()):
+                mz_item = self.table_widget.item(row, 0)
+                if mz_item is not None:
+                    row_mz = mz_item.data(Qt.ItemDataRole.UserRole)
+                    diff = abs(float(row_mz) - mz)
+                    if diff < best_diff:
+                        best_diff = diff
+                        best_row = row
+            if best_row is not None and best_diff < 0.02:
+                mz_item = self.table_widget.item(best_row, 0)
+                self.selected_mz = mz_item.data(Qt.ItemDataRole.UserRole) if mz_item else None
+                self.table_widget.selectRow(best_row)
+                self.table_widget.scrollTo(
+                    self.table_widget.model().index(best_row, 0),
+                    QAbstractItemView.ScrollHint.EnsureVisible,
+                )
+            else:
+                self.table_widget.clearSelection()
+                self.selected_mz = None
+            self._update_eic_highlight()
+        finally:
+            self._hover_updating_table = False
 
     def update_chart_highlighting(self):
         """Update the chart to highlight the selected m/z peak"""
@@ -805,7 +963,7 @@ class MSMSPopupWindow(QWidget):
         # ---- Controls row 2: RT window + top-N ----
         ctrl_row2 = QHBoxLayout()
         rt_lbl = QLabel("RT ±")
-        self._eic_rt_window_sb = QDoubleSpinBox()
+        self._eic_rt_window_sb = NoScrollDoubleSpinBox()
         self._eic_rt_window_sb.setRange(0.05, 30.0)
         self._eic_rt_window_sb.setValue(1.0)
         self._eic_rt_window_sb.setSingleStep(0.25)
@@ -818,7 +976,7 @@ class MSMSPopupWindow(QWidget):
         ctrl_row2.addWidget(self._eic_rt_window_sb)
 
         topn_lbl = QLabel("Top N:")
-        self._eic_top_n_sb = QSpinBox()
+        self._eic_top_n_sb = NoScrollSpinBox()
         self._eic_top_n_sb.setRange(0, 999)
         self._eic_top_n_sb.setValue(0)
         self._eic_top_n_sb.setSpecialValueText("all")
@@ -829,7 +987,7 @@ class MSMSPopupWindow(QWidget):
         ctrl_row2.addWidget(self._eic_top_n_sb)
 
         ppm_lbl = QLabel("Bin ±")
-        self._eic_ppm_sb = QDoubleSpinBox()
+        self._eic_ppm_sb = NoScrollDoubleSpinBox()
         self._eic_ppm_sb.setRange(0.1, 500.0)
         self._eic_ppm_sb.setValue(10.0)
         self._eic_ppm_sb.setSingleStep(1.0)
@@ -877,8 +1035,20 @@ class MSMSPopupWindow(QWidget):
         return panel
 
     def _start_fragment_eic_extraction(self):
-        """Start background extraction of EIC traces for all fragments."""
-        mz_array = np.array(self.spectrum_data["mz"], dtype=float)
+        """Start background extraction of EIC traces for all fragments.
+
+        Collects fragment m/z values from the current (top) spectrum AND from
+        all similar spectra so that selecting a fragment not present in the
+        top spectrum still shows its EIC trace.
+        """
+        # Gather all unique fragment m/z values across all similar spectra
+        mz_set = set(float(m) for m in self.spectrum_data.get("mz", []))
+        if self.all_similar_spectra:
+            for sp in self.all_similar_spectra:
+                for m in sp.get("mz", []):
+                    mz_set.add(float(m))
+        mz_array = np.array(sorted(mz_set), dtype=float)
+
         if len(mz_array) == 0:
             self._eic_status_label.setText("No fragments to show.")
             return
@@ -907,6 +1077,27 @@ class MSMSPopupWindow(QWidget):
         self._eic_worker.error.connect(lambda msg: self._eic_status_label.setText(f"Error: {msg}"))
         self._eic_worker.start()
 
+        # Also start precursor MS1 EIC extraction (orange overlay)
+        if precursor_mz > 0 and self.filepath and self.file_manager is not None:
+            if self._precursor_eic_worker is not None:
+                self._precursor_eic_worker.quit()
+                self._precursor_eic_worker.wait()
+            pol_str = None
+            if polarity:
+                pol_str = polarity
+            elif self.adduct:
+                pol_str = "negative" if self.adduct.strip().endswith("-") else "positive"
+            self._precursor_eic_worker = PrecursorEICWorker(
+                filepath=self.filepath,
+                file_manager=self.file_manager,
+                precursor_mz=precursor_mz,
+                polarity=pol_str,
+                ppm=self._eic_ppm_sb.value(),
+                parent=self,
+            )
+            self._precursor_eic_worker.finished.connect(self._on_precursor_eic_ready)
+            self._precursor_eic_worker.start()
+
     def _on_fragment_eic_ready(self, result):
         """Receive extracted EIC data and render the plot."""
         self._eic_data = result
@@ -917,6 +1108,12 @@ class MSMSPopupWindow(QWidget):
             self._eic_status_label.setText(f"{n_frags} fragment EICs | {n_pts} spectra")
         else:
             self._eic_status_label.setText("No matching fragments found in file.")
+        self._draw_fragment_eic_plot()
+
+    def _on_precursor_eic_ready(self, rt_arr, int_arr):
+        """Receive extracted precursor MS1 EIC and overlay it on the fragment EIC panel."""
+        self._precursor_eic_rt = rt_arr
+        self._precursor_eic_int = int_arr
         self._draw_fragment_eic_plot()
 
     # Tab-20 palette as QColor objects (matches matplotlib's default colour cycle)
@@ -987,8 +1184,13 @@ class MSMSPopupWindow(QWidget):
         # --- top-N filtering (by peak intensity in the un-normalized full EIC) ---
         if top_n > 0 and len(sorted_mz) > top_n:
             peak_intensities = {mz: float(np.max(self._eic_data[mz][1])) if len(self._eic_data[mz][1]) else 0.0 for mz in sorted_mz}
-            sorted_mz = sorted(sorted_mz, key=lambda m: peak_intensities[m], reverse=True)[:top_n]
-            sorted_mz = sorted(sorted_mz)  # restore m/z order for colour consistency
+            top_mz = sorted(sorted_mz, key=lambda m: peak_intensities[m], reverse=True)[:top_n]
+            # Always include the currently selected fragment regardless of top-n rank
+            if self.selected_mz is not None:
+                sel_match = min(sorted_mz, key=lambda m: abs(m - self.selected_mz))
+                if abs(sel_match - self.selected_mz) < 0.02 and sel_match not in top_mz:
+                    top_mz.append(sel_match)
+            sorted_mz = sorted(top_mz)  # restore m/z order for colour consistency
 
         colors = self._get_eic_colors(len(sorted_mz))
 
@@ -1067,6 +1269,29 @@ class MSMSPopupWindow(QWidget):
         self._eic_chart.addSeries(rt_marker)
         rt_marker.attachAxis(self._eic_x_axis)
         rt_marker.attachAxis(self._eic_y_axis)
+
+        # Precursor MS1 EIC overlay — faint orange line, normalised to y_top
+        if self._precursor_eic_rt is not None and len(self._precursor_eic_rt) > 0:
+            prec_rt = self._precursor_eic_rt
+            prec_int = self._precursor_eic_int
+            # Restrict to visible RT window
+            mask = (prec_rt >= rt_min) & (prec_rt <= rt_max)
+            prec_rt_win = prec_rt[mask]
+            prec_int_win = prec_int[mask]
+            if len(prec_rt_win) > 0:
+                peak_prec = float(np.max(prec_int_win)) if np.max(prec_int_win) > 0 else 1.0
+                # Scale precursor EIC so its peak matches y_top (= overlay scale)
+                prec_scaled = prec_int_win / peak_prec * y_top
+                prec_series = QLineSeries()
+                prec_series.setName("Precursor MS1")
+                prec_pen = QPen(QColor(255, 140, 0, 120))  # semi-transparent orange
+                prec_pen.setWidth(2)
+                prec_series.setPen(prec_pen)
+                for rt_val, int_val in zip(prec_rt_win, prec_scaled):
+                    prec_series.append(float(rt_val), float(int_val))
+                self._eic_chart.addSeries(prec_series)
+                prec_series.attachAxis(self._eic_x_axis)
+                prec_series.attachAxis(self._eic_y_axis)
 
         # Update axis ranges
         self._eic_x_axis.setRange(rt_min, rt_max)
@@ -1227,6 +1452,16 @@ class MSMSPopupWindow(QWidget):
         r_code = f"eic <- data.frame(\n  mz = c({mz_vals}),\n  rt_min = c({rt_vals}),\n  {intensity_col} = c({int_vals}),\n  stringsAsFactors = FALSE\n)"
         QApplication.clipboard().setText(r_code)
 
+    def _copy_for_massbank(self):
+        """Copy the MSMS spectrum to clipboard in MassBank peak list format.
+
+        Format: one fragment per line, <m/z> <relative_intensity_scaled_to_100>.
+        The most abundant signal is scaled to 100.
+        """
+        text = _spectrum_to_massbank_text(self.spectrum_data)
+        if text is not None:
+            QApplication.clipboard().setText(text)
+
     # ------------------------------------------------------------------
 
     def _open_comparison_window(self, second_spectrum=None, second_filename=None):
@@ -1255,9 +1490,9 @@ class MSMSPopupWindow(QWidget):
         ce = self.spectrum_data.get("collision_energy")
         ce_text = _format_collision_energy(ce)
         chart.setTitle(
-            f"MSMS Spectrum — {self._usi}\nRT: {self.spectrum_data['rt']:.4f} min, Precursor: {self.spectrum_data['precursor_mz']:.4f}, Intensity: {intensity_text}{ce_text}"
-            + (f"\nScan: {self.spectrum_data['scan_id']}" if self.spectrum_data.get("scan_id") else "")
-            + (f" | Filter: {self.spectrum_data['filter_string']}" if self.spectrum_data.get("filter_string") else "")
+            f"MSMS - {self._usi}\n{self.spectrum_data['rt']:.4f} min; pre-m/z {self.spectrum_data['precursor_mz']:.4f}; pre-int {intensity_text}{ce_text}"
+            + (f"\nScan {self.spectrum_data['scan_id']}" if self.spectrum_data.get("scan_id") else "")
+            + (f"; {self.spectrum_data['filter_string']}" if self.spectrum_data.get("filter_string") else "")
         )
 
         # Create series for the spectrum
@@ -1391,6 +1626,8 @@ class InteractiveMSMSChartView(QChartView):
         self._right_press_start = None
         self._right_click_mz: float | None = None
         self._right_click_norm_int: float = 0.0
+        # Optional callback: called with (mz: float | None) when hover changes
+        self._on_hover_mz_changed = None
 
     def mousePressEvent(self, event):
         """Handle mouse press events"""
@@ -1530,6 +1767,9 @@ class InteractiveMSMSChartView(QChartView):
                 self.hover_label.setText(f"m/z: {best_mz:.4f}")
                 self.hover_label.adjustSize()
 
+                if callable(self._on_hover_mz_changed):
+                    self._on_hover_mz_changed(best_mz)
+
             # Position label centered above the peak tip
             tip_pos = self.chart().mapToPosition(QPointF(best_mz, best_norm_int))
             lx = int(tip_pos.x()) - self.hover_label.width() // 2
@@ -1543,7 +1783,10 @@ class InteractiveMSMSChartView(QChartView):
             if self._hover_series is not None:
                 self.chart().removeSeries(self._hover_series)
                 self._hover_series = None
-            self._hover_mz = None
+            if self._hover_mz is not None:
+                self._hover_mz = None
+                if callable(self._on_hover_mz_changed):
+                    self._on_hover_mz_changed(None)
             self.hover_label.hide()
 
     def mouseReleaseEvent(self, event):
@@ -1572,7 +1815,10 @@ class InteractiveMSMSChartView(QChartView):
             self.chart().removeSeries(self._hover_series)
             self._hover_series = None
         self.hover_label.hide()
-        self._hover_mz = None
+        if self._hover_mz is not None:
+            self._hover_mz = None
+            if callable(self._on_hover_mz_changed):
+                self._on_hover_mz_changed(None)
         super().leaveEvent(event)
 
     def resizeEvent(self, event):
@@ -1608,14 +1854,33 @@ class InteractiveMSMSChartView(QChartView):
                 act = ann_menu.addAction(name)
                 act.triggered.connect(lambda _c=False, m=mz, n=norm_int, c=color_str: self._toggle_pin(m, n, c))
 
-        # -- USI section --
-        usi = getattr(self, "_usi", None)
-        if usi:
+        # -- Scan info (scan_id, filter_string, collision energy) — read-only labels --
+        if self.spectrum_data is not None:
+            scan_id = self.spectrum_data.get("scan_id")
+            filter_string = self.spectrum_data.get("filter_string")
+            ce = self.spectrum_data.get("collision_energy")
+            ce_text = _format_collision_energy(ce) if ce is not None else None
+            usi = getattr(self, "_usi", None)
+            if scan_id or filter_string or ce_text or usi:
+                menu.addSeparator()
+                if scan_id:
+                    scan_act = menu.addAction(f"Scan: {scan_id}")
+                    scan_act.setEnabled(False)
+                if filter_string:
+                    fs_act = menu.addAction(f"Filter: {filter_string}")
+                    fs_act.setEnabled(False)
+                if ce_text:
+                    ce_act = menu.addAction(f"{ce_text.strip('; ')}")
+                    ce_act.setEnabled(False)
+                if usi:
+                    usi_act = menu.addAction(f"USI (click to copy): {usi}")
+                    usi_act.triggered.connect(lambda _c=False, u=usi: QApplication.clipboard().setText(u))
+
+        # -- Copy for MassBank --
+        if self.spectrum_data is not None:
             menu.addSeparator()
-            usi_action = menu.addAction(f"USI: {usi}")
-            usi_action.setEnabled(False)
-            copy_usi_action = menu.addAction("Copy USI to Clipboard")
-            copy_usi_action.triggered.connect(lambda _c=False, u=usi: QApplication.clipboard().setText(u))
+            massbank_action = menu.addAction("Copy for MassBank")
+            massbank_action.triggered.connect(self._copy_for_massbank)
 
         # -- Open comparison window --
         open_comp_fn = getattr(self, "_open_comparison_fn", None)
@@ -1624,7 +1889,24 @@ class InteractiveMSMSChartView(QChartView):
             comp_action = menu.addAction("Open in Spectrum Comparator")
             comp_action.triggered.connect(lambda _c=False: open_comp_fn())
 
+        # -- Open in MSMS popup viewer --
+        open_popup_fn = getattr(self, "_open_msms_popup_fn", None)
+        if open_popup_fn is not None:
+            open_popup_action = menu.addAction("Open in MSMS viewer")
+            open_popup_action.triggered.connect(lambda _c=False: open_popup_fn())
+
         menu.exec(event.globalPosition().toPoint())
+
+    def _copy_for_massbank(self):
+        """Copy the spectrum to clipboard in MassBank peak list format.
+
+        Format: one fragment per line, <m/z> <relative_intensity_scaled_to_100>.
+        """
+        if self.spectrum_data is None:
+            return
+        text = _spectrum_to_massbank_text(self.spectrum_data)
+        if text is not None:
+            QApplication.clipboard().setText(text)
 
     def _redraw_annotation_labels(self):
         """Reposition all pinned annotation labels to match current chart coordinates."""
@@ -1865,58 +2147,125 @@ class MSMSViewerWindow(QWidget):
         scroll_area.setWidget(scroll_widget)
         scroll_area.setWidgetResizable(True)
 
-        grid_layout = QGridLayout(scroll_widget)
-        grid_layout.setSpacing(1)
-        grid_layout.setContentsMargins(1, 1, 1, 1)
-        grid_layout.setVerticalSpacing(0)
+        scroll_vbox = QVBoxLayout(scroll_widget)
+        scroll_vbox.setSpacing(2)
+        scroll_vbox.setContentsMargins(2, 2, 2, 2)
 
-        # Organize files and create charts
-        row = 0
+        # Organize files by group first
+        groups_dict = {}
         for filepath, file_data in self.processed_data:
-            filename = file_data["filename"]
             group = file_data.get("group", "Unknown")
-            spectra = file_data["spectra"]
+            if group not in groups_dict:
+                groups_dict[group] = []
+            groups_dict[group].append((filepath, file_data))
 
-            # File header with filename, group, and similarity statistics
-            similarity_info = ""
-            if filename in self.intra_file_similarities:
-                stats = self.intra_file_similarities[filename]
-                similarity_info = f" | Sim: Med:{stats['median']:.3f} 90%:{stats['percentile_90']:.3f}"
-
-            display_name = filename.split(".")[0] if "." in filename else filename
-            file_header_text = f"<b>{display_name}</b> | {group} | {len(spectra)} spectra{similarity_info}"
-            file_label = QLabel(file_header_text)
-
-            # Colour header by group
+        # Create a collapsible box per group
+        for group, group_files in groups_dict.items():
             grp_color = self._group_color_for(group)
+            # Build group header title with file count
+            group_box = CollapsibleBox(f"{group}  ({len(group_files)} file(s))")
+            # Color the header button background
             if grp_color:
                 c = QColor(grp_color)
-                c.setAlphaF(0.5)
+                c.setAlphaF(0.3)
                 r, g, b, a = c.red(), c.green(), c.blue(), c.alpha()
                 bg_css = f"rgba({r},{g},{b},{a})"
             else:
-                bg_css = "#f1f3f4"
-
-            file_label.setStyleSheet(f"""
-                QLabel {{
+                bg_css = "#e8eaed"
+            group_box.toggle_button.setStyleSheet(f"""
+                QPushButton {{
                     background-color: {bg_css};
-                    padding: 2px 4px;
-                    margin: 0px;
-                    border-bottom: 1px solid #dadce0;
+                    border: none;
+                    padding: 4px 6px;
+                    text-align: left;
+                    font-weight: bold;
+                }}
+                QPushButton:hover {{
+                    background-color: {bg_css};
+                    border: 1px solid #aaa;
                 }}
             """)
-            file_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
-            file_label.setMaximumHeight(18)
-            grid_layout.addWidget(file_label, row, 0, 1, max(1, len(spectra)))
-            row += 1
+            group_box.set_expanded(True)  # expanded by default
 
-            # Add spectra horizontally for this file (sorted by intensity)
-            for col, spectrum_data in enumerate(spectra):
-                chart_widget = self.create_msms_chart(spectrum_data, filename, group, filepath=filepath)
-                chart_widget.all_similar_spectra = spectra  # all spectra for this file / precursor
-                grid_layout.addWidget(chart_widget, row, col)
+            # Inner grid for files within this group
+            inner_widget = QWidget()
+            grid_layout = QGridLayout(inner_widget)
+            grid_layout.setSpacing(1)
+            grid_layout.setContentsMargins(1, 1, 1, 1)
+            grid_layout.setVerticalSpacing(0)
 
-            row += 1
+            row = 0
+
+            # Separate files with 1 spectrum from files with multiple spectra
+            multi_spectra_files = [(fp, fd) for fp, fd in group_files if len(fd["spectra"]) > 1]
+            single_spectra_files = [(fp, fd) for fp, fd in group_files if len(fd["spectra"]) == 1]
+
+            SINGLE_SPECTRA_PER_ROW = 3
+
+            def _add_file_to_grid(filepath, file_data, start_row, start_col, col_span):
+                """Add one file's header label and spectrum charts to the grid layout.
+
+                Args:
+                    filepath: Absolute path to the source file.
+                    file_data: Dict with 'filename' and 'spectra' keys.
+                    start_row: Grid row for the header; charts go in start_row + 1.
+                    start_col: Starting grid column for this file's content.
+                    col_span: Number of columns the header label should span.
+                """
+                filename = file_data["filename"]
+                spectra = file_data["spectra"]
+
+                similarity_info = ""
+                if filename in self.intra_file_similarities:
+                    stats = self.intra_file_similarities[filename]
+                    similarity_info = f" | Sim: Med:{stats['median']:.3f} 90%:{stats['percentile_90']:.3f}"
+
+                display_name = filename.split(".")[0] if "." in filename else filename
+                file_header_text = f"<b>{display_name}</b> | {len(spectra)} spectra{similarity_info}"
+                file_label = QLabel(file_header_text)
+
+                if grp_color:
+                    c = QColor(grp_color)
+                    c.setAlphaF(0.35)
+                    r, g, b, a = c.red(), c.green(), c.blue(), c.alpha()
+                    file_bg_css = f"rgba({r},{g},{b},{a})"
+                else:
+                    file_bg_css = "#f1f3f4"
+
+                file_label.setStyleSheet(f"""
+                    QLabel {{
+                        background-color: {file_bg_css};
+                        padding: 2px 4px;
+                        margin: 0px;
+                        border-bottom: 1px solid #dadce0;
+                    }}
+                """)
+                file_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
+                file_label.setMaximumHeight(18)
+                grid_layout.addWidget(file_label, start_row, start_col, 1, col_span)
+
+                for col_offset, spectrum_data in enumerate(spectra):
+                    chart_widget = self.create_msms_chart(spectrum_data, filename, group, filepath=filepath, compact=True)
+                    chart_widget.all_similar_spectra = spectra
+                    grid_layout.addWidget(chart_widget, start_row + 1, start_col + col_offset)
+
+            # Add multi-spectrum files (one per row)
+            for filepath, file_data in multi_spectra_files:
+                n_spectra = len(file_data["spectra"])
+                _add_file_to_grid(filepath, file_data, row, 0, n_spectra)
+                row += 2
+
+            # Add single-spectrum files in groups of SINGLE_SPECTRA_PER_ROW
+            for batch_start in range(0, len(single_spectra_files), SINGLE_SPECTRA_PER_ROW):
+                batch = single_spectra_files[batch_start : batch_start + SINGLE_SPECTRA_PER_ROW]
+                for col_offset, (filepath, file_data) in enumerate(batch):
+                    _add_file_to_grid(filepath, file_data, row, col_offset, 1)
+                row += 2
+
+            group_box.add_widget(inner_widget)
+            scroll_vbox.addWidget(group_box)
+
+        scroll_vbox.addStretch()
 
         # Add scroll area to splitter
         main_splitter.addWidget(scroll_area)
@@ -2079,6 +2428,17 @@ class MSMSViewerWindow(QWidget):
         if len(files) > 1:
             inter_table = QTableWidget(len(files), len(files))
 
+            # Replace the default header views with _ColoredHeaderView so
+            # BackgroundRole / ForegroundRole data is reliably painted.
+            h_header = _ColoredHeaderView(Qt.Orientation.Horizontal, inter_table)
+            h_header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+            h_header.setDefaultSectionSize(70)
+            inter_table.setHorizontalHeader(h_header)
+
+            v_header = _ColoredHeaderView(Qt.Orientation.Vertical, inter_table)
+            v_header.setDefaultSectionSize(18)
+            inter_table.setVerticalHeader(v_header)
+
             # Set coloured header items per group
             for idx, fname in enumerate(files):
                 grp = file_group.get(fname, "Unknown")
@@ -2089,10 +2449,14 @@ class MSMSViewerWindow(QWidget):
                     hi = QTableWidgetItem(short)
                     if grp_color:
                         c = QColor(grp_color)
-                        c.setAlphaF(0.5)
-                        hi.setBackground(c)
+                        c.setAlpha(255)
+                        hi.setData(Qt.ItemDataRole.BackgroundRole, QBrush(c))
+                        # Choose white or black text based on background luminance
+                        lum = 0.299 * c.redF() + 0.587 * c.greenF() + 0.114 * c.blueF()
+                        text_color = QColor("black") if lum > 0.5 else QColor("white")
+                        hi.setData(Qt.ItemDataRole.ForegroundRole, QBrush(text_color))
                     fnt = hi.font()
-                    # fnt.setPointSize(7)
+                    fnt.setBold(True)
                     hi.setFont(fnt)
                     if make_h:
                         inter_table.setHorizontalHeaderItem(idx, hi)
@@ -2101,11 +2465,6 @@ class MSMSViewerWindow(QWidget):
 
             inter_table.setMinimumHeight(min(120, 24 + len(files) * 20))
             inter_table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-
-            # Set table properties for better display
-            inter_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
-            inter_table.horizontalHeader().setDefaultSectionSize(70)
-            inter_table.verticalHeader().setDefaultSectionSize(18)
 
             # Enable context menu
             inter_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -2125,7 +2484,7 @@ class MSMSViewerWindow(QWidget):
                     if i == j:
                         # Diagonal - same file vs itself: always 1.000 (perfect match)
                         item = QTableWidgetItem("1.000")
-                        item.setBackground(QColor(76, 175, 80, 200))  # Strong Green
+                        item.setData(Qt.ItemDataRole.BackgroundRole, QBrush(QColor(76, 175, 80, 255)))  # Strong Green
                     else:
                         # Off-diagonal - show inter-file median similarity with color coding
                         key1 = (file1, file2)
@@ -2149,13 +2508,13 @@ class MSMSViewerWindow(QWidget):
 
                         # Use color intensity to indicate median similarity level
                         if median_sim >= 0.8:
-                            item.setBackground(QColor(76, 175, 80, 200))  # Strong Green
+                            item.setData(Qt.ItemDataRole.BackgroundRole, QBrush(QColor(76, 175, 80, 255)))  # Strong Green
                         elif median_sim >= 0.6:
-                            item.setBackground(QColor(255, 193, 7, 200))  # Strong Amber
+                            item.setData(Qt.ItemDataRole.BackgroundRole, QBrush(QColor(255, 193, 7, 255)))  # Strong Amber
                         elif median_sim >= 0.4:
-                            item.setBackground(QColor(255, 152, 0, 200))  # Strong Orange
+                            item.setData(Qt.ItemDataRole.BackgroundRole, QBrush(QColor(255, 152, 0, 255)))  # Strong Orange
                         else:
-                            item.setBackground(QColor(244, 67, 54, 200))  # Strong Red
+                            item.setData(Qt.ItemDataRole.BackgroundRole, QBrush(QColor(244, 67, 54, 255)))  # Strong Red
 
                     item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                     item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
@@ -2192,7 +2551,7 @@ class MSMSViewerWindow(QWidget):
 
         return overview_widget
 
-    def create_msms_chart(self, spectrum_data, filename, group, filepath=None):
+    def create_msms_chart(self, spectrum_data, filename, group, filepath=None, compact=False):
         """Create a chart widget for a single MSMS spectrum"""
         # Create chart
         chart = QChart()
@@ -2201,14 +2560,13 @@ class MSMSViewerWindow(QWidget):
         precursor_intensity = spectrum_data.get("precursor_intensity", 0)
         intensity_text = f"{precursor_intensity:.1e}" if precursor_intensity > 0 else "N/A"
 
+        polarity = spectrum_data.get("polarity")
+        polarity_text = ""
+        if polarity:
+            polarity_text = f"; {'+' if polarity == 'positive' else '-'}"
         ce = spectrum_data.get("collision_energy")
-        ce_text = _format_collision_energy(ce)
         usi = make_usi(spectrum_data, filename)
-        chart.setTitle(
-            f"{usi}\nRT: {spectrum_data['rt']:.2f} min | Precursor: {spectrum_data['precursor_mz']:.4f} | Intensity: {intensity_text}{ce_text}"
-            + (f"\nScan: {spectrum_data['scan_id']}" if spectrum_data.get("scan_id") else "")
-            + (f" | Filter: {spectrum_data['filter_string']}" if spectrum_data.get("filter_string") else "")
-        )
+        chart.setTitle(f"{spectrum_data['rt']:.4f} min; pre-m/z {spectrum_data['precursor_mz']:.4f}; pre-int {intensity_text}{polarity_text}")
 
         # Create series for the spectrum
         series = QLineSeries()
@@ -2264,6 +2622,16 @@ class MSMSViewerWindow(QWidget):
         # Use global m/z range for consistent x-axis limits
         x_axis.setRange(self.global_mz_min, self.global_mz_max)
 
+        # In compact (overview) mode, hide axis labels and ticks to save space
+        if compact:
+            x_axis.setLabelsVisible(False)
+            y_axis.setLabelsVisible(False)
+            x_axis.setTitleText("")
+            y_axis.setTitleText("")
+            x_axis.setGridLineVisible(False)
+            y_axis.setGridLineVisible(False)
+            chart.setMargins(QMargins(2, 2, 2, 2))
+
         # Create interactive chart view with dynamic sizing
         chart_view = InteractiveMSMSChartView(chart)
         chart_view.setMinimumSize(250, 150)  # Reduced minimum size
@@ -2281,6 +2649,7 @@ class MSMSViewerWindow(QWidget):
         chart_view.file_manager = self.file_manager
         chart_view._usi = usi
         chart_view._open_comparison_fn = lambda s=spectrum_data, fn=filename: self._open_comparison_from_viewer(s, fn)
+        chart_view._open_msms_popup_fn = lambda s=spectrum_data, fn=filename, g=group, fp=filepath: self._open_msms_popup_for(s, fn, g, fp)
         # all_similar_spectra will be set by the caller
         chart.legend().setVisible(False)
 
@@ -2480,6 +2849,13 @@ class MSMSViewerWindow(QWidget):
         win.destroyed.connect(lambda: self._open_popups.remove(win) if win in self._open_popups else None)
         win.show()
 
+    def _get_spectra_for_file(self, filename: str) -> list:
+        """Return the spectra list for a given filename from processed_data, or []."""
+        for _, file_data in self.processed_data:
+            if file_data["filename"] == filename:
+                return file_data["spectra"]
+        return []
+
     def _open_comparison_from_viewer(self, spectrum_data, filename):
         """Open a USISpectrumComparisonWindow pre-populated with one spectrum."""
         if not hasattr(self, "_open_popups"):
@@ -2488,6 +2864,27 @@ class MSMSViewerWindow(QWidget):
             spectrum_a=spectrum_data,
             filename_a=filename,
             file_manager=self.file_manager,
+        )
+        self._open_popups.append(win)
+        win.destroyed.connect(lambda: self._open_popups.remove(win) if win in self._open_popups else None)
+        win.show()
+
+    def _open_msms_popup_for(self, spectrum_data, filename, group, filepath=None):
+        """Open an MSMSPopupWindow for a single spectrum from the overview grid."""
+        if not hasattr(self, "_open_popups"):
+            self._open_popups = []
+        win = MSMSPopupWindow(
+            spectrum_data,
+            filename,
+            group,
+            None,
+            compound_formula=self.compound_formula,
+            adduct=self.adduct,
+            adduct_info=self.adduct_info,
+            compound_smiles=self.compound_smiles,
+            filepath=filepath,
+            file_manager=self.file_manager,
+            all_similar_spectra=self._get_spectra_for_file(filename),
         )
         self._open_popups.append(win)
         win.destroyed.connect(lambda: self._open_popups.remove(win) if win in self._open_popups else None)
@@ -2550,6 +2947,10 @@ class MirrorPlotChartView(InteractiveEICChartView):
         # USI strings — set by EnhancedMirrorPlotWindow after construction
         self._usi_a: str | None = None
         self._usi_b: str | None = None
+
+        # Raw spectrum dicts — set by EnhancedMirrorPlotWindow for MassBank copy
+        self._spectrum_a: dict | None = None
+        self._spectrum_b: dict | None = None
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -2778,6 +3179,18 @@ class MirrorPlotChartView(InteractiveEICChartView):
                 act = ann_menu.addAction(name)
                 act.triggered.connect(lambda _c=False, m=mz, cy=chart_y, c=color_str, lt=label_text: self._toggle_pin(m, cy, c, lt))
 
+        # -- Copy for MassBank --
+        spec_a = getattr(self, "_spectrum_a", None)
+        spec_b = getattr(self, "_spectrum_b", None)
+        if spec_a is not None or spec_b is not None:
+            menu.addSeparator()
+            if spec_a is not None:
+                copy_a_action = menu.addAction("Copy Spectrum A for MassBank")
+                copy_a_action.triggered.connect(lambda _c=False, s=spec_a: self._copy_spectrum_for_massbank(s))
+            if spec_b is not None:
+                copy_b_action = menu.addAction("Copy Spectrum B for MassBank")
+                copy_b_action.triggered.connect(lambda _c=False, s=spec_b: self._copy_spectrum_for_massbank(s))
+
         # -- USI section --
         if self._usi_a or self._usi_b:
             menu.addSeparator()
@@ -2793,6 +3206,13 @@ class MirrorPlotChartView(InteractiveEICChartView):
             copy_b.triggered.connect(lambda _c=False, u=self._usi_b: QApplication.clipboard().setText(u))
 
         menu.exec(event.globalPosition().toPoint())
+
+    @staticmethod
+    def _copy_spectrum_for_massbank(spectrum_data: dict) -> None:
+        """Copy a spectrum dict to clipboard in MassBank peak list format."""
+        text = _spectrum_to_massbank_text(spectrum_data)
+        if text is not None:
+            QApplication.clipboard().setText(text)
 
     def _redraw_annotation_labels(self):
         """Reposition all pinned labels to match current chart coordinates."""
@@ -3087,6 +3507,8 @@ class EnhancedMirrorPlotWindow(QWidget):
         self._chart_view._table = self._table
         self._chart_view._usi_a = self.title_a
         self._chart_view._usi_b = self.title_b
+        self._chart_view._spectrum_a = self.spectrum_a
+        self._chart_view._spectrum_b = self.spectrum_b
         splitter.addWidget(self._chart_view)
 
         splitter.setSizes([540, 680])
@@ -3286,7 +3708,7 @@ class USISpectrumComparisonWindow(QWidget):
 
         tol_lbl = QLabel("Tol (Da):")
         usi_row.addWidget(tol_lbl)
-        self._tol_spin = QDoubleSpinBox()
+        self._tol_spin = NoScrollDoubleSpinBox()
         self._tol_spin.setRange(0.001, 2.0)
         self._tol_spin.setDecimals(4)
         self._tol_spin.setSingleStep(0.005)

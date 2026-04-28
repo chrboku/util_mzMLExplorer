@@ -397,10 +397,10 @@ def _format_collision_energy(ce, separator: str = " | ") -> str:
             parts.append(f"CE: {val:.1f} {unit}")
         if method:
             parts.append(method)
-        return (separator + separator.join(parts)) if parts else ""
+        return (separator.join(parts)) if parts else ""
     # Legacy float
     try:
-        return f"{separator}CE: {float(ce):.1f} eV"
+        return f"CE: {float(ce):.1f} eV"
     except (TypeError, ValueError):
         return ""
 
@@ -469,6 +469,9 @@ class MSMSPopupWindow(QWidget):
         self.setWindowFlags(Qt.WindowType.Window)  # Make it a separate window
         self.resize(1400, 800)
 
+        # Flag to suppress chart highlighting when selection is driven by hover
+        self._hover_updating_table = False
+
         self.setup_ui()
 
     def setup_ui(self):
@@ -488,6 +491,7 @@ class MSMSPopupWindow(QWidget):
         self.chart_view.spectrum_data = self.spectrum_data  # Enable hover tooltip
         self.chart_view._usi = self._usi
         self.chart_view._open_comparison_fn = self._open_comparison_window
+        self.chart_view._on_hover_mz_changed = self._select_table_row_by_mz
         self.chart_view.setMinimumSize(400, 300)
         splitter.addWidget(self.chart_view)
 
@@ -794,6 +798,9 @@ class MSMSPopupWindow(QWidget):
 
     def on_table_selection_changed(self):
         """Handle table selection changes to highlight peaks in the chart"""
+        # Skip expensive chart rebuild when selection is driven by chart hover
+        if getattr(self, "_hover_updating_table", False):
+            return
         selected_items = self.table_widget.selectedItems()
         if selected_items:
             # Get the m/z value from the first column of the selected row
@@ -811,6 +818,45 @@ class MSMSPopupWindow(QWidget):
 
         # Also update EIC highlighting
         self._update_eic_highlight()
+
+    def _select_table_row_by_mz(self, mz):
+        """Select the table row whose m/z is closest to *mz* (called from chart hover).
+
+        Passing ``None`` clears the selection.  Uses the ``_hover_updating_table``
+        flag to prevent the selection change from triggering a full chart rebuild.
+        Also updates the EIC highlight identically to a manual table row selection.
+        """
+        self._hover_updating_table = True
+        try:
+            if mz is None:
+                self.table_widget.clearSelection()
+                self.selected_mz = None
+                self._update_eic_highlight()
+                return
+            best_row = None
+            best_diff = float("inf")
+            for row in range(self.table_widget.rowCount()):
+                mz_item = self.table_widget.item(row, 0)
+                if mz_item is not None:
+                    row_mz = mz_item.data(Qt.ItemDataRole.UserRole)
+                    diff = abs(float(row_mz) - mz)
+                    if diff < best_diff:
+                        best_diff = diff
+                        best_row = row
+            if best_row is not None and best_diff < 0.02:
+                mz_item = self.table_widget.item(best_row, 0)
+                self.selected_mz = mz_item.data(Qt.ItemDataRole.UserRole) if mz_item else None
+                self.table_widget.selectRow(best_row)
+                self.table_widget.scrollTo(
+                    self.table_widget.model().index(best_row, 0),
+                    QAbstractItemView.ScrollHint.EnsureVisible,
+                )
+            else:
+                self.table_widget.clearSelection()
+                self.selected_mz = None
+            self._update_eic_highlight()
+        finally:
+            self._hover_updating_table = False
 
     def update_chart_highlighting(self):
         """Update the chart to highlight the selected m/z peak"""
@@ -1444,9 +1490,9 @@ class MSMSPopupWindow(QWidget):
         ce = self.spectrum_data.get("collision_energy")
         ce_text = _format_collision_energy(ce)
         chart.setTitle(
-            f"MSMS Spectrum — {self._usi}\nRT: {self.spectrum_data['rt']:.4f} min, Precursor: {self.spectrum_data['precursor_mz']:.4f}, Intensity: {intensity_text}{ce_text}"
-            + (f"\nScan: {self.spectrum_data['scan_id']}" if self.spectrum_data.get("scan_id") else "")
-            + (f" | Filter: {self.spectrum_data['filter_string']}" if self.spectrum_data.get("filter_string") else "")
+            f"MSMS - {self._usi}\n{self.spectrum_data['rt']:.4f} min; pre-m/z {self.spectrum_data['precursor_mz']:.4f}; pre-int {intensity_text}{ce_text}"
+            + (f"\nScan {self.spectrum_data['scan_id']}" if self.spectrum_data.get("scan_id") else "")
+            + (f"; {self.spectrum_data['filter_string']}" if self.spectrum_data.get("filter_string") else "")
         )
 
         # Create series for the spectrum
@@ -1580,6 +1626,8 @@ class InteractiveMSMSChartView(QChartView):
         self._right_press_start = None
         self._right_click_mz: float | None = None
         self._right_click_norm_int: float = 0.0
+        # Optional callback: called with (mz: float | None) when hover changes
+        self._on_hover_mz_changed = None
 
     def mousePressEvent(self, event):
         """Handle mouse press events"""
@@ -1719,6 +1767,9 @@ class InteractiveMSMSChartView(QChartView):
                 self.hover_label.setText(f"m/z: {best_mz:.4f}")
                 self.hover_label.adjustSize()
 
+                if callable(self._on_hover_mz_changed):
+                    self._on_hover_mz_changed(best_mz)
+
             # Position label centered above the peak tip
             tip_pos = self.chart().mapToPosition(QPointF(best_mz, best_norm_int))
             lx = int(tip_pos.x()) - self.hover_label.width() // 2
@@ -1732,7 +1783,10 @@ class InteractiveMSMSChartView(QChartView):
             if self._hover_series is not None:
                 self.chart().removeSeries(self._hover_series)
                 self._hover_series = None
-            self._hover_mz = None
+            if self._hover_mz is not None:
+                self._hover_mz = None
+                if callable(self._on_hover_mz_changed):
+                    self._on_hover_mz_changed(None)
             self.hover_label.hide()
 
     def mouseReleaseEvent(self, event):
@@ -1761,7 +1815,10 @@ class InteractiveMSMSChartView(QChartView):
             self.chart().removeSeries(self._hover_series)
             self._hover_series = None
         self.hover_label.hide()
-        self._hover_mz = None
+        if self._hover_mz is not None:
+            self._hover_mz = None
+            if callable(self._on_hover_mz_changed):
+                self._on_hover_mz_changed(None)
         super().leaveEvent(event)
 
     def resizeEvent(self, event):
@@ -1797,20 +1854,33 @@ class InteractiveMSMSChartView(QChartView):
                 act = ann_menu.addAction(name)
                 act.triggered.connect(lambda _c=False, m=mz, n=norm_int, c=color_str: self._toggle_pin(m, n, c))
 
+        # -- Scan info (scan_id, filter_string, collision energy) — read-only labels --
+        if self.spectrum_data is not None:
+            scan_id = self.spectrum_data.get("scan_id")
+            filter_string = self.spectrum_data.get("filter_string")
+            ce = self.spectrum_data.get("collision_energy")
+            ce_text = _format_collision_energy(ce) if ce is not None else None
+            usi = getattr(self, "_usi", None)
+            if scan_id or filter_string or ce_text or usi:
+                menu.addSeparator()
+                if scan_id:
+                    scan_act = menu.addAction(f"Scan: {scan_id}")
+                    scan_act.setEnabled(False)
+                if filter_string:
+                    fs_act = menu.addAction(f"Filter: {filter_string}")
+                    fs_act.setEnabled(False)
+                if ce_text:
+                    ce_act = menu.addAction(f"{ce_text.strip('; ')}")
+                    ce_act.setEnabled(False)
+                if usi:
+                    usi_act = menu.addAction(f"USI (click to copy): {usi}")
+                    usi_act.triggered.connect(lambda _c=False, u=usi: QApplication.clipboard().setText(u))
+
         # -- Copy for MassBank --
         if self.spectrum_data is not None:
             menu.addSeparator()
             massbank_action = menu.addAction("Copy for MassBank")
             massbank_action.triggered.connect(self._copy_for_massbank)
-
-        # -- USI section --
-        usi = getattr(self, "_usi", None)
-        if usi:
-            menu.addSeparator()
-            usi_action = menu.addAction(f"USI: {usi}")
-            usi_action.setEnabled(False)
-            copy_usi_action = menu.addAction("Copy USI to Clipboard")
-            copy_usi_action.triggered.connect(lambda _c=False, u=usi: QApplication.clipboard().setText(u))
 
         # -- Open comparison window --
         open_comp_fn = getattr(self, "_open_comparison_fn", None)
@@ -2490,14 +2560,14 @@ class MSMSViewerWindow(QWidget):
         precursor_intensity = spectrum_data.get("precursor_intensity", 0)
         intensity_text = f"{precursor_intensity:.1e}" if precursor_intensity > 0 else "N/A"
 
+        polarity = spectrum_data.get("polarity")
+        polarity_text = ""
+        if polarity:
+            polarity_text = f"; {'+' if polarity == 'positive' else '-'}"
         ce = spectrum_data.get("collision_energy")
-        ce_text = _format_collision_energy(ce)
         usi = make_usi(spectrum_data, filename)
         chart.setTitle(
-            f"RT: {spectrum_data['rt']:.2f} min"
-            f"\nPrecursor: {spectrum_data['precursor_mz']:.4f} | Intensity: {intensity_text}{ce_text}"
-            + (f"\nScan: {spectrum_data['scan_id']}" if spectrum_data.get("scan_id") else "")
-            + (f" | Filter: {spectrum_data['filter_string']}" if spectrum_data.get("filter_string") else "")
+            f"{spectrum_data['rt']:.4f} min; pre-m/z {spectrum_data['precursor_mz']:.4f}; pre-int {intensity_text}{polarity_text}"
         )
 
         # Create series for the spectrum

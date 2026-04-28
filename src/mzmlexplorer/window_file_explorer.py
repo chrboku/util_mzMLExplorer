@@ -1200,16 +1200,15 @@ class MzMLFileExplorerWindow(QWidget):
                     rt = spec.get("scan_time", 0.0)
                     polarity = spec.get("polarity", "")
                     usi = make_usi(spec, self._filename)
-                    title = f"MS{ms_level}  |  {usi}  |  RT: {rt:.4f} min  |  {polarity}"
+                    title = f"MS{ms_level}; {usi}; {rt:.4f} min; {polarity}"
                     if ms_level == 2:
                         prec = spec.get("precursor_mz")
                         if prec is not None:
-                            title += f"  |  Precursor: {float(prec):.4f}"
+                            title += f"; pre-m/z {float(prec):.4f}"
                         ce = spec.get("collision_energy")
                         if ce is not None:
                             from .window_msms import _format_collision_energy
-
-                            title += _format_collision_energy(ce, separator="  |  ")
+                            title += _format_collision_energy(ce, separator="; ")
                     open_fn = (lambda s=spec, fn=self._filename: self._open_msms_popup(s, fn)) if ms_level == 2 else None
                     panel.set_spectrum(
                         title,

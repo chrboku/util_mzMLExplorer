@@ -1709,6 +1709,7 @@ class EICWindow(QWidget):
         if not tname:
             QMessageBox.warning(self, "Invalid Name", "Please enter a template name.")
             return
+        import copy as _copy
         template = {"name": tname}
         if cb_extraction.isChecked():
             template["eic_extraction"] = {
@@ -1719,11 +1720,14 @@ class EICWindow(QWidget):
                 "crop_rt_window": self.crop_rt_cb.isChecked() if hasattr(self, "crop_rt_cb") else self.defaults.get("crop_rt_window", False),
                 "normalize_samples": self.normalize_cb.isChecked() if hasattr(self, "normalize_cb") else self.defaults.get("normalize_samples", False),
                 "legend_position": self.legend_position_combo.currentText() if hasattr(self, "legend_position_combo") else self.defaults.get("legend_position", "Right"),
+                "rt_unit": self.rt_unit_combo.currentText() if hasattr(self, "rt_unit_combo") else self.defaults.get("rt_unit", "min"),
+                "log_y": self.log_y_cb.isChecked() if hasattr(self, "log_y_cb") else False,
+                "ridge_plot": self.ridge_plot_cb.isChecked() if hasattr(self, "ridge_plot_cb") else False,
             }
         if cb_group.isChecked():
-            template["group_settings"] = dict(self.group_settings)
+            template["group_settings"] = _copy.deepcopy(self.group_settings)
         if cb_sample.isChecked():
-            template["sample_settings"] = dict(self.sample_settings)
+            template["sample_settings"] = _copy.deepcopy(self.sample_settings)
         # Store in defaults
         templates = list(self.defaults.get("settings_templates", []))
         # Replace if same name already exists
@@ -1757,6 +1761,14 @@ class EICWindow(QWidget):
                 idx = self.legend_position_combo.findText(extraction["legend_position"])
                 if idx >= 0:
                     self.legend_position_combo.setCurrentIndex(idx)
+            if hasattr(self, "rt_unit_combo") and "rt_unit" in extraction:
+                idx = self.rt_unit_combo.findText(extraction["rt_unit"])
+                if idx >= 0:
+                    self.rt_unit_combo.setCurrentIndex(idx)
+            if hasattr(self, "log_y_cb") and "log_y" in extraction:
+                self.log_y_cb.setChecked(extraction["log_y"])
+            if hasattr(self, "ridge_plot_cb") and "ridge_plot" in extraction:
+                self.ridge_plot_cb.setChecked(extraction["ridge_plot"])
         group_settings = template.get("group_settings")
         if group_settings:
             for grp, settings in group_settings.items():
@@ -1770,7 +1782,9 @@ class EICWindow(QWidget):
                 if fn in self.sample_settings:
                     self.sample_settings[fn].update(settings)
             self._sync_sample_table_from_settings()
-        self.update_plot(preserve_view=True)
+        self.update_plot(preserve_view=False)
+        from PyQt6.QtCore import QTimer
+        QTimer.singleShot(100, self.reset_view)
 
     def create_sample_settings_table(self):
         """Create the sample settings table for per-sample display controls"""

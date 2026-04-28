@@ -7159,37 +7159,37 @@ class EICWindow(QWidget):
         if any_msms_enabled:
             # Add MSMS viewing options (unfiltered)
             if show_msms_closest:
-                msms_closest_action = QAction("Show MSMS spectra", self)
+                msms_closest_action = QAction("Show closest MSMS spectrum per file", self)
                 msms_closest_action.triggered.connect(lambda: _with_ctx_mz(self.view_closest_msms_spectrum, rt_value))
                 context_menu.addAction(msms_closest_action)
 
             if show_msms_3s:
-                msms_3s_action = QAction("Show MSMS spectra (±3 sec)", self)
+                msms_3s_action = QAction("Show all MSMS spectra per file (±3 sec)", self)
                 msms_3s_action.triggered.connect(lambda: _with_ctx_mz(self.view_msms_spectra, rt_value, 3.0 / 60.0))
                 context_menu.addAction(msms_3s_action)
 
             if show_msms_6s:
-                msms_6s_action = QAction("Show MSMS spectra (±6 sec)", self)
+                msms_6s_action = QAction("Show all MSMS spectra per file (±6 sec)", self)
                 msms_6s_action.triggered.connect(lambda: _with_ctx_mz(self.view_msms_spectra, rt_value, 6.0 / 60.0))
                 context_menu.addAction(msms_6s_action)
 
             if show_msms_9s:
-                msms_9s_action = QAction("Show MSMS spectra (±9 sec)", self)
+                msms_9s_action = QAction("Show all MSMS spectra per file (±9 sec)", self)
                 msms_9s_action.triggered.connect(lambda: _with_ctx_mz(self.view_msms_spectra, rt_value, 9.0 / 60.0))
                 context_menu.addAction(msms_9s_action)
 
             if show_msms_most_abundant_3s:
-                act = QAction("Most abundant MSMS per file (±3 sec)", self)
+                act = QAction("Most abundant MSMS spectrum per file (±3 sec)", self)
                 act.triggered.connect(lambda: _with_ctx_mz(self.view_most_abundant_msms, rt_value, 3.0 / 60.0))
                 context_menu.addAction(act)
 
             if show_msms_most_abundant_6s:
-                act = QAction("Most abundant MSMS per file (±6 sec)", self)
+                act = QAction("Most abundant MSMS spectrum per file (±6 sec)", self)
                 act.triggered.connect(lambda: _with_ctx_mz(self.view_most_abundant_msms, rt_value, 6.0 / 60.0))
                 context_menu.addAction(act)
 
             if show_msms_most_abundant_9s:
-                act = QAction("Most abundant MSMS per file (±9 sec)", self)
+                act = QAction("Most abundant MSMS spectrum per file (±9 sec)", self)
                 act.triggered.connect(lambda: _with_ctx_mz(self.view_most_abundant_msms, rt_value, 9.0 / 60.0))
                 context_menu.addAction(act)
 
@@ -7260,6 +7260,11 @@ class EICWindow(QWidget):
             self._msms_windows.append(msms_viewer)
             msms_viewer.destroyed.connect(lambda _, w=msms_viewer: self._msms_windows.remove(w) if w in self._msms_windows else None)
             msms_viewer.show()
+            from .window_manager import get_window_manager as _gwm
+
+            _wm = _gwm()
+            if _wm is not None:
+                _wm.register_window(msms_viewer, parent_window=self, title=f"MS/MS: {self.compound_data.get('Name', '?')}", wtype="MSMS")
 
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to view MSMS spectra: {str(e)}")
@@ -7294,9 +7299,10 @@ class EICWindow(QWidget):
                 reply = QMessageBox.question(
                     self,
                     "Distant MSMS Spectrum",
-                    f"The nearest MSMS spectrum found is {max_offset * 60:.1f} seconds away from "
-                    f"the clicked retention time ({rt_center:.2f} min).\n\n"
-                    "This spectrum may not be representative. Do you still want to view it?",
+                    f"The largest RT difference from the clicked retention time ({rt_center:.2f} min) is {max_offset * 60:.1f} seconds away.\n\n"
+                    + "This spectrum may not be representative. Do you still want to view it?\n\n"
+                    + "Consider restricting it to a retention time window (e.g., ±3 seconds) to find spectra closer to the clicked RT.\n"
+                    + "For such options, please see the documentation and activate it in the options menu.",
                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                     QMessageBox.StandardButton.Yes,
                 )
@@ -7322,6 +7328,11 @@ class EICWindow(QWidget):
             self._msms_windows.append(msms_viewer)
             msms_viewer.destroyed.connect(lambda _, w=msms_viewer: self._msms_windows.remove(w) if w in self._msms_windows else None)
             msms_viewer.show()
+            from .window_manager import get_window_manager as _gwm
+
+            _wm = _gwm()
+            if _wm is not None:
+                _wm.register_window(msms_viewer, parent_window=self, title=f"MS/MS: {self.compound_data.get('Name', '?')} (closest)", wtype="MSMS")
 
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to view closest MSMS spectrum: {str(e)}")
@@ -7409,6 +7420,11 @@ class EICWindow(QWidget):
             self._msms_windows.append(msms_viewer)
             msms_viewer.destroyed.connect(lambda _, w=msms_viewer: self._msms_windows.remove(w) if w in self._msms_windows else None)
             msms_viewer.show()
+            from .window_manager import get_window_manager as _gwm
+
+            _wm = _gwm()
+            if _wm is not None:
+                _wm.register_window(msms_viewer, parent_window=self, title=f"MS/MS: {self.compound_data.get('Name', '?')} (most abundant)", wtype="MSMS")
 
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to view most-abundant MSMS spectrum: {str(e)}")
@@ -7441,6 +7457,11 @@ class EICWindow(QWidget):
             self._msms_windows.append(ms1_viewer)
             ms1_viewer.destroyed.connect(lambda _, w=ms1_viewer: self._msms_windows.remove(w) if w in self._msms_windows else None)
             ms1_viewer.show()
+            from .window_manager import get_window_manager as _gwm
+
+            _wm = _gwm()
+            if _wm is not None:
+                _wm.register_window(ms1_viewer, parent_window=self, title=f"MS1: {self.compound_data.get('Name', '?')}", wtype="MS1")
 
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to view MS1 spectra: {str(e)}")
@@ -8108,7 +8129,7 @@ class EICWindow(QWidget):
 
 
 # Number of seconds threshold for warning about distant MSMS spectra
-_MSMS_RT_WARNING_THRESHOLD_S = 5.0
+_MSMS_RT_WARNING_THRESHOLD_S = 3.0
 
 # Default reference height/width (in pixels) used when equalising splitter panes
 _SPLITTER_REFERENCE_HEIGHT = 800

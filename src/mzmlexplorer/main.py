@@ -67,6 +67,7 @@ from .compound_import_dialog import (
 from .compound_manager import CompoundManager
 from .file_manager import FileManager
 from .window_file_explorer import MzMLFileExplorerWindow
+from .window_manager import WindowManager, WindowManagerPanel, set_window_manager
 from .window_msms import USISpectrumComparisonWindow
 from .window_shared import CollapsibleBox, NoScrollComboBox, NoScrollDoubleSpinBox, NoScrollSpinBox
 from .windows import EICWindow, MultiAdductWindow
@@ -606,6 +607,11 @@ class MzMLExplorerMainWindow(QMainWindow):
         self.compound_manager = CompoundManager()
         self.eic_windows = []
 
+        # Window manager — must be created before init_ui so the panel can be
+        # embedded in the splitter during UI construction.
+        self._wm = WindowManager(self)
+        set_window_manager(self._wm)
+
         # Peak integration data storage
         # Key: (compound_name, ion_name) -> dict with integration data
         self.peak_integration_data = {}
@@ -726,7 +732,16 @@ class MzMLExplorerMainWindow(QMainWindow):
 
         splitter.addWidget(left_panel)
         splitter.addWidget(right_panel)
-        splitter.setSizes([300, 900])
+
+        # Window manager panel (right side)
+        wm_panel_box = QGroupBox("Windows")
+        wm_panel_layout = QVBoxLayout(wm_panel_box)
+        wm_panel_layout.setContentsMargins(4, 4, 4, 4)
+        self._wm_panel = WindowManagerPanel(self._wm, parent=self)
+        wm_panel_layout.addWidget(self._wm_panel)
+        splitter.addWidget(wm_panel_box)
+
+        splitter.setSizes([300, 900, 200])
 
         main_layout.addWidget(splitter)
 
@@ -1452,6 +1467,12 @@ class MzMLExplorerMainWindow(QMainWindow):
             self._file_explorer_windows = []
         self._file_explorer_windows.append(win)
         win.destroyed.connect(lambda _, w=win: self._file_explorer_windows.remove(w) if hasattr(self, "_file_explorer_windows") and w in self._file_explorer_windows else None)
+        self._wm.register_window(
+            win,
+            parent_window=self,
+            title=f"Explorer: {os.path.basename(filepath)}",
+            wtype="FileExplorer",
+        )
 
     def remove_file_at_row(self, row):
         """Remove a file at the specified row"""
@@ -1974,6 +1995,14 @@ class MzMLExplorerMainWindow(QMainWindow):
 
             multi_window.destroyed.connect(on_window_closed)
 
+            # Register with window manager
+            self._wm.register_window(
+                multi_window,
+                parent_window=self,
+                title=f"Multi-Adduct: {compound_name}",
+                wtype="MultiAdduct",
+            )
+
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to create multi-adduct window: {str(e)}")
             import traceback
@@ -2207,6 +2236,15 @@ class MzMLExplorerMainWindow(QMainWindow):
 
             eic_window.destroyed.connect(on_window_closed)
 
+            # Register with window manager
+            compound_name = compound.get("Name", "?") if isinstance(compound, dict) else str(compound)
+            self._wm.register_window(
+                eic_window,
+                parent_window=self,
+                title=f"EIC: {compound_name} {adduct}",
+                wtype="EIC",
+            )
+
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to create EIC window: {str(e)}")
             import traceback
@@ -2224,6 +2262,12 @@ class MzMLExplorerMainWindow(QMainWindow):
         win.destroyed.connect(lambda _, w=win: self._comparator_windows.remove(w) if hasattr(self, "_comparator_windows") and w in self._comparator_windows else None)
         win.show()
         win.raise_()
+        self._wm.register_window(
+            win,
+            parent_window=self,
+            title="Spectrum Comparator",
+            wtype="Comparator",
+        )
 
     def create_menu_bar(self):
         """Create the menu bar"""
@@ -2354,6 +2398,7 @@ class MzMLExplorerMainWindow(QMainWindow):
                     mw._game_windows = []
                 mw._game_windows.append(snake_win)
                 snake_win.destroyed.connect(lambda: mw._game_windows.remove(snake_win) if snake_win in mw._game_windows else None)
+                mw._wm.register_window(snake_win, parent_window=mw, title="Snake 🐍", wtype="Game")
 
             logo_lbl.mousePressEvent = _open_snake
             layout.addWidget(logo_lbl)
@@ -2551,12 +2596,27 @@ class MzMLExplorerMainWindow(QMainWindow):
 
     def closeEvent(self, event):
         """Clean up when closing the application"""
-        # Stop monitoring compound file
-        self.stop_compound_file_monitoring()
+        # If other windows are open, ask for confirmation before closing all.
+        if hasattr(self, "_wm") and self._wm.has_open_children():
+            reply = QMessageBox.question(
+                self,
+                "Close Application",
+                "Other windows are still open.\nClose all windows and exit?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply == QMessageBox.StandardButton.Yes:
+                event.ignore()
+                # close_all_children_and_exit removes the event filter and
+                # calls close() on the main window again, which will reach
+                # this closeEvent a second time with no open children.
+                self._wm.close_all_children_and_exit()
+            else:
+                event.ignore()
+            return
 
-        # Close all EIC windows
-        for window in self.eic_windows:
-            window.close()
+        # Normal close: run cleanup and accept.
+        self.stop_compound_file_monitoring()
         event.accept()
 
     @staticmethod

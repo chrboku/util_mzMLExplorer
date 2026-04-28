@@ -185,6 +185,11 @@ class MS1ViewerWindow(QWidget):
                 self._single_windows.append(win)
                 win.destroyed.connect(lambda _, w=win: self._single_windows.remove(w) if w in self._single_windows else None)
                 win.show()
+                from .window_manager import get_window_manager as _gwm
+
+                _wm = _gwm()
+                if _wm is not None:
+                    _wm.register_window(win, parent_window=self, title=f"MS1: {fd['filename']}", wtype="MS1")
 
             file_label.clicked.connect(_open_single)
             self.grid_layout.addWidget(file_label, row * 2, col)

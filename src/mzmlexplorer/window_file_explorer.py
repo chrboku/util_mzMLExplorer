@@ -430,6 +430,11 @@ class _SpectrumChartView(QChartView):
         win.raise_()
         self._eic_windows.append(win)
         win.destroyed.connect(lambda _, w=win: self._eic_windows.remove(w) if w in self._eic_windows else None)
+        from .window_manager import get_window_manager as _gwm
+
+        _wm = _gwm()
+        if _wm is not None:
+            _wm.register_window(win, parent_window=self, title="Spectrum Comparator", wtype="Comparator")
 
     def _open_eic_window(self, mz: float):
         """Open an EICWindow for *mz*, deriving polarity from the current spectrum."""
@@ -456,6 +461,11 @@ class _SpectrumChartView(QChartView):
         win.raise_()
         self._eic_windows.append(win)
         win.destroyed.connect(lambda _, w=win: self._eic_windows.remove(w) if w in self._eic_windows else None)
+        from .window_manager import get_window_manager as _gwm
+
+        _wm = _gwm()
+        if _wm is not None:
+            _wm.register_window(win, parent_window=self, title=f"EIC: m/z {mz:.5f}", wtype="EIC")
 
     def _redraw_annotation_labels(self):
         """Reposition all pinned annotation labels to match current chart coordinates."""

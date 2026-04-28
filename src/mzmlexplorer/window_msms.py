@@ -1480,6 +1480,11 @@ class MSMSPopupWindow(QWidget):
         self._comparison_windows.append(win)
         win.destroyed.connect(lambda _, w=win: self._comparison_windows.remove(w) if w in self._comparison_windows else None)
         win.show()
+        from .window_manager import get_window_manager as _gwm
+
+        _wm = _gwm()
+        if _wm is not None:
+            _wm.register_window(win, parent_window=self, title=f"Spectrum Comparison: {self.filename}", wtype="Comparator")
 
     def create_large_msms_chart(self):
         """Create a large MSMS spectrum chart"""
@@ -2068,6 +2073,15 @@ class InteractiveMSMSChartView(QChartView):
                 self._popup_windows.append(popup)
                 popup.destroyed.connect(lambda _, p=popup: self._popup_windows.remove(p) if p in self._popup_windows else None)
                 popup.show()
+                from .window_manager import get_window_manager as _gwm
+
+                _wm = _gwm()
+                if _wm is not None:
+                    # Find the MSMSViewerWindow parent (walk up the widget hierarchy)
+                    _parent_win = self.parent()
+                    while _parent_win is not None and not hasattr(_parent_win, "compound_name"):
+                        _parent_win = _parent_win.parent() if hasattr(_parent_win, "parent") else None
+                    _wm.register_window(popup, parent_window=_parent_win, title=f"MS/MS Popup: {self.filename}", wtype="MSMS")
         super().mouseDoubleClickEvent(event)
 
 
@@ -2568,7 +2582,15 @@ class MSMSViewerWindow(QWidget):
             polarity_text = f"; {'+' if polarity == 'positive' else '-'}"
         ce = spectrum_data.get("collision_energy")
         usi = make_usi(spectrum_data, filename)
-        chart.setTitle(f"{spectrum_data['rt']:.4f} min; pre-m/z {spectrum_data['precursor_mz']:.4f}; pre-int {intensity_text}{polarity_text}")
+        rt_val = spectrum_data["rt"]
+        rt_str = f"{rt_val:.4f} min"
+        rt_dev = abs(rt_val - self.rt_center) * 60.0
+        # todo use the variable _MSMS_RT_WARNING_THRESHOLD_S
+        if rt_dev > 3.0:
+            rt_html = f'<span style="background-color:firebrick;color:white;padding:0 2px">{rt_str}</span>'
+        else:
+            rt_html = rt_str
+        chart.setTitle(f"{rt_html}; pre-m/z {spectrum_data['precursor_mz']:.4f}; pre-int {intensity_text}{polarity_text}")
 
         # Create series for the spectrum
         series = QLineSeries()
@@ -2791,6 +2813,11 @@ class MSMSViewerWindow(QWidget):
         self._open_popups.append(win)
         win.destroyed.connect(lambda: self._open_popups.remove(win) if win in self._open_popups else None)
         win.show()
+        from .window_manager import get_window_manager as _gwm
+
+        _wm = _gwm()
+        if _wm is not None:
+            _wm.register_window(win, parent_window=self, title=f"Spectrum Comparison: {file1_data['filename']} vs {file2_data['filename']}", wtype="Comparator")
 
     def _on_similarity_cell_clicked(self, row: int, col: int):
         """Open the two representative spectra for the clicked similarity cell."""
@@ -2850,6 +2877,11 @@ class MSMSViewerWindow(QWidget):
         self._open_popups.append(win)
         win.destroyed.connect(lambda: self._open_popups.remove(win) if win in self._open_popups else None)
         win.show()
+        from .window_manager import get_window_manager as _gwm
+
+        _wm = _gwm()
+        if _wm is not None:
+            _wm.register_window(win, parent_window=self, title=f"Spectrum Comparison: {name_a} vs {name_b}", wtype="Comparator")
 
     def _get_spectra_for_file(self, filename: str) -> list:
         """Return the spectra list for a given filename from processed_data, or []."""
@@ -2870,6 +2902,11 @@ class MSMSViewerWindow(QWidget):
         self._open_popups.append(win)
         win.destroyed.connect(lambda: self._open_popups.remove(win) if win in self._open_popups else None)
         win.show()
+        from .window_manager import get_window_manager as _gwm
+
+        _wm = _gwm()
+        if _wm is not None:
+            _wm.register_window(win, parent_window=self, title=f"Spectrum Comparison: {filename}", wtype="Comparator")
 
     def _open_msms_popup_for(self, spectrum_data, filename, group, filepath=None):
         """Open an MSMSPopupWindow for a single spectrum from the overview grid."""
@@ -2891,6 +2928,11 @@ class MSMSViewerWindow(QWidget):
         self._open_popups.append(win)
         win.destroyed.connect(lambda: self._open_popups.remove(win) if win in self._open_popups else None)
         win.show()
+        from .window_manager import get_window_manager as _gwm
+
+        _wm = _gwm()
+        if _wm is not None:
+            _wm.register_window(win, parent_window=self, title=f"MS/MS Popup: {filename}", wtype="MSMS")
 
     def closeEvent(self, event):
         """Clean up when closing the window"""

@@ -128,8 +128,8 @@ class WindowManager(QObject):
         self._main_window = main_window
         self._records: Dict[int, _WindowRecord] = {}
         self._window_to_wid: Dict[int, int] = {}  # id(window) → wid
-        self._history: deque = deque()  # wids (oldest first)
-        self._moving_wids: Set[int] = set()  # re-entrancy guard
+        self._history: deque = deque()              # wids (oldest first)
+        self._moving_wids: Set[int] = set()         # re-entrancy guard
 
         # Register the main window itself
         rec = _WindowRecord(main_window, "mzML Explorer", "Main", None)
@@ -308,7 +308,11 @@ class WindowManager(QObject):
         deletion, and then close the main window.
         Called when the user confirms "close all and exit".
         """
-        to_close = [rec for wid, rec in list(self._records.items()) if wid != self._main_wid]
+        to_close = [
+            rec
+            for wid, rec in list(self._records.items())
+            if wid != self._main_wid
+        ]
         for rec in to_close:
             if rec.window is not None:
                 try:
@@ -532,7 +536,6 @@ class WindowManagerPanel(QWidget):
                     child_item.setText(0, f"{icon} {child_rec.title}")
                     child_item.setData(0, Qt.ItemDataRole.UserRole, ("open", child_wid))
                     # Expand by default or restore saved state
-                    should_expand = child_wid in expanded_wids or child_wid not in expanded_wids
                     child_item.setExpanded(True)
                     _add_open_children(child_wid, child_item)
 
@@ -542,7 +545,9 @@ class WindowManagerPanel(QWidget):
             root_item.setExpanded(True)
 
         # ── History section ────────────────────────────────────────────────
-        history_records = [records[wid] for wid in self._wm._history if wid in records]
+        history_records = [
+            records[wid] for wid in self._wm._history if wid in records
+        ]
         if history_records:
             hist_root = QTreeWidgetItem(self._tree)
             hist_root.setText(0, "🕐 Recently Closed")

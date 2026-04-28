@@ -2,35 +2,35 @@
 Compound Import Dialog for CSV/TSV files
 """
 
+import traceback
+from typing import Any, Dict, Optional
+
 import pandas as pd
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import (
-    QDialog,
-    QVBoxLayout,
-    QHBoxLayout,
-    QLabel,
     QComboBox,
-    QLineEdit,
-    QSpinBox,
+    QDialog,
     QDoubleSpinBox,
+    QFormLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
     QPushButton,
+    QSpinBox,
+    QSplitter,
     QTableWidget,
     QTableWidgetItem,
-    QGroupBox,
-    QFormLayout,
-    QMessageBox,
-    QHeaderView,
-    QSplitter,
     QTextEdit,
+    QVBoxLayout,
 )
-from PyQt6.QtCore import Qt, QTimer
-from typing import Optional, Dict, Any
-from .FormulaTools import formulaTools
-from .window_shared import NoScrollComboBox, NoScrollSpinBox, NoScrollDoubleSpinBox
-
-import traceback
-
 from rdkit import Chem
 from rdkit.Chem import rdMolDescriptors
+
+from .FormulaTools import formulaTools
+from .window_shared import NoScrollComboBox, NoScrollDoubleSpinBox, NoScrollSpinBox
 
 
 def validate_formula_smiles_agreement(

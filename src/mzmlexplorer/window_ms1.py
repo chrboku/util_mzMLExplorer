@@ -4,25 +4,26 @@ InteractiveMS1SingleChartView, MS1SingleSpectrumWindow.
 """
 
 import numpy as np
-from PyQt6.QtWidgets import (
-    QWidget,
-    QVBoxLayout,
-    QHBoxLayout,
-    QPushButton,
-    QLabel,
-    QCheckBox,
-    QSpinBox,
-    QDoubleSpinBox,
-    QScrollArea,
-    QGridLayout,
-    QFrame,
-    QMenu,
-)
-from PyQt6.QtCore import Qt, QPointF
 from PyQt6.QtCharts import QChart, QChartView, QLineSeries, QValueAxis
-from PyQt6.QtGui import QPen, QColor, QPainter, QMouseEvent
-from .window_shared import ClickableLabel, ANNOTATION_COLOR_PRESETS, NoScrollSpinBox, NoScrollDoubleSpinBox
-from .utils import parse_molecular_formula, make_usi
+from PyQt6.QtCore import QPointF, Qt
+from PyQt6.QtGui import QColor, QMouseEvent, QPainter, QPen
+from PyQt6.QtWidgets import (
+    QCheckBox,
+    QDoubleSpinBox,
+    QFrame,
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QMenu,
+    QPushButton,
+    QScrollArea,
+    QSpinBox,
+    QVBoxLayout,
+    QWidget,
+)
+
+from .utils import make_usi, parse_molecular_formula
+from .window_shared import ANNOTATION_COLOR_PRESETS, ClickableLabel, NoScrollDoubleSpinBox, NoScrollSpinBox
 
 
 def _make_vline():

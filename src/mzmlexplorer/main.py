@@ -1,75 +1,75 @@
 print("Loading mzmlexplorer...")
 
-import sys
+import concurrent.futures
+import json
 import os
+import re
+import sys
+
+import pandas as pd
+import toml
+from PyQt6.QtCore import QEvent, QRect, QSettings, QSize, Qt, QTimer
+from PyQt6.QtGui import (
+    QAction,
+    QColor,
+    QCursor,
+    QDragEnterEvent,
+    QDropEvent,
+    QFont,
+    QFontMetrics,
+    QPainter,
+    QPen,
+    QPixmap,
+)
 from PyQt6.QtWidgets import (
+    QAbstractItemView,
     QApplication,
-    QMainWindow,
-    QVBoxLayout,
+    QCheckBox,
+    QComboBox,
+    QDialog,
+    QDoubleSpinBox,
+    QFileDialog,
+    QFormLayout,
+    QFrame,
+    QGroupBox,
     QHBoxLayout,
-    QWidget,
+    QHeaderView,
+    QLabel,
+    QLineEdit,
+    QMainWindow,
+    QMenu,
+    QMenuBar,
+    QMessageBox,
+    QProgressDialog,
     QPushButton,
+    QScrollArea,
+    QSpinBox,
+    QSplitter,
+    QStyle,
+    QStyleOptionTab,
+    QStylePainter,
+    QTabBar,
     QTableWidget,
     QTableWidgetItem,
+    QTabWidget,
     QTreeWidget,
     QTreeWidgetItem,
     QTreeWidgetItemIterator,
-    QLabel,
-    QDoubleSpinBox,
-    QLineEdit,
-    QGroupBox,
-    QCheckBox,
-    QComboBox,
-    QSpinBox,
-    QSplitter,
-    QFileDialog,
-    QMessageBox,
-    QHeaderView,
-    QMenuBar,
-    QMenu,
-    QDialog,
-    QFormLayout,
-    QProgressDialog,
-    QFrame,
-    QScrollArea,
-    QAbstractItemView,
+    QVBoxLayout,
+    QWidget,
     QWidgetAction,
-    QTabWidget,
-    QStyleOptionTab,
-    QTabBar,
-    QStylePainter,
-    QStyle,
 )
-from PyQt6.QtCore import Qt, QTimer, QSettings, QEvent, QSize, QRect
-from PyQt6.QtGui import (
-    QFont,
-    QFontMetrics,
-    QAction,
-    QDragEnterEvent,
-    QDropEvent,
-    QCursor,
-    QPixmap,
-    QPainter,
-    QPen,
-)
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QColor, QFont
-import pandas as pd
-from .compound_manager import CompoundManager
-from .file_manager import FileManager
-from .windows import EICWindow, MultiAdductWindow
-from .window_shared import CollapsibleBox, NoScrollComboBox, NoScrollSpinBox, NoScrollDoubleSpinBox
-from .window_file_explorer import MzMLFileExplorerWindow
-from .window_msms import USISpectrumComparisonWindow
+
 from .compound_import_dialog import (
     CompoundImportDialog,
     validate_formula_smiles_agreement,
 )
-
-import json
-import toml
-import concurrent.futures
-import re
+from .compound_manager import CompoundManager
+from .file_manager import FileManager
+from .window_file_explorer import MzMLFileExplorerWindow
+from .window_msms import USISpectrumComparisonWindow
+from .window_shared import CollapsibleBox, NoScrollComboBox, NoScrollDoubleSpinBox, NoScrollSpinBox
+from .windows import EICWindow, MultiAdductWindow
 
 # fmt: off
 # Full adduct library used both for the compounds template and the custom EIC dialog.
@@ -397,7 +397,7 @@ class CustomEICDialog(QDialog):
 
     def _validate_tab1(self):
         """Live-validate the Formula/SMILES/Mass tab and update feedback labels."""
-        from .utils import calculate_molecular_mass, parse_molecular_formula, adduct_mass_change
+        from .utils import adduct_mass_change, calculate_molecular_mass, parse_molecular_formula
 
         formula = self.formula_edit.text().strip()
         smiles = self.smiles_edit.text().strip()
@@ -435,6 +435,7 @@ class CustomEICDialog(QDialog):
                     if formula and neutral_mass is not None:
                         try:
                             from rdkit.Chem import rdMolDescriptors
+
                             from .FormulaTools import formulaTools
 
                             rdkit_formula_str = rdMolDescriptors.CalcMolFormula(mol)
@@ -517,7 +518,7 @@ class CustomEICDialog(QDialog):
 
     def _on_accept(self):
         """Collect results and close the dialog."""
-        from .utils import calculate_molecular_mass, parse_molecular_formula, adduct_mass_change
+        from .utils import adduct_mass_change, calculate_molecular_mass, parse_molecular_formula
 
         if self.tabs.currentIndex() == 1:
             # ---- Tab 1: Formula / SMILES / Mass ----

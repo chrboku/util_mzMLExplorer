@@ -3,55 +3,58 @@ Multi-adduct EIC window for displaying multiple adduct chromatograms
 """
 
 import sys
-import pandas as pd
 import time
-from PyQt6.QtWidgets import (
-    QWidget,
-    QVBoxLayout,
-    QHBoxLayout,
-    QPushButton,
-    QLabel,
-    QCheckBox,
-    QSpinBox,
-    QDoubleSpinBox,
-    QGroupBox,
-    QFormLayout,
-    QMessageBox,
-    QProgressBar,
-    QSplitter,
-    QComboBox,
-    QMenu,
-    QScrollArea,
-    QGridLayout,
-    QDialog,
-    QTableWidget,
-    QTableWidgetItem,
-    QHeaderView,
-    QAbstractItemView,
-    QTabWidget,
-    QApplication,
-    QFrame,
-    QProgressDialog,
-)
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QPointF, QMargins
-from PyQt6.QtCharts import QChart, QChartView, QLineSeries, QValueAxis
-from PyQt6.QtGui import QPen, QColor, QPainter, QMouseEvent, QAction, QBrush
-from PyQt6.QtWidgets import QSizePolicy
-from .utils import calculate_cosine_similarity, calculate_similarity_statistics
-import numpy as np
-from typing import Dict, Tuple, Optional, List
+from typing import Dict, List, Optional, Tuple
+
 import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import seaborn as sns
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 from matplotlib.figure import Figure
-import seaborn as sns
+from natsort import natsort_keygen, natsorted
+from PyQt6.QtCharts import QChart, QChartView, QLineSeries, QValueAxis
+from PyQt6.QtCore import QMargins, QPointF, Qt, QThread, pyqtSignal
+from PyQt6.QtGui import QAction, QBrush, QColor, QMouseEvent, QPainter, QPen
+from PyQt6.QtWidgets import (
+    QAbstractItemView,
+    QApplication,
+    QCheckBox,
+    QComboBox,
+    QDialog,
+    QDoubleSpinBox,
+    QFormLayout,
+    QFrame,
+    QGridLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QMenu,
+    QMessageBox,
+    QProgressBar,
+    QProgressDialog,
+    QPushButton,
+    QScrollArea,
+    QSizePolicy,
+    QSpinBox,
+    QSplitter,
+    QTableWidget,
+    QTableWidgetItem,
+    QTabWidget,
+    QVBoxLayout,
+    QWidget,
+)
+
 from .utils import (
+    calculate_cosine_similarity,
     calculate_mz_from_formula,
+    calculate_similarity_statistics,
     format_mz,
     format_retention_time,
     parse_molecular_formula,
 )
-from natsort import natsorted, natsort_keygen
 
 
 class ClickableLabel(QLabel):

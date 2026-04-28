@@ -11,33 +11,32 @@ Usage
 """
 
 import os
-import numpy as np
 from collections import deque
 
+import numpy as np
+from PyQt6.QtCharts import QChart, QChartView, QLineSeries, QValueAxis
+from PyQt6.QtCore import QMargins, QPointF, Qt, QThread, pyqtSignal
+from PyQt6.QtGui import QColor, QPainter, QPen
 from PyQt6.QtWidgets import (
     QApplication,
-    QMenu,
-    QWidget,
-    QVBoxLayout,
+    QFrame,
     QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QMenu,
+    QProgressBar,
+    QSizePolicy,
     QSplitter,
     QTreeWidget,
     QTreeWidgetItem,
-    QLabel,
-    QProgressBar,
-    QSizePolicy,
-    QFrame,
-    QHeaderView,
+    QVBoxLayout,
+    QWidget,
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QMargins, QPointF
-from PyQt6.QtCharts import QChart, QChartView, QLineSeries, QValueAxis
-from PyQt6.QtGui import QPen, QColor, QPainter
 
+from .utils import make_usi
+from .window_eic import EICWindow
 from .window_msms import MSMSPopupWindow, USISpectrumComparisonWindow
 from .window_shared import ANNOTATION_COLOR_PRESETS
-from .window_eic import EICWindow
-from .utils import make_usi
-
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Background loader

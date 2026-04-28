@@ -2,15 +2,17 @@
 Compound manager for handling compound information and adducts
 """
 
-import pandas as pd
 import re
-from typing import List, Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
+
+import pandas as pd
+
 from .utils import (
-    calculate_mz_from_formula,
-    parse_molecular_formula,
-    calculate_molecular_mass,
     ISOTOPE_DATA,
     adduct_mass_change,
+    calculate_molecular_mass,
+    calculate_mz_from_formula,
+    parse_molecular_formula,
 )
 
 

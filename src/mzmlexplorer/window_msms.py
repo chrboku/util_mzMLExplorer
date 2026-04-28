@@ -3,49 +3,51 @@ MSMS viewer windows: MSMSPopupWindow, InteractiveMSMSChartView,
 MSMSViewerWindow, EnhancedMirrorPlotWindow.
 """
 
-import sys
 import os
 import re
-import traceback
+import sys
 import time
+import traceback
+from typing import Dict, List, Optional, Tuple
+
 import numpy as np
-from typing import Dict, Tuple, Optional, List
-from natsort import natsorted, natsort_keygen
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas  # noqa: F401 (kept for compatibility)
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar  # noqa: F401
 from matplotlib.figure import Figure  # noqa: F401
+from natsort import natsort_keygen, natsorted
+from PyQt6.QtCharts import QChart, QChartView, QLineSeries, QValueAxis
+from PyQt6.QtCore import QMargins, QPointF, Qt, QThread, pyqtSignal
+from PyQt6.QtGui import QAction, QBrush, QColor, QFont, QMouseEvent, QPainter, QPen
 from PyQt6.QtWidgets import (
-    QWidget,
-    QVBoxLayout,
-    QHBoxLayout,
-    QPushButton,
-    QLabel,
-    QGroupBox,
-    QFormLayout,
-    QMessageBox,
-    QSplitter,
-    QMenu,
-    QScrollArea,
-    QGridLayout,
-    QTableWidget,
-    QTableWidgetItem,
-    QHeaderView,
     QAbstractItemView,
     QApplication,
-    QWidgetAction,
-    QSizePolicy,
-    QDoubleSpinBox,
-    QSpinBox,
-    QLineEdit,
     QCheckBox,
+    QDoubleSpinBox,
+    QFormLayout,
+    QGridLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QLineEdit,
+    QMenu,
+    QMessageBox,
     QProgressBar,
+    QPushButton,
+    QScrollArea,
+    QSizePolicy,
+    QSpinBox,
+    QSplitter,
+    QTableWidget,
+    QTableWidgetItem,
+    QVBoxLayout,
+    QWidget,
+    QWidgetAction,
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QPointF, QMargins
-from PyQt6.QtCharts import QChart, QChartView, QLineSeries, QValueAxis
-from PyQt6.QtGui import QPen, QColor, QPainter, QMouseEvent, QAction, QBrush, QFont
-from .window_shared import CollapsibleBox, ANNOTATION_COLOR_PRESETS, BarDelegate, NumericTableWidgetItem, NoScrollSpinBox, NoScrollDoubleSpinBox
-from .utils import calculate_cosine_similarity, calculate_similarity_statistics, make_usi
+
 from .FormulaTools import FragmentAnnotator
+from .utils import calculate_cosine_similarity, calculate_similarity_statistics, make_usi
+from .window_shared import ANNOTATION_COLOR_PRESETS, BarDelegate, CollapsibleBox, NoScrollDoubleSpinBox, NoScrollSpinBox, NumericTableWidgetItem
 
 
 class _ColoredHeaderView(QHeaderView):
@@ -596,11 +598,11 @@ class MSMSPopupWindow(QWidget):
         if not smiles or smiles.lower() in ("nan", "none", ""):
             return
         try:
+            from PyQt6.QtCore import QByteArray
+            from PyQt6.QtGui import QPainter, QPixmap
+            from PyQt6.QtSvg import QSvgRenderer
             from rdkit import Chem
             from rdkit.Chem.Draw import rdMolDraw2D
-            from PyQt6.QtSvg import QSvgRenderer
-            from PyQt6.QtCore import QByteArray
-            from PyQt6.QtGui import QPixmap, QPainter
 
             mol = Chem.MolFromSmiles(smiles)
             if mol is None:

@@ -6,65 +6,65 @@ EmbeddedScatterPlotView, Interactive2DScatterChartView.
 
 import os
 import re
-import traceback
-import pandas as pd
 import time
-import numpy as np
+import traceback
 from typing import Optional
-from natsort import natsorted, natsort_keygen
-from sklearn.decomposition import PCA
-from sklearn.preprocessing import StandardScaler
+
+import numpy as np
+import pandas as pd
+import seaborn as sns
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 from matplotlib.figure import Figure
-import seaborn as sns
+from natsort import natsort_keygen, natsorted
+from PyQt6.QtCharts import QChart, QChartView, QLineSeries, QValueAxis
+from PyQt6.QtCore import QMargins, QPointF, Qt, QThread, pyqtSignal
+from PyQt6.QtGui import QAction, QBrush, QColor, QMouseEvent, QPainter, QPen
 from PyQt6.QtWidgets import (
-    QWidget,
-    QVBoxLayout,
-    QHBoxLayout,
-    QPushButton,
-    QLabel,
+    QAbstractItemView,
+    QApplication,
     QCheckBox,
+    QComboBox,
+    QDialog,
     QDoubleSpinBox,
-    QGroupBox,
     QFormLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QLineEdit,
+    QMenu,
     QMessageBox,
     QProgressBar,
-    QSplitter,
-    QComboBox,
-    QMenu,
-    QTableWidget,
-    QTableWidgetItem,
-    QHeaderView,
-    QAbstractItemView,
-    QTabWidget,
-    QApplication,
+    QProgressDialog,
+    QPushButton,
+    QScrollArea,
     QSizePolicy,
     QSlider,
-    QDialog,
-    QProgressDialog,
-    QScrollArea,
-    QTextEdit,
+    QSplitter,
     QStyle,
-    QLineEdit,
+    QTableWidget,
+    QTableWidgetItem,
+    QTabWidget,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QPointF, QMargins
-from PyQt6.QtCharts import QChart, QChartView, QLineSeries, QValueAxis
-from PyQt6.QtGui import QPen, QColor, QPainter, QMouseEvent, QAction, QBrush
-from .window_shared import BarDelegate, CenteredBarDelegate, CollapsibleBox
-from .window_shared import NumericTableWidgetItem
-from .window_shared import NoScrollSpinBox, NoScrollDoubleSpinBox, NoScrollComboBox
-from .window_ms1 import MS1ViewerWindow
-from .window_msms import MSMSViewerWindow
+from sklearn.decomposition import PCA
+from sklearn.preprocessing import StandardScaler
+
+from .compound_manager import CompoundManager
 from .utils import (
-    format_mz,
-    format_retention_time,
     adduct_mass_change,
     calculate_molecular_mass,
     calculate_mz_from_formula,
+    format_mz,
+    format_retention_time,
     parse_molecular_formula,
 )
-from .compound_manager import CompoundManager
+from .window_ms1 import MS1ViewerWindow
+from .window_msms import MSMSViewerWindow
+from .window_shared import BarDelegate, CenteredBarDelegate, CollapsibleBox, NoScrollComboBox, NoScrollDoubleSpinBox, NoScrollSpinBox, NumericTableWidgetItem
 
 
 class InteractiveChartView(QChartView):
@@ -923,9 +923,9 @@ class EICWindow(QWidget):
 
         # Try to render the 2-D structure with rdkit
         try:
+            from PyQt6.QtGui import QPixmap
             from rdkit import Chem
             from rdkit.Chem.Draw import rdMolDraw2D
-            from PyQt6.QtGui import QPixmap
 
             mol = Chem.MolFromSmiles(smiles)
             if mol is None:
@@ -1003,9 +1003,9 @@ class EICWindow(QWidget):
         # ---- Left: high-res structure image (stretches when dialog is resized) ----
         orig_pixmap = None
         try:
+            from PyQt6.QtGui import QPixmap
             from rdkit import Chem
             from rdkit.Chem.Draw import rdMolDraw2D
-            from PyQt6.QtGui import QPixmap
 
             mol = Chem.MolFromSmiles(smiles)
             if mol is not None:
@@ -1674,7 +1674,7 @@ class EICWindow(QWidget):
 
     def _save_settings_template(self):
         """Open a dialog to save current settings as a named template."""
-        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QCheckBox, QPushButton, QMessageBox
+        from PyQt6.QtWidgets import QCheckBox, QDialog, QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton, QVBoxLayout
 
         dialog = QDialog(self)
         dialog.setWindowTitle("Save Settings Template")

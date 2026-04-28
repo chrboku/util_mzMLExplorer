@@ -2,23 +2,24 @@
 File manager for handling mzML files and their metadata
 """
 
-import os
 import hashlib
+import os
 
 try:
     import _pickle as pickle  # C-accelerated pickle (cPickle equivalent in Python 3)
 except ImportError:
     import pickle
-import json
-from natsort import natsort_keygen
-import importlib.metadata
-import pandas as pd
-import pymzml
-from typing import Dict, List, Optional, Tuple
-import numpy as np
-from natsort import natsorted, index_natsorted
-import psutil
 import gc
+import importlib.metadata
+import json
+from typing import Dict, List, Optional, Tuple
+
+import numpy as np
+import pandas as pd
+import psutil
+import pymzml
+from natsort import index_natsorted, natsort_keygen, natsorted
+
 from .utils import generate_color_palette
 
 

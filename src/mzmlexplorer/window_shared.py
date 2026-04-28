@@ -2,21 +2,20 @@
 Shared UI helper widgets used across the various viewer windows.
 """
 
+from PyQt6.QtCore import QRect, Qt, pyqtSignal
+from PyQt6.QtGui import QColor, QPainter
 from PyQt6.QtWidgets import (
-    QWidget,
-    QVBoxLayout,
-    QPushButton,
+    QComboBox,
+    QDoubleSpinBox,
     QLabel,
-    QTableWidgetItem,
+    QPushButton,
+    QSpinBox,
     QStyledItemDelegate,
     QStyleOptionViewItem,
-    QSpinBox,
-    QDoubleSpinBox,
-    QComboBox,
+    QTableWidgetItem,
+    QVBoxLayout,
+    QWidget,
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QRect
-from PyQt6.QtGui import QPainter, QColor
-
 
 # Colour presets for click-to-annotate labels (name, CSS colour string)
 ANNOTATION_COLOR_PRESETS = [

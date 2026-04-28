@@ -6,11 +6,11 @@ __version__ = "1.0.0"
 __author__ = "mzML Explorer Team"
 __description__ = "GUI application for mzML LC-HRMS file visualization"
 
-from .main import main, MzMLExplorerMainWindow
-from .file_manager import FileManager
 from .compound_manager import CompoundManager
+from .file_manager import FileManager
+from .main import MzMLExplorerMainWindow, main
+from .utils import calculate_molecular_mass, calculate_mz_from_formula
 from .windows import EICWindow
-from .utils import calculate_mz_from_formula, calculate_molecular_mass
 
 __all__ = [
     "main",

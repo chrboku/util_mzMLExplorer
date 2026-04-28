@@ -2,15 +2,15 @@
 Utility functions for mzML Explorer
 """
 
+import colorsys
 from typing import Dict, Optional
 
-from .FormulaTools import formulaTools
-
 import numpy as np
+import pandas as pd
 from matchms import Spectrum as MatchmsSpectrum
 from matchms.similarity import CosineGreedy, CosineHungarian
-import colorsys
-import pandas as pd
+
+from .FormulaTools import formulaTools
 
 # Monoisotopic electron mass in Da (used for adduct m/z calculations)
 ELECTRON_MASS = 0.000549  # Da

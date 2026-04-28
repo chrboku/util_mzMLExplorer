@@ -8,9 +8,9 @@ except ImportError:
     import pickle
 import re
 import time
-import urllib.request
-import urllib.parse
 import urllib.error
+import urllib.parse
+import urllib.request
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Callable, Optional

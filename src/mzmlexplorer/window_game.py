@@ -1,10 +1,11 @@
 """Multi-player Snake game window for the mzML Explorer easter egg."""
 
-import random
 import collections
-from PyQt6.QtWidgets import QWidget, QVBoxLayout
-from PyQt6.QtCore import Qt, QTimer, QRect
-from PyQt6.QtGui import QPainter, QColor, QKeyEvent, QFont
+import random
+
+from PyQt6.QtCore import QRect, Qt, QTimer
+from PyQt6.QtGui import QColor, QFont, QKeyEvent, QPainter
+from PyQt6.QtWidgets import QVBoxLayout, QWidget
 
 BLOCK = 8  # pixels per block
 COLS = 40  # number of columns

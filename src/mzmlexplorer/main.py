@@ -17,6 +17,7 @@ from PyQt6.QtGui import (
     QDropEvent,
     QFont,
     QFontMetrics,
+    QIcon,
     QPainter,
     QPen,
     QPixmap,
@@ -4055,6 +4056,10 @@ class EICDefaultsDialog(QDialog):
 
 def main():
     app = QApplication(sys.argv)
+
+    # Set application icon
+    _icon_path = os.path.join(os.path.dirname(__file__), "appicon.png")
+    app.setWindowIcon(QIcon(_icon_path))
 
     # Set application properties
     app.setApplicationName("mzML Explorer")

@@ -2,58 +2,23 @@
 Multi-adduct EIC window for displaying multiple adduct chromatograms
 """
 
-import sys
-import time
-from typing import Dict, List, Optional, Tuple
-
 import matplotlib.pyplot as plt
 import numpy as np
-import pandas as pd
-import seaborn as sns
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 from matplotlib.figure import Figure
-from natsort import natsort_keygen, natsorted
-from PyQt6.QtCharts import QChart, QChartView, QLineSeries, QValueAxis
-from PyQt6.QtCore import QMargins, QPointF, Qt, QThread, pyqtSignal
-from PyQt6.QtGui import QAction, QBrush, QColor, QMouseEvent, QPainter, QPen
+from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
-    QAbstractItemView,
     QApplication,
-    QCheckBox,
-    QComboBox,
-    QDialog,
-    QDoubleSpinBox,
-    QFormLayout,
     QFrame,
     QGridLayout,
-    QGroupBox,
-    QHBoxLayout,
-    QHeaderView,
     QLabel,
-    QMenu,
-    QMessageBox,
-    QProgressBar,
     QProgressDialog,
-    QPushButton,
     QScrollArea,
     QSizePolicy,
-    QSpinBox,
-    QSplitter,
-    QTableWidget,
-    QTableWidgetItem,
-    QTabWidget,
     QVBoxLayout,
     QWidget,
-)
-
-from .utils import (
-    calculate_cosine_similarity,
-    calculate_mz_from_formula,
-    calculate_similarity_statistics,
-    format_mz,
-    format_retention_time,
-    parse_molecular_formula,
 )
 
 
@@ -863,7 +828,7 @@ class MultiAdductWindow(QWidget):
                                     window_max = intensities_in_window.max()
                                     max_intensity = max(max_intensity, window_max)
 
-                except Exception as e:
+                except Exception:
                     continue
 
             return max_intensity

@@ -12,7 +12,6 @@ from typing import Optional
 
 import numpy as np
 import pandas as pd
-import seaborn as sns
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 from matplotlib.figure import Figure
@@ -24,7 +23,6 @@ from PyQt6.QtWidgets import (
     QAbstractItemView,
     QApplication,
     QCheckBox,
-    QComboBox,
     QDialog,
     QDoubleSpinBox,
     QFormLayout,
@@ -35,7 +33,6 @@ from PyQt6.QtWidgets import (
     QLineEdit,
     QMenu,
     QMessageBox,
-    QProgressBar,
     QProgressDialog,
     QPushButton,
     QScrollArea,
@@ -1157,6 +1154,8 @@ class EICWindow(QWidget):
             [
                 "None",
                 "By group",
+                "By file name",
+                "By group, then file name",
                 "By injection order",
                 "By group, then injection order",
             ]
@@ -3316,7 +3315,7 @@ class EICWindow(QWidget):
             return
         headers = [tbl.horizontalHeaderItem(c).text().replace(" ", "_").replace("/", "_") for c in range(tbl.columnCount())]
         lines = [
-            f"df <- data.frame(",
+            "df <- data.frame(",
             "  " + ",\n  ".join(f"{h} = c()" for h in headers),
             ")",
         ]
@@ -5637,6 +5636,38 @@ class EICWindow(QWidget):
 
             for rank, (_, row) in enumerate(sorted_df.iterrows()):
                 self.file_shifts[row["Filepath"]] = rank * shift_amount
+        elif mode == "By file name":
+            # Sort globally by filename using natural sort
+            natsort_key = natsort_keygen()
+            work_df = df.copy()
+            work_df["_filename"] = work_df["Filepath"].apply(os.path.basename)
+            sorted_df = work_df.iloc[sorted(range(len(work_df)), key=lambda i: natsort_key(work_df["_filename"].iloc[i]))]
+            for rank, (_, row) in enumerate(sorted_df.iterrows()):
+                self.file_shifts[row["Filepath"]] = rank * shift_amount
+        elif mode == "By group, then file name":
+            # Sort by group (natural sort), then by filename (natural sort) within each group
+            group_col = self.grouping_column if self.grouping_column in df.columns else "group"
+            if group_col not in df.columns:
+                group_col = None
+
+            natsort_key = natsort_keygen()
+            work_df = df.copy()
+            work_df["_filename"] = work_df["Filepath"].apply(os.path.basename)
+            if group_col is not None:
+                group_vals = work_df[group_col].astype(str)
+                all_groups = natsorted(group_vals.unique())
+                group_rank = group_vals.map({g: i for i, g in enumerate(all_groups)})
+                work_df = work_df.assign(_group_rank=group_rank)
+                sorted_df = work_df.iloc[
+                    sorted(
+                        range(len(work_df)),
+                        key=lambda i: (work_df["_group_rank"].iloc[i], natsort_key(work_df["_filename"].iloc[i])),
+                    )
+                ]
+            else:
+                sorted_df = work_df.iloc[sorted(range(len(work_df)), key=lambda i: natsort_key(work_df["_filename"].iloc[i]))]
+            for rank, (_, row) in enumerate(sorted_df.iterrows()):
+                self.file_shifts[row["Filepath"]] = rank * shift_amount
         else:
             # "By injection order": sort globally by injection_order
             sorted_df = df.assign(_inj_order=inj_order).sort_values("_inj_order", na_position="last")
@@ -5757,6 +5788,8 @@ class EICWindow(QWidget):
         separate_injection = sep_mode in (
             "By injection order",
             "By group, then injection order",
+            "By file name",
+            "By group, then file name",
         )
         crop_rt = self.crop_rt_cb.isChecked()
         normalize = self.normalize_cb.isChecked()
@@ -6628,7 +6661,7 @@ class EICWindow(QWidget):
         # Read the same view settings as the main plot
         sep_mode = self._separation_mode()
         separate_groups = sep_mode == "By group"
-        separate_injection = sep_mode in ("By injection order", "By group, then injection order")
+        separate_injection = sep_mode in ("By injection order", "By group, then injection order", "By file name", "By group, then file name")
         crop_rt = self.crop_rt_cb.isChecked()
         normalize = self.normalize_cb.isChecked()
         log_y = self.log_y_cb.isChecked()
@@ -8470,7 +8503,7 @@ class EmbeddedScatterPlotView(QWidget):
 
     def create_scatter_chart(self):
         """Create the 2D scatter chart"""
-        from PyQt6.QtCharts import QChart, QScatterSeries
+        from PyQt6.QtCharts import QChart
 
         self.chart = QChart()
         self.chart.setTitle("")
@@ -8644,7 +8677,7 @@ class EmbeddedScatterPlotView(QWidget):
 
     def create_scatter_series(self, group_signals):
         """Create scatter series for each group with intensity-based coloring"""
-        from PyQt6.QtCharts import QScatterSeries, QValueAxis
+        from PyQt6.QtCharts import QScatterSeries
 
         if not group_signals:
             return

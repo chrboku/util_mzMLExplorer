@@ -5,38 +5,29 @@ MSMSViewerWindow, EnhancedMirrorPlotWindow.
 
 import os
 import re
-import sys
-import time
-import traceback
-from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas  # noqa: F401 (kept for compatibility)
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar  # noqa: F401
 from matplotlib.figure import Figure  # noqa: F401
-from natsort import natsort_keygen, natsorted
+from natsort import natsort_keygen
 from PyQt6.QtCharts import QChart, QChartView, QLineSeries, QValueAxis
 from PyQt6.QtCore import QMargins, QPointF, Qt, QThread, pyqtSignal
-from PyQt6.QtGui import QAction, QBrush, QColor, QFont, QMouseEvent, QPainter, QPen
+from PyQt6.QtGui import QAction, QBrush, QColor, QFont, QPainter, QPen
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QApplication,
     QCheckBox,
-    QDoubleSpinBox,
-    QFormLayout,
     QGridLayout,
-    QGroupBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
     QLineEdit,
     QMenu,
     QMessageBox,
-    QProgressBar,
     QPushButton,
     QScrollArea,
     QSizePolicy,
-    QSpinBox,
     QSplitter,
     QTableWidget,
     QTableWidgetItem,
@@ -2737,18 +2728,18 @@ class MSMSViewerWindow(QWidget):
 
         # Add information section
         info_section = QLabel()
-        info_text = f"<b>Comparison Information</b><br>"
+        info_text = "<b>Comparison Information</b><br>"
         info_text += f"File A: {file1_name}<br>"
         info_text += f"File B: {file2_name}<br>"
-        info_text += f"<br>"
-        info_text += f"<b>Signals:</b><br>"
+        info_text += "<br>"
+        info_text += "<b>Signals:</b><br>"
         info_text += f"  Spectrum A: {num_signals_file1} signals across {len(file1_spectra)} spectra<br>"
         info_text += f"  Spectrum B: {num_signals_file2} signals across {len(file2_spectra)} spectra<br>"
-        info_text += f"<br>"
+        info_text += "<br>"
 
         # Add precursor info if available
         if file1_spectra and file2_spectra:
-            info_text += f"<b>Representative Precursor Info:</b><br>"
+            info_text += "<b>Representative Precursor Info:</b><br>"
             info_text += f"  Spectrum A: m/z = {file1_spectra[0]['precursor_mz']:.4f}, "
             info_text += f"Intensity = {file1_spectra[0].get('precursor_intensity', 0):.2e}<br>"
             info_text += f"  Spectrum B: m/z = {file2_spectra[0]['precursor_mz']:.4f}, "

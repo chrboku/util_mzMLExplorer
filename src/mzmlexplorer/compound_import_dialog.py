@@ -8,9 +8,7 @@ from typing import Any, Dict, Optional
 import pandas as pd
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import (
-    QComboBox,
     QDialog,
-    QDoubleSpinBox,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -19,18 +17,16 @@ from PyQt6.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QPushButton,
-    QSpinBox,
     QSplitter,
     QTableWidget,
     QTableWidgetItem,
-    QTextEdit,
     QVBoxLayout,
 )
 from rdkit import Chem
 from rdkit.Chem import rdMolDescriptors
 
 from .FormulaTools import formulaTools
-from .window_shared import NoScrollComboBox, NoScrollDoubleSpinBox, NoScrollSpinBox
+from .window_shared import NoScrollComboBox, NoScrollDoubleSpinBox
 
 
 def validate_formula_smiles_agreement(

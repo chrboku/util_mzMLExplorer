@@ -26,12 +26,9 @@ from PyQt6.QtWidgets import (
     QAbstractItemView,
     QApplication,
     QCheckBox,
-    QComboBox,
     QDialog,
-    QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
-    QFrame,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
@@ -39,12 +36,10 @@ from PyQt6.QtWidgets import (
     QLineEdit,
     QMainWindow,
     QMenu,
-    QMenuBar,
     QMessageBox,
     QProgressDialog,
     QPushButton,
     QScrollArea,
-    QSpinBox,
     QSplitter,
     QStyle,
     QStyleOptionTab,
@@ -70,7 +65,7 @@ from .file_manager import FileManager
 from .window_file_explorer import MzMLFileExplorerWindow
 from .window_manager import WindowManager, WindowManagerPanel, set_window_manager
 from .window_msms import USISpectrumComparisonWindow
-from .window_shared import CollapsibleBox, NoScrollComboBox, NoScrollDoubleSpinBox, NoScrollSpinBox
+from .window_shared import NoScrollComboBox, NoScrollDoubleSpinBox, NoScrollSpinBox
 from .windows import EICWindow, MultiAdductWindow
 
 # fmt: off
@@ -520,7 +515,7 @@ class CustomEICDialog(QDialog):
 
     def _on_accept(self):
         """Collect results and close the dialog."""
-        from .utils import adduct_mass_change, calculate_molecular_mass, parse_molecular_formula
+        from .utils import adduct_mass_change, calculate_molecular_mass
 
         if self.tabs.currentIndex() == 1:
             # ---- Tab 1: Formula / SMILES / Mass ----
@@ -1447,13 +1442,13 @@ class MzMLExplorerMainWindow(QMainWindow):
 
         # Add explore file action
         if filepath and os.path.exists(filepath):
-            explore_action = QAction(f"Explore File", self)
+            explore_action = QAction("Explore File", self)
             explore_action.triggered.connect(lambda checked, fp=filepath: self._open_file_explorer(fp))
             menu.addAction(explore_action)
             menu.addSeparator()
 
         # Add remove file action
-        remove_action = QAction(f"Remove File", self)
+        remove_action = QAction("Remove File", self)
         remove_action.triggered.connect(lambda checked, r=row: self.remove_file_at_row(r))
         menu.addAction(remove_action)
 
@@ -2766,7 +2761,7 @@ class MzMLExplorerMainWindow(QMainWindow):
                     self.memory_label.setText(f"Memory: {rss_mb:.1f} MB ({cached_files} files cached)")
                 else:
                     self.memory_label.setText(f"Memory: {rss_mb:.1f} MB")
-        except Exception as e:
+        except Exception:
             self.memory_label.setText("Memory: Error")
         self.settings.sync()
 
@@ -2790,7 +2785,7 @@ class MzMLExplorerMainWindow(QMainWindow):
             self.compound_file_monitor_timer.timeout.connect(self.check_compound_file_changes)
             self.compound_file_monitor_timer.start(2000)  # 2000 ms = 2 seconds
 
-        except Exception as e:
+        except Exception:
             # If we can't stat the file, don't start monitoring
             self.compound_file_path = None
             self.compound_file_size = None
@@ -2853,7 +2848,7 @@ class MzMLExplorerMainWindow(QMainWindow):
                     self.stop_compound_file_monitoring()
                     self.statusBar().showMessage("Compound file monitoring stopped.")
 
-        except Exception as e:
+        except Exception:
             # Error accessing file - silently continue monitoring
             pass
 

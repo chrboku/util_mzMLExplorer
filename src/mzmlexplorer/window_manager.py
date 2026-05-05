@@ -427,7 +427,11 @@ class WindowManager(QObject):
 
         self._records.pop(wid, None)
         # Do NOT access rec.window — the C++ object is already gone.
-        self.tree_changed.emit()
+        try:
+            self.tree_changed.emit()
+        except RuntimeError:
+            # WindowManager itself has already been deleted (app shutdown)
+            pass
 
     # --------------------------------------------------- QObject event filter
 

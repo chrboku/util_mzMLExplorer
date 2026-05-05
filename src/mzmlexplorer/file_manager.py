@@ -638,7 +638,7 @@ class FileManager:
 
             return None  # Unknown polarity
 
-        except Exception as e:
+        except Exception:
             # If any error occurs, return None (unknown polarity)
             return None
 

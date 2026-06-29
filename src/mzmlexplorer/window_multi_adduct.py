@@ -420,6 +420,7 @@ class InteractiveEICWidget(QWidget):
             eic_defaults.setdefault("rt_shift_min", 1.0)
             eic_defaults.setdefault("crop_rt_window", False)
             eic_defaults.setdefault("normalize_samples", False)
+            eic_defaults.setdefault("normalize_mode", "No normalization")
             eic_defaults["separate_groups"] = False
 
             # Create and show the individual EIC window
@@ -935,55 +936,59 @@ class MultiAdductWindow(QWidget):
 
         outer_layout.addWidget(adduct_grid_widget)
 
-        # ── Separator ────────────────────────────────────────────────────────
-        sep = QFrame()
-        sep.setFrameShape(QFrame.Shape.HLine)
-        sep.setFrameShadow(QFrame.Shadow.Sunken)
-        outer_layout.addWidget(sep)
-
-        # ── Section 2: EICs per sample ────────────────────────────────────────
-        sample_section_label = QLabel("<b>EICs per Sample</b> (all adducts overlaid)")
-        sample_section_label.setStyleSheet("""
-            QLabel {
-                background-color: #dcf4e4;
-                padding: 4px 6px;
-                border-left: 4px solid #4a90e2;
-                font-size: 11px;
-            }
-        """)
-        outer_layout.addWidget(sample_section_label)
-
-        sample_grid_widget = QWidget()
-        sample_grid_layout = QGridLayout(sample_grid_widget)
-        sample_grid_layout.setSpacing(10)
-
-        s_row = 0
-        s_col = 0
+        # ── Section 2: EICs per sample (optional) ─────────────────────────────
+        show_sample_eics = self.defaults.get("show_multi_adduct_sample_eics", True)
         sample_count = 0
 
-        for _, file_row in files_data.iterrows():
-            filename = file_row["filename"]
-            filepath = file_row["Filepath"]
+        if show_sample_eics:
+            # ── Separator ─────────────────────────────────────────────────────
+            sep = QFrame()
+            sep.setFrameShape(QFrame.Shape.HLine)
+            sep.setFrameShadow(QFrame.Shadow.Sunken)
+            outer_layout.addWidget(sep)
 
-            sample_widget = SampleEICWidget(
-                self.compound,
-                filename,
-                filepath,
-                sorted_adducts,
-                self.file_manager,
-                self.defaults,
-                self,
-            )
-            sample_widget.setMinimumSize(350, 280)
-            sample_widget.setMaximumSize(500, 380)
-            sample_grid_layout.addWidget(sample_widget, s_row, s_col)
-            sample_count += 1
-            s_col += 1
-            if s_col >= 3:
-                s_col = 0
-                s_row += 1
+            sample_section_label = QLabel("<b>EICs per Sample</b> (all adducts overlaid)")
+            sample_section_label.setStyleSheet("""
+                QLabel {
+                    background-color: #dcf4e4;
+                    padding: 4px 6px;
+                    border-left: 4px solid #4a90e2;
+                    font-size: 11px;
+                }
+            """)
+            outer_layout.addWidget(sample_section_label)
 
-        outer_layout.addWidget(sample_grid_widget)
+            sample_grid_widget = QWidget()
+            sample_grid_layout = QGridLayout(sample_grid_widget)
+            sample_grid_layout.setSpacing(10)
+
+            s_row = 0
+            s_col = 0
+
+            for _, file_row in files_data.iterrows():
+                filename = file_row["filename"]
+                filepath = file_row["Filepath"]
+
+                sample_widget = SampleEICWidget(
+                    self.compound,
+                    filename,
+                    filepath,
+                    sorted_adducts,
+                    self.file_manager,
+                    self.defaults,
+                    self,
+                )
+                sample_widget.setMinimumSize(350, 280)
+                sample_widget.setMaximumSize(500, 380)
+                sample_grid_layout.addWidget(sample_widget, s_row, s_col)
+                sample_count += 1
+                s_col += 1
+                if s_col >= 3:
+                    s_col = 0
+                    s_row += 1
+
+            outer_layout.addWidget(sample_grid_widget)
+
         outer_layout.addStretch(1)
 
         # Set scroll area properties
@@ -995,7 +1000,10 @@ class MultiAdductWindow(QWidget):
 
         # Status bar
         if valid_adducts_count > 0:
-            status_text = f"Showing {valid_adducts_count} adducts (sorted by descending abundance) and {sample_count} samples"
+            if show_sample_eics:
+                status_text = f"Showing {valid_adducts_count} adducts (sorted by descending abundance) and {sample_count} samples"
+            else:
+                status_text = f"Showing {valid_adducts_count} adducts (sorted by descending abundance)"
         else:
             status_text = "No adducts available"
 

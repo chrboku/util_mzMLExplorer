@@ -63,6 +63,29 @@ from .window_ms1 import MS1ViewerWindow
 from .window_msms import MSMSViewerWindow
 from .window_shared import BarDelegate, CenteredBarDelegate, CollapsibleBox, NoScrollComboBox, NoScrollDoubleSpinBox, NoScrollSpinBox, NumericTableWidgetItem
 
+# Available EIC normalization modes (shared with the options dialog and multi-adduct window)
+NORMALIZATION_MODES = [
+    "No normalization",
+    "Normalize to Apex per Sample",
+    "Normalize to Peak Area per Sample",
+    "Normalize to Mean Apex per Group",
+    "Normalize to Mean Peak Area per Group",
+]
+
+
+def resolve_normalization_mode(defaults):
+    """Return the normalization mode from a defaults dict with backward compatibility.
+
+    Older settings used a boolean ``normalize_samples`` flag which maps to
+    "Normalize to Apex per Sample" when true.
+    """
+    mode = defaults.get("normalize_mode") if isinstance(defaults, dict) else None
+    if mode in NORMALIZATION_MODES:
+        return mode
+    if isinstance(defaults, dict) and defaults.get("normalize_samples"):
+        return "Normalize to Apex per Sample"
+    return "No normalization"
+
 
 class InteractiveChartView(QChartView):
     """Custom chart view with interactive mouse controls"""
@@ -673,6 +696,7 @@ class EICWindow(QWidget):
                 "rt_shift_min": 1.0,
                 "crop_rt_window": False,
                 "normalize_samples": False,
+                "normalize_mode": "No normalization",
             }
         )
 
@@ -1207,10 +1231,13 @@ class EICWindow(QWidget):
         layout.addRow(self.crop_rt_cb)
 
         # Normalization option
-        self.normalize_cb = QCheckBox("Normalize to Max per Sample")
-        self.normalize_cb.setChecked(self.defaults["normalize_samples"])  # Use default
-        self.normalize_cb.stateChanged.connect(self.update_plot)
-        layout.addRow(self.normalize_cb)
+        self.normalize_combo = NoScrollComboBox()
+        self.normalize_combo.addItems(NORMALIZATION_MODES)
+        _init_norm_mode = resolve_normalization_mode(self.defaults)
+        _norm_idx = self.normalize_combo.findText(_init_norm_mode)
+        self.normalize_combo.setCurrentIndex(_norm_idx if _norm_idx >= 0 else 0)
+        self.normalize_combo.currentTextChanged.connect(lambda _: self.update_plot())
+        layout.addRow("Normalization:", self.normalize_combo)
 
         # Legend position
         self.legend_position_combo = NoScrollComboBox()
@@ -1737,7 +1764,7 @@ class EICWindow(QWidget):
                 "separation_mode": self.separation_mode_combo.currentText() if hasattr(self, "separation_mode_combo") else self.defaults.get("separation_mode", "None"),
                 "rt_shift_min": self.rt_shift_spin.value() if hasattr(self, "rt_shift_spin") else self.defaults.get("rt_shift_min", 1.0),
                 "crop_rt_window": self.crop_rt_cb.isChecked() if hasattr(self, "crop_rt_cb") else self.defaults.get("crop_rt_window", False),
-                "normalize_samples": self.normalize_cb.isChecked() if hasattr(self, "normalize_cb") else self.defaults.get("normalize_samples", False),
+                "normalize_mode": self.normalize_combo.currentText() if hasattr(self, "normalize_combo") else resolve_normalization_mode(self.defaults),
                 "legend_position": self.legend_position_combo.currentText() if hasattr(self, "legend_position_combo") else self.defaults.get("legend_position", "Right"),
                 "rt_unit": self.rt_unit_combo.currentText() if hasattr(self, "rt_unit_combo") else self.defaults.get("rt_unit", "min"),
                 "log_y": self.log_y_cb.isChecked() if hasattr(self, "log_y_cb") else False,
@@ -1774,8 +1801,14 @@ class EICWindow(QWidget):
                 self.rt_shift_spin.setValue(extraction["rt_shift_min"])
             if hasattr(self, "crop_rt_cb") and "crop_rt_window" in extraction:
                 self.crop_rt_cb.setChecked(extraction["crop_rt_window"])
-            if hasattr(self, "normalize_cb") and "normalize_samples" in extraction:
-                self.normalize_cb.setChecked(extraction["normalize_samples"])
+            if hasattr(self, "normalize_combo"):
+                _tmpl_mode = extraction.get("normalize_mode")
+                if _tmpl_mode not in NORMALIZATION_MODES and "normalize_samples" in extraction:
+                    _tmpl_mode = "Normalize to Apex per Sample" if extraction["normalize_samples"] else "No normalization"
+                if _tmpl_mode in NORMALIZATION_MODES:
+                    _idx = self.normalize_combo.findText(_tmpl_mode)
+                    if _idx >= 0:
+                        self.normalize_combo.setCurrentIndex(_idx)
             if hasattr(self, "legend_position_combo") and "legend_position" in extraction:
                 idx = self.legend_position_combo.findText(extraction["legend_position"])
                 if idx >= 0:
@@ -5552,7 +5585,7 @@ class EICWindow(QWidget):
 
         log_y_active = hasattr(self, "log_y_cb") and self.log_y_cb.isChecked()
         ridge_active = hasattr(self, "ridge_plot_cb") and self.ridge_plot_cb.isChecked()
-        normalize = self.normalize_cb.isChecked()
+        normalize = self._normalize_unit_range_active()
 
         if normalize and not log_y_active and not ridge_active:
             # Pure normalization: fixed 0-1 range
@@ -5629,7 +5662,7 @@ class EICWindow(QWidget):
                 # (normalization sets its own Y-axis range)
                 log_y_active = hasattr(self, "log_y_cb") and self.log_y_cb.isChecked()
                 ridge_active = hasattr(self, "ridge_plot_cb") and self.ridge_plot_cb.isChecked()
-                normalize_only = self.normalize_cb.isChecked() and not log_y_active and not ridge_active
+                normalize_only = self._normalize_unit_range_active() and not log_y_active and not ridge_active
                 if not normalize_only:
                     y_padding = (max_y - min_y) * 0.05
                     y_axis = self.chart.axes(Qt.Orientation.Vertical)[0]
@@ -5928,6 +5961,78 @@ class EICWindow(QWidget):
         sign[sign == 0] = 1  # Treat 0 as positive
         return sign * np.log10(np.maximum(np.abs(intensity), 1.0))
 
+    def _normalize_unit_range_active(self):
+        """Return True only for the per-sample apex mode that scales to a 0–1 range."""
+        mode = self.normalize_combo.currentText() if hasattr(self, "normalize_combo") else "No normalization"
+        return mode == "Normalize to Apex per Sample"
+
+    def _compute_sample_area(self, rt, intensity):
+        """Compute the peak area of a single sample EIC.
+
+        Uses the integration boundaries (start/end) when they are set, otherwise
+        integrates the whole shown EIC via the trapezoidal rule.
+        """
+        if self.peak_start_rt is not None and self.peak_end_rt is not None:
+            return self._calculate_peak_area_with_boundaries(rt, intensity, self.peak_start_rt, self.peak_end_rt)
+        rt = np.asarray(rt, dtype=float)
+        intensity = np.asarray(intensity, dtype=float)
+        if len(rt) >= 2:
+            order = np.argsort(rt)
+            return float(np.trapz(intensity[order], rt[order]))
+        return 0.0
+
+    def _compute_normalization_factors(self, crop_rt, rt_start, rt_end, eic_data=None):
+        """Pre-compute per-file normalization divisors for the active mode.
+
+        Returns a dict mapping filepath → divisor. An empty dict means no
+        normalization. For per-group modes the same group factor (the mean of
+        the per-sample metric across the group) is assigned to every sample in
+        the group.
+        """
+        mode = self.normalize_combo.currentText() if hasattr(self, "normalize_combo") else "No normalization"
+        if mode == "No normalization":
+            return {}, mode
+
+        use_area = "Peak Area" in mode
+        per_group = "per Group" in mode
+
+        source = eic_data if eic_data is not None else self.eic_data
+        per_file = {}
+        file_group = {}
+        for filepath, data in source.items():
+            rt = data["rt"]
+            intensity = data["intensity"]
+            metadata = data["metadata"]
+            if len(rt) == 0 or len(intensity) == 0:
+                continue
+            if crop_rt and rt_start is not None and rt_end is not None:
+                mask = (rt >= rt_start) & (rt <= rt_end)
+                rt = rt[mask]
+                intensity = intensity[mask]
+                if len(rt) == 0:
+                    continue
+            if use_area:
+                metric = float(self._compute_sample_area(rt, intensity))
+            else:
+                metric = float(np.max(intensity)) if len(intensity) > 0 else 0.0
+            per_file[filepath] = metric
+            group_value = metadata.get(self.grouping_column, "Unknown")
+            file_group[filepath] = str(group_value) if group_value is not None else "Unknown"
+
+        if per_group:
+            group_metrics = {}
+            for fp, metric in per_file.items():
+                group_metrics.setdefault(file_group[fp], []).append(metric)
+            group_factor = {}
+            for grp, vals in group_metrics.items():
+                valid = [v for v in vals if v > 0]
+                group_factor[grp] = float(np.mean(valid)) if valid else 0.0
+            factors = {fp: group_factor.get(file_group[fp], 0.0) for fp in per_file}
+        else:
+            factors = dict(per_file)
+
+        return factors, mode
+
     def update_plot(self, preserve_view=False):
         """Update the EIC plot
 
@@ -5962,11 +6067,17 @@ class EICWindow(QWidget):
             "By group, then file name",
         )
         crop_rt = self.crop_rt_cb.isChecked()
-        normalize = self.normalize_cb.isChecked()
+        normalize_mode = self.normalize_combo.currentText() if hasattr(self, "normalize_combo") else "No normalization"
+        normalize_active = normalize_mode != "No normalization"
+        # Only per-sample apex normalization scales every curve to a fixed 0–1 range
+        normalize_unit_range = normalize_mode == "Normalize to Apex per Sample"
 
         # Get RT window if cropping is enabled
         rt_start = self.compound_data.get("RT_start_min") if crop_rt else None
         rt_end = self.compound_data.get("RT_end_min") if crop_rt else None
+
+        # Pre-compute per-file normalization divisors (handles per-group modes too)
+        norm_factors, _ = self._compute_normalization_factors(crop_rt, rt_start, rt_end)
 
         # Organize data by groups first
         groups_data = {}
@@ -5988,10 +6099,10 @@ class EICWindow(QWidget):
                     continue
 
             # Apply normalization if enabled
-            if normalize and len(intensity) > 0:
-                max_intensity = np.max(intensity)
-                if max_intensity > 0:
-                    intensity = intensity / max_intensity  # Normalize to 0-1 range
+            if normalize_active and len(intensity) > 0:
+                factor = norm_factors.get(filepath, 0.0)
+                if factor and factor > 0:
+                    intensity = intensity / factor
 
             # Get group value from the selected grouping column
             group_value = metadata.get(self.grouping_column, "Unknown")
@@ -6181,9 +6292,9 @@ class EICWindow(QWidget):
                 marker.setVisible(False)
 
         # Update Y-axis title and range based on normalization / log / ridge status
-        if normalize and log_y:
+        if normalize_active and log_y:
             self.y_axis.setTitleText("Log\u2081\u2080(Normalized Intensity)")
-        elif normalize:
+        elif normalize_active:
             self.y_axis.setTitleText("Normalized Intensity")
         elif log_y:
             self.y_axis.setTitleText("Log\u2081\u2080(Intensity)")
@@ -6205,7 +6316,7 @@ class EICWindow(QWidget):
         # Clear any previous group-name annotations from the chart scene
         self._clear_group_annotations()
 
-        if normalize and not log_y and not ridge:
+        if normalize_unit_range and not log_y and not ridge:
             # Pure normalization: fixed 0–1 range
             # Use a timer to ensure the range is applied after series are fully added
             from PyQt6.QtCore import QTimer
@@ -6225,7 +6336,7 @@ class EICWindow(QWidget):
                 y_axis = self.chart.axes(Qt.Orientation.Vertical)[0]
                 x_axis.setRange(saved_x_range[0], saved_x_range[1])
                 # For pure normalization (no log/ridge), enforce the normalized range
-                if normalize and not log_y and not ridge:
+                if normalize_unit_range and not log_y and not ridge:
                     y_axis.setRange(-0.05, 1.05)
                 else:
                     y_axis.setRange(saved_y_range[0], saved_y_range[1])
@@ -6836,13 +6947,18 @@ class EICWindow(QWidget):
         separate_groups = sep_mode == "By group"
         separate_injection = sep_mode in ("By injection order", "By group, then injection order", "By file name", "By group, then file name")
         crop_rt = self.crop_rt_cb.isChecked()
-        normalize = self.normalize_cb.isChecked()
+        normalize_mode = self.normalize_combo.currentText() if hasattr(self, "normalize_combo") else "No normalization"
+        normalize = normalize_mode != "No normalization"
+        normalize_unit_range = normalize_mode == "Normalize to Apex per Sample"
         log_y = self.log_y_cb.isChecked()
         ridge = self.ridge_plot_cb.isChecked()
         ridge_increment = self._get_ridge_increment() if ridge else 0.0
 
         rt_start_crop = self.compound_data.get("RT_start_min") if crop_rt else None
         rt_end_crop = self.compound_data.get("RT_end_min") if crop_rt else None
+
+        # Pre-compute normalization divisors over this trace's own data
+        trace_norm_factors, _ = self._compute_normalization_factors(crop_rt, rt_start_crop, rt_end_crop, eic_data=eic_data)
 
         # Update y-axis title to reflect transforms (compound-specific info moved to title label)
         if normalize and log_y:
@@ -6918,9 +7034,9 @@ class EICWindow(QWidget):
 
             # Apply normalization
             if normalize and len(intensity_plot) > 0:
-                max_i = float(np.max(intensity_plot))
-                if max_i > 0:
-                    intensity_plot = intensity_plot / max_i
+                factor = trace_norm_factors.get(filepath, 0.0)
+                if factor and factor > 0:
+                    intensity_plot = intensity_plot / factor
 
             # Apply log transform
             if log_y:
@@ -6964,7 +7080,7 @@ class EICWindow(QWidget):
             y_min_data = min(all_y)
             y_max_data = max(all_y)
             y_pad = (y_max_data - y_min_data) * 0.05 if y_max_data != y_min_data else abs(y_max_data) * 0.05
-            if normalize and not log_y and not ridge:
+            if normalize_unit_range and not log_y and not ridge:
                 trace_y_axis.setRange(-0.05, 1.05)
             elif log_y or ridge:
                 trace_y_axis.setRange(y_min_data - y_pad, y_max_data + y_pad)

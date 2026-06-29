@@ -66,6 +66,7 @@ from .compound_manager import CompoundManager
 from .file_manager import FileManager
 from .window_file_explorer import MzMLFileExplorerWindow
 from .window_manager import WindowManager, WindowManagerPanel, set_window_manager
+from .window_eic import NORMALIZATION_MODES, resolve_normalization_mode
 from .window_msms import USISpectrumComparisonWindow
 from .window_shared import NoScrollComboBox, NoScrollDoubleSpinBox, NoScrollSpinBox
 from .windows import EICWindow, MultiAdductWindow
@@ -2937,6 +2938,8 @@ class MzMLExplorerMainWindow(QMainWindow):
             "rt_shift_min": 1.0,
             "crop_rt_window": True,
             "normalize_samples": False,
+            "normalize_mode": "No normalization",
+            "show_multi_adduct_sample_eics": True,
             "legend_position": "Right",
             "eic_method": "Sum of all signals",
             "msms_filter_regex": "(FTMS|ITMS).*",
@@ -2975,6 +2978,8 @@ class MzMLExplorerMainWindow(QMainWindow):
             "rt_shift_min": float(self.settings.value("eic/rt_shift_min", _d["rt_shift_min"])),
             "crop_rt_window": self.settings.value("eic/crop_rt_window", _d["crop_rt_window"], type=bool),
             "normalize_samples": self.settings.value("eic/normalize_samples", _d["normalize_samples"], type=bool),
+            "normalize_mode": self.settings.value("eic/normalize_mode", _d["normalize_mode"]),
+            "show_multi_adduct_sample_eics": self.settings.value("eic/show_multi_adduct_sample_eics", _d["show_multi_adduct_sample_eics"], type=bool),
             "legend_position": self.settings.value("eic/legend_position", _d["legend_position"]),
             "eic_method": self.settings.value("eic/eic_method", _d["eic_method"]),
             "msms_filter_regex": self.settings.value("msms_filter/regex", _d["msms_filter_regex"]),
@@ -3020,6 +3025,11 @@ class MzMLExplorerMainWindow(QMainWindow):
         self.settings.setValue("eic/rt_shift_min", self.eic_defaults["rt_shift_min"])
         self.settings.setValue("eic/crop_rt_window", self.eic_defaults["crop_rt_window"])
         self.settings.setValue("eic/normalize_samples", self.eic_defaults["normalize_samples"])
+        self.settings.setValue("eic/normalize_mode", self.eic_defaults.get("normalize_mode", "No normalization"))
+        self.settings.setValue(
+            "eic/show_multi_adduct_sample_eics",
+            self.eic_defaults.get("show_multi_adduct_sample_eics", True),
+        )
         self.settings.setValue("eic/legend_position", self.eic_defaults.get("legend_position", "Right"))
         self.settings.setValue("eic/eic_method", self.eic_defaults.get("eic_method", "Sum of all signals"))
         self.settings.setValue("msms_filter/regex", self.eic_defaults.get("msms_filter_regex", ""))
@@ -3950,10 +3960,18 @@ class UnifiedOptionsDialog(QDialog):
         self.crop_rt_cb.setChecked(self.eic_defaults["crop_rt_window"])
         form_layout.addRow("Crop to RT Window:", self.crop_rt_cb)
 
-        # Normalize to Max per Sample
-        self.normalize_cb = QCheckBox()
-        self.normalize_cb.setChecked(self.eic_defaults["normalize_samples"])
-        form_layout.addRow("Normalize to Max per Sample:", self.normalize_cb)
+        # Normalization mode
+        self.normalize_combo = NoScrollComboBox()
+        self.normalize_combo.addItems(NORMALIZATION_MODES)
+        _norm_mode = resolve_normalization_mode(self.eic_defaults)
+        _norm_idx = self.normalize_combo.findText(_norm_mode)
+        self.normalize_combo.setCurrentIndex(_norm_idx if _norm_idx >= 0 else 0)
+        form_layout.addRow("Normalization:", self.normalize_combo)
+
+        # Show "EICs per sample" section in Multi-Adduct window
+        self.show_multi_adduct_sample_eics_cb = QCheckBox()
+        self.show_multi_adduct_sample_eics_cb.setChecked(self.eic_defaults.get("show_multi_adduct_sample_eics", True))
+        form_layout.addRow("Show 'EICs per sample' (Multi-Adduct):", self.show_multi_adduct_sample_eics_cb)
 
         # RT unit selector
         self.rt_unit_combo = NoScrollComboBox()
@@ -4247,7 +4265,9 @@ class UnifiedOptionsDialog(QDialog):
             "separate_groups": self.separate_groups_cb.isChecked(),
             "rt_shift_min": self.rt_shift_spin.value(),
             "crop_rt_window": self.crop_rt_cb.isChecked(),
-            "normalize_samples": self.normalize_cb.isChecked(),
+            "normalize_samples": self.normalize_combo.currentText() == "Normalize to Apex per Sample",
+            "normalize_mode": self.normalize_combo.currentText(),
+            "show_multi_adduct_sample_eics": self.show_multi_adduct_sample_eics_cb.isChecked(),
             "msms_filter_regex": self.msms_filter_regex_edit.text(),
             "msms_filter_replacement": self.msms_filter_replacement_edit.text(),
             "msms_similarity_method": self.msms_similarity_method_combo.currentText(),

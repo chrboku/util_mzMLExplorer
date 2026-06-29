@@ -67,8 +67,8 @@ from .window_shared import BarDelegate, CenteredBarDelegate, CollapsibleBox, NoS
 class InteractiveChartView(QChartView):
     """Custom chart view with interactive mouse controls"""
 
-    # Signal emitted when right-clicking for context menu (rt_value, mouse_position)
-    contextMenuRequested = pyqtSignal(float, QPointF)
+    # Signal emitted when right-clicking for context menu (rt_value, intensity_value, mouse_position)
+    contextMenuRequested = pyqtSignal(float, float, QPointF)
 
     def __init__(self, chart):
         super().__init__(chart)
@@ -431,14 +431,22 @@ class InteractiveChartView(QChartView):
                     if plot_area.contains(event.position()):
                         # Convert mouse position to data coordinates
                         rel_x = (event.position().x() - plot_area.left()) / plot_area.width()
+                        rel_y = (event.position().y() - plot_area.top()) / plot_area.height()
+                        rel_x = max(0.0, min(1.0, rel_x))
+                        rel_y = max(0.0, min(1.0, rel_y))
 
                         # Get X-axis range and calculate RT value
                         x_axis = self.chart().axes(Qt.Orientation.Horizontal)[0]
                         x_range = x_axis.max() - x_axis.min()
                         rt_value = x_axis.min() + rel_x * x_range
 
+                        # Get Y-axis range and calculate intensity value
+                        y_axis = self.chart().axes(Qt.Orientation.Vertical)[0]
+                        y_range = y_axis.max() - y_axis.min()
+                        intensity_value = y_axis.max() - rel_y * y_range
+
                         # Emit signal for context menu
-                        self.contextMenuRequested.emit(rt_value, event.position())
+                        self.contextMenuRequested.emit(rt_value, intensity_value, event.position())
 
                 # Reset context menu tracking
                 self.right_click_pending = False
@@ -723,6 +731,13 @@ class EICWindow(QWidget):
         self.peak_end_rt = None  # End RT of peak boundary
         self.dragging_line = None  # Reference to line being dragged
         self.drag_offset = 0.0  # Offset for smooth dragging
+
+        # Baseline points for baseline-corrected integration
+        # Each entry is a (rt, intensity) tuple
+        self.baseline_points = []
+        self.baseline_series = None  # QLineSeries drawn on the chart
+        self.baseline_scatter_series = None  # QScatterSeries for baseline point markers
+        self._last_apex_rt = None  # Most recently computed apex RT for Copy RT Times
 
         # Initialize boxplot widget
         self.boxplot_widget = None
@@ -2690,8 +2705,18 @@ class EICWindow(QWidget):
             # This ensures we always use the same RT scale regardless of visualization
             original_rt = rt.copy()
 
-            # Calculate integrated area with proper boundary handling
-            integrated_area = self._calculate_peak_area_with_boundaries(original_rt, intensity, start_rt, end_rt)
+            # Apply baseline correction when baseline points are defined.
+            # Only subtract from regions where the EIC exceeds the baseline;
+            # areas where the baseline is above the EIC are NOT added back.
+            if self.baseline_points:
+                rt_arr = np.asarray(original_rt, dtype=float)
+                int_arr = np.asarray(intensity, dtype=float)
+                baseline = self._compute_baseline_at_rt(rt_arr)
+                corrected_intensity = np.maximum(int_arr - baseline, 0.0)
+                integrated_area = self._calculate_peak_area_with_boundaries(original_rt, corrected_intensity, start_rt, end_rt)
+            else:
+                # Calculate integrated area with proper boundary handling
+                integrated_area = self._calculate_peak_area_with_boundaries(original_rt, intensity, start_rt, end_rt)
 
             # Per-sample apex and FWHM computation within the integration window
             sample_apex_rt = None
@@ -2834,6 +2859,9 @@ class EICWindow(QWidget):
         else:
             ax.set_title(f"Peak Integration ({start_rt:.2f} - {end_rt:.2f} min)")
         ax.grid(True, alpha=0.3)
+
+        # Store apex RT for "Copy RT times" feature
+        self._last_apex_rt = apex_rt
 
         # Always set x-axis to start from 0 and adapt upper bound to data range
         data_max = max((max(values) for values in data_lists if values), default=0)
@@ -5188,6 +5216,144 @@ class EICWindow(QWidget):
             # Multiple points - use trapezoidal integration
             return np.trapz(boundary_intensity, boundary_rt)
 
+    def _add_baseline_point(self, rt: float, intensity: float) -> None:
+        """Add a baseline point at the given RT and intensity and refresh."""
+        self.baseline_points.append((rt, intensity))
+        self.baseline_points.sort(key=lambda p: p[0])
+        self._draw_baseline_series()
+        if len(self.peak_boundary_lines) == 2:
+            self.update_boxplot()
+
+    def _remove_closest_baseline_point(self, rt: float) -> None:
+        """Remove the baseline point whose RT is closest to *rt*."""
+        if not self.baseline_points:
+            return
+        closest_idx = min(range(len(self.baseline_points)), key=lambda i: abs(self.baseline_points[i][0] - rt))
+        self.baseline_points.pop(closest_idx)
+        self._draw_baseline_series()
+        if len(self.peak_boundary_lines) == 2:
+            self.update_boxplot()
+
+    def _draw_baseline_series(self) -> None:
+        """Draw (or redraw) the baseline line/scatter series on the main chart.
+
+        The drawn line consists of:
+        - A horizontal extension from the left integration border to the first
+          baseline point (only when the first point lies within the borders).
+        - The interpolated dashed line connecting all baseline points.
+        - A horizontal extension from the last baseline point to the right
+          integration border (only when the last point lies within the borders).
+        Scatter markers are placed at each actual baseline point.
+        """
+        from PyQt6.QtCharts import QScatterSeries
+
+        # Remove old series first
+        if self.baseline_series is not None:
+            self.chart.removeSeries(self.baseline_series)
+            self.baseline_series = None
+        if self.baseline_scatter_series is not None:
+            self.chart.removeSeries(self.baseline_scatter_series)
+            self.baseline_scatter_series = None
+
+        if not self.baseline_points:
+            return
+
+        axes_h = self.chart.axes(Qt.Orientation.Horizontal)
+        axes_v = self.chart.axes(Qt.Orientation.Vertical)
+        if not axes_h or not axes_v:
+            return
+
+        x_axis = axes_h[0]
+        y_axis = axes_v[0]
+        orange = QColor(255, 140, 0)
+
+        sorted_pts = sorted(self.baseline_points, key=lambda p: p[0])
+
+        # Build line_pts: optionally prepend/append horizontal extensions at
+        # the integration borders when the respective endpoint lies inside them.
+        line_pts: list[tuple[float, float]] = list(sorted_pts)
+        if len(self.peak_boundary_lines) == 2 and self.peak_start_rt is not None and self.peak_end_rt is not None:
+            border_left = min(self.peak_start_rt, self.peak_end_rt)
+            border_right = max(self.peak_start_rt, self.peak_end_rt)
+            first_rt, first_intensity = sorted_pts[0]
+            last_rt, last_intensity = sorted_pts[-1]
+            if border_left <= first_rt <= border_right:
+                line_pts = [(border_left, first_intensity)] + line_pts
+            if border_left <= last_rt <= border_right:
+                line_pts = line_pts + [(border_right, last_intensity)]
+
+        self.baseline_series = QLineSeries()
+        self.baseline_series.setName("")
+        self.baseline_series.setProperty("is_decoration", True)
+        pen = QPen(orange)
+        pen.setWidth(2)
+        pen.setStyle(Qt.PenStyle.DashLine)
+        self.baseline_series.setPen(pen)
+        for rt, intensity in line_pts:
+            self.baseline_series.append(rt, intensity)
+
+        self.chart.addSeries(self.baseline_series)
+        self.baseline_series.attachAxis(x_axis)
+        self.baseline_series.attachAxis(y_axis)
+
+        # Scatter markers at actual baseline points (not the extension endpoints)
+        self.baseline_scatter_series = QScatterSeries()
+        self.baseline_scatter_series.setName("")
+        self.baseline_scatter_series.setProperty("is_decoration", True)
+        self.baseline_scatter_series.setMarkerSize(12)
+        self.baseline_scatter_series.setColor(orange)
+        self.baseline_scatter_series.setBorderColor(QColor(180, 100, 0))
+        for rt, intensity in sorted_pts:
+            self.baseline_scatter_series.append(rt, intensity)
+
+        self.chart.addSeries(self.baseline_scatter_series)
+        self.baseline_scatter_series.attachAxis(x_axis)
+        self.baseline_scatter_series.attachAxis(y_axis)
+
+    def _compute_baseline_at_rt(self, rt_array) -> np.ndarray:
+        """Return baseline intensities interpolated/extrapolated at each value in *rt_array*.
+
+        * 0 points  → all zeros (no correction)
+        * 1 point   → flat baseline at that intensity
+        * N points  → piecewise-linear interpolation; constant extrapolation outside range
+        """
+        if not self.baseline_points:
+            return np.zeros(len(rt_array))
+
+        sorted_pts = sorted(self.baseline_points, key=lambda p: p[0])
+        brt = np.array([p[0] for p in sorted_pts])
+        bint = np.array([p[1] for p in sorted_pts])
+
+        if len(sorted_pts) == 1:
+            return np.full(len(rt_array), bint[0])
+
+        # np.interp handles constant extrapolation via left/right parameters
+        return np.interp(np.asarray(rt_array, dtype=float), brt, bint, left=bint[0], right=bint[-1])
+
+    def _clear_baseline_points(self) -> None:
+        """Remove all baseline points and redraw."""
+        self.baseline_points.clear()
+        self._draw_baseline_series()
+        if len(self.peak_boundary_lines) == 2:
+            self.update_boxplot()
+
+    def _copy_rt_times_to_clipboard(self) -> None:
+        """Copy peak RT information to the clipboard as tab-separated values for Excel.
+
+        Format: start_minus_2_width TAB apex_rt TAB end_plus_2_width
+        where width = peak_end_rt - peak_start_rt.
+        """
+        if len(self.peak_boundary_lines) != 2 or self.peak_start_rt is None or self.peak_end_rt is None:
+            return
+        start_rt = min(self.peak_start_rt, self.peak_end_rt)
+        end_rt = max(self.peak_start_rt, self.peak_end_rt)
+        peak_width = end_rt - start_rt
+        a = start_rt - 2.0 * peak_width
+        c = end_rt + 2.0 * peak_width
+        b = self._last_apex_rt if self._last_apex_rt is not None else (start_rt + end_rt) / 2.0
+        text = f"{b:.4f}\t{a:.4f}\t{c:.4f}"
+        QApplication.clipboard().setText(text)
+
     def _restore_peak_boundary_lines(self):
         """Restore peak boundary lines after plot update"""
         # Check if we have stored RT values for boundaries
@@ -5287,7 +5453,7 @@ class EICWindow(QWidget):
         chart_view = InteractiveChartView(self.chart)
 
         # Connect context menu signal
-        chart_view.contextMenuRequested.connect(self.show_context_menu)
+        chart_view.contextMenuRequested.connect(self.show_context_menu)  # (rt, intensity, pos)
 
         # Connect main x-axis range changes to sync handler
         self.x_axis.rangeChanged.connect(self._on_main_x_axis_changed)
@@ -6079,6 +6245,9 @@ class EICWindow(QWidget):
         # Re-add peak boundary lines if they exist
         self._restore_peak_boundary_lines()
 
+        # Re-draw baseline series if baseline points exist
+        self._draw_baseline_series()
+
         # Refresh all extra EIC trace charts with the same view settings
         if self._extra_eic_traces:
             for trace in self._extra_eic_traces:
@@ -6580,7 +6749,7 @@ class EICWindow(QWidget):
         trace_x_axis.rangeChanged.connect(self._on_trace_x_axis_changed)
 
         # Connect context menu so the extra trace chart shows the same menu
-        trace_chart_view.contextMenuRequested.connect(lambda rt_val, pos, cv=trace_chart_view: self.show_context_menu(rt_val, pos, source_chart_view=cv))
+        trace_chart_view.contextMenuRequested.connect(lambda rt_val, int_val, pos, cv=trace_chart_view: self.show_context_menu(rt_val, int_val, pos, source_chart_view=cv))
 
         # Build compact info label above this trace chart
         pol_str = f" [{polarity[0].upper() if polarity else '?'}]"
@@ -6936,7 +7105,7 @@ class EICWindow(QWidget):
             total = _SPLITTER_REFERENCE_HEIGHT
             self._eic_charts_splitter.setSizes([total // n] * n)
 
-    def show_context_menu(self, rt_value: float, position: QPointF, source_chart_view=None):
+    def show_context_menu(self, rt_value: float, intensity_value: float, position: QPointF, source_chart_view=None):
         """Show context menu at the specified position.
 
         *source_chart_view* is the chart view that emitted the signal; when
@@ -7169,6 +7338,27 @@ class EICWindow(QWidget):
                 remove_boundary_action = QAction("Remove peak boundaries", self)
                 remove_boundary_action.triggered.connect(self.remove_peak_boundaries)
                 context_menu.addAction(remove_boundary_action)
+
+                # Copy RT times: start - 2*width, apex, end + 2*width
+                if len(self.peak_boundary_lines) == 2:
+                    copy_rt_action = QAction("Copy RT times", self)
+                    copy_rt_action.triggered.connect(self._copy_rt_times_to_clipboard)
+                    context_menu.addAction(copy_rt_action)
+
+            # Baseline point actions (always available when no extra traces)
+            context_menu.addSeparator()
+            add_baseline_action = QAction("Add baseline point", self)
+            add_baseline_action.triggered.connect(lambda: self._add_baseline_point(rt_value, intensity_value))
+            context_menu.addAction(add_baseline_action)
+
+            if self.baseline_points:
+                remove_baseline_action = QAction("Remove closest baseline point", self)
+                remove_baseline_action.triggered.connect(lambda: self._remove_closest_baseline_point(rt_value))
+                context_menu.addAction(remove_baseline_action)
+
+                clear_baseline_action = QAction("Clear all baseline points", self)
+                clear_baseline_action.triggered.connect(self._clear_baseline_points)
+                context_menu.addAction(clear_baseline_action)
 
             context_menu.addSeparator()
 

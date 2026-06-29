@@ -5,6 +5,7 @@ import json
 import os
 import re
 import sys
+import unicodedata
 
 import pandas as pd
 import toml
@@ -34,6 +35,7 @@ from PyQt6.QtWidgets import (
     QHeaderView,
     QLabel,
     QLineEdit,
+    QListWidget,
     QMainWindow,
     QMenu,
     QMessageBox,
@@ -576,6 +578,152 @@ class CustomEICDialog(QDialog):
             self._result_polarity,
             self._result_ppm,
         )
+
+
+# ---------------------------------------------------------------------------
+# Compound-name normalisation helpers for CSV export
+# ---------------------------------------------------------------------------
+
+_GREEK_TO_LATIN: dict[str, str] = {
+    "\u03b1": "alpha",
+    "\u03b2": "beta",
+    "\u03b3": "gamma",
+    "\u03b4": "delta",
+    "\u03b5": "epsilon",
+    "\u03b6": "zeta",
+    "\u03b7": "eta",
+    "\u03b8": "theta",
+    "\u03b9": "iota",
+    "\u03ba": "kappa",
+    "\u03bb": "lambda",
+    "\u03bc": "mu",
+    "\u03bd": "nu",
+    "\u03be": "xi",
+    "\u03bf": "omicron",
+    "\u03c0": "pi",
+    "\u03c1": "rho",
+    "\u03c3": "sigma",
+    "\u03c2": "sigma",
+    "\u03c4": "tau",
+    "\u03c5": "upsilon",
+    "\u03c6": "phi",
+    "\u03c7": "chi",
+    "\u03c8": "psi",
+    "\u03c9": "omega",
+    "\u0391": "Alpha",
+    "\u0392": "Beta",
+    "\u0393": "Gamma",
+    "\u0394": "Delta",
+    "\u0395": "Epsilon",
+    "\u0396": "Zeta",
+    "\u0397": "Eta",
+    "\u0398": "Theta",
+    "\u0399": "Iota",
+    "\u039a": "Kappa",
+    "\u039b": "Lambda",
+    "\u039c": "Mu",
+    "\u039d": "Nu",
+    "\u039e": "Xi",
+    "\u039f": "Omicron",
+    "\u03a0": "Pi",
+    "\u03a1": "Rho",
+    "\u03a3": "Sigma",
+    "\u03a4": "Tau",
+    "\u03a5": "Upsilon",
+    "\u03a6": "Phi",
+    "\u03a7": "Chi",
+    "\u03a8": "Psi",
+    "\u03a9": "Omega",
+}
+
+# Unicode code-points that represent a dash/minus of some kind
+_DASH_CHARS: str = (
+    "\u2010\u2011\u2012\u2013\u2014\u2015"  # hyphen variants, en-dash, em-dash, horizontal bar
+    "\u2212\u2796\uff0d"  # minus sign, heavy minus, fullwidth hyphen-minus
+)
+
+
+def _normalize_compound_name(name: str) -> str:
+    """Convert special characters in a compound name to plain ASCII.
+
+    * Greek letters are spelled out (e.g. α → alpha, Β → Beta).
+    * Non-standard dash/minus variants are replaced with ``-``.
+    * Remaining non-ASCII characters are decomposed via NFKD and the
+      base ASCII character is kept (e.g. é → e).
+    """
+    for greek, latin in _GREEK_TO_LATIN.items():
+        name = name.replace(greek, latin)
+    for dash in _DASH_CHARS:
+        name = name.replace(dash, "-")
+    # NFKD decomposition strips combining marks; then drop anything non-ASCII
+    name = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode("ascii")
+    return name
+
+
+class AdductSelectionDialog(QDialog):
+    """Dialog that lets the user pick fallback adducts for compounds that have no
+    pre-defined common adducts.  Positive-mode and negative-mode adducts are
+    presented in two side-by-side multi-select lists.
+    """
+
+    def __init__(self, positive_adducts: list[str], negative_adducts: list[str], parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Select fallback adducts for compounds without pre-defined adducts")
+        self.setMinimumSize(520, 400)
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(12, 12, 12, 12)
+        root.setSpacing(8)
+
+        info = QLabel("The following compounds have no pre-defined common adducts.\nSelect which adducts should be used for them:")
+        info.setWordWrap(True)
+        root.addWidget(info)
+
+        lists_row = QHBoxLayout()
+        lists_row.setSpacing(12)
+
+        # Positive list
+        pos_col = QVBoxLayout()
+        pos_col.addWidget(QLabel("<b>Positive mode</b>"))
+        self._pos_list = QListWidget()
+        self._pos_list.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
+        for adduct in positive_adducts:
+            self._pos_list.addItem(adduct)
+        pos_col.addWidget(self._pos_list)
+        lists_row.addLayout(pos_col)
+
+        # Negative list
+        neg_col = QVBoxLayout()
+        neg_col.addWidget(QLabel("<b>Negative mode</b>"))
+        self._neg_list = QListWidget()
+        self._neg_list.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
+        for adduct in negative_adducts:
+            self._neg_list.addItem(adduct)
+        neg_col.addWidget(self._neg_list)
+        lists_row.addLayout(neg_col)
+
+        root.addLayout(lists_row)
+
+        # Buttons
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        self._btn_ok = QPushButton("OK")
+        self._btn_ok.setDefault(True)
+        btn_cancel = QPushButton("Cancel")
+        self._btn_ok.clicked.connect(self.accept)
+        btn_cancel.clicked.connect(self.reject)
+        btn_row.addWidget(btn_cancel)
+        btn_row.addWidget(self._btn_ok)
+        root.addLayout(btn_row)
+
+    def selected_adducts(self) -> list[str]:
+        """Return all selected adducts (positive and negative combined)."""
+        result: list[str] = []
+        for item in self._pos_list.selectedItems():
+            result.append(item.text())
+        for item in self._neg_list.selectedItems():
+            result.append(item.text())
+        return result
 
 
 class MzMLExplorerMainWindow(QMainWindow):
@@ -2265,6 +2413,106 @@ class MzMLExplorerMainWindow(QMainWindow):
             wtype="Comparator",
         )
 
+    def _generate_inclusion_list(self) -> None:
+        """Export Orbitrap-style inclusion list CSV files, split by polarity."""
+        compounds_data = self.compound_manager.get_compounds_data()
+        if compounds_data is None or compounds_data.empty:
+            QMessageBox.information(self, "No compounds", "No compounds are loaded.")
+            return
+
+        # --- Resolve adduct lists per compound -----------------------------------
+        def _parse_adducts(raw) -> list[str]:
+            if isinstance(raw, list):
+                return [a for a in raw if a]
+            if isinstance(raw, str) and raw.strip():
+                return [a.strip() for a in raw.replace(";", ",").split(",") if a.strip()]
+            return []
+
+        # First pass: check which compounds lack pre-defined adducts
+        has_undefined = any(not _parse_adducts(row.get("Common_adducts", [])) for _, row in compounds_data.iterrows() if str(row.get("Name", "")).strip())
+
+        # If any compound is missing adducts, offer the user a fallback selection
+        fallback_adducts: list[str] = []
+        if has_undefined:
+            adducts_df = self.compound_manager.get_adducts_data()
+            pos_adducts: list[str] = []
+            neg_adducts: list[str] = []
+            for adduct in adducts_df["Adduct"].tolist():
+                polarity = self.compound_manager._determine_polarity(adduct)
+                if polarity == "positive":
+                    pos_adducts.append(adduct)
+                elif polarity == "negative":
+                    neg_adducts.append(adduct)
+
+            dlg = AdductSelectionDialog(pos_adducts, neg_adducts, parent=self)
+            if dlg.exec() == QDialog.DialogCode.Accepted:
+                fallback_adducts = dlg.selected_adducts()
+
+        # --- Build rows ----------------------------------------------------------
+        pos_rows: list[list[str]] = []
+        neg_rows: list[list[str]] = []
+
+        for _, compound in compounds_data.iterrows():
+            name = str(compound.get("Name", "")).strip()
+            if not name:
+                continue
+
+            rt_start = compound.get("RT_start_min")
+            rt_end = compound.get("RT_end_min")
+            t_start = "" if (rt_start is None or (isinstance(rt_start, float) and pd.isna(rt_start))) else str(float(rt_start))
+            t_end = "" if (rt_end is None or (isinstance(rt_end, float) and pd.isna(rt_end))) else str(float(rt_end))
+
+            adduct_list = _parse_adducts(compound.get("Common_adducts", []))
+            if not adduct_list:
+                adduct_list = fallback_adducts
+
+            for adduct in adduct_list:
+                try:
+                    mz = self.compound_manager.calculate_compound_mz(name, adduct)
+                    if mz is None or mz <= 0:
+                        continue
+                except Exception:
+                    continue
+
+                safe_name = _normalize_compound_name(name)
+                quoted_name = '"' + safe_name.replace('"', '""') + '"'
+                row = [quoted_name, f"{mz:.6f}", t_start, t_end, "0"]
+
+                polarity = self.compound_manager._determine_polarity(adduct)
+                if polarity == "positive":
+                    pos_rows.append(row)
+                elif polarity == "negative":
+                    neg_rows.append(row)
+
+        if not pos_rows and not neg_rows:
+            QMessageBox.information(self, "No adducts", "No compounds with valid common adducts were found.")
+            return
+
+        save_dir = QFileDialog.getExistingDirectory(self, "Select folder to save inclusion lists")
+        if not save_dir:
+            return
+
+        header = "Compound,m/z,t start (min),t stop (min),Intensity Threshold\n"
+        written: list[str] = []
+
+        if pos_rows:
+            pos_path = os.path.join(save_dir, "inclusion_list_positive.csv")
+            with open(pos_path, "w", newline="", encoding="utf-8") as fh:
+                fh.write(header)
+                for row in pos_rows:
+                    fh.write(",".join(row) + "\n")
+            written.append(f"Positive: {len(pos_rows)} entries → inclusion_list_positive.csv")
+
+        if neg_rows:
+            neg_path = os.path.join(save_dir, "inclusion_list_negative.csv")
+            with open(neg_path, "w", newline="", encoding="utf-8") as fh:
+                fh.write(header)
+                for row in neg_rows:
+                    fh.write(",".join(row) + "\n")
+            written.append(f"Negative: {len(neg_rows)} entries → inclusion_list_negative.csv")
+
+        QMessageBox.information(self, "Inclusion lists saved", "\n".join(written))
+
     def create_menu_bar(self):
         """Create the menu bar"""
         menubar = self.menuBar()
@@ -2343,6 +2591,13 @@ class MzMLExplorerMainWindow(QMainWindow):
         comparator_action.setToolTip("Open a window to compare two arbitrary MSMS spectra")
         comparator_action.triggered.connect(self._open_spectrum_comparator)
         tools_menu.addAction(comparator_action)
+
+        tools_menu.addSeparator()
+
+        inclusion_list_action = QAction("Generate Orbitrap inclusion list…", self)
+        inclusion_list_action.setToolTip("Export a CSV inclusion list for Orbitrap instruments (positive and negative mode)")
+        inclusion_list_action.triggered.connect(self._generate_inclusion_list)
+        tools_menu.addAction(inclusion_list_action)
 
         # Help menu
         help_menu = menubar.addMenu("Help")

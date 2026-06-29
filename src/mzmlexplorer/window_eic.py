@@ -113,6 +113,7 @@ class InteractiveChartView(QChartView):
             }
         """)
         self.hover_label.hide()
+        self.hover_label.setWordWrap(False)
         self.hover_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)  # Don't interfere with mouse events
 
         # Disable default rubber band
@@ -276,6 +277,9 @@ class InteractiveChartView(QChartView):
 
                 # Show persistent label with sample name
                 self.hover_label.setText(closest_sample_name)
+                # Size the popup tightly around the full sample name
+                self.hover_label.setMinimumWidth(0)
+                self.hover_label.adjustSize()
                 self.hover_label.setStyleSheet(f"""
                     QLabel {{
                         background-color: rgba(255, 255, 255, 200);

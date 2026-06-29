@@ -428,6 +428,12 @@ class FileManager:
         if "Quantification" not in new_files_df.columns:
             new_files_df["Quantification"] = ""
 
+        # Ensure hidden column exists (samples are visible/active by default)
+        if "hidden" not in new_files_df.columns:
+            new_files_df["hidden"] = False
+        else:
+            new_files_df["hidden"] = new_files_df["hidden"].fillna(False).astype(bool)
+
         # Combine with existing data
         if self.files_data.empty:
             self.files_data = new_files_df
@@ -495,9 +501,41 @@ class FileManager:
             for group, color in zip(unassigned_groups, colors):
                 self.group_colors[group] = color
 
-    def get_files_data(self) -> pd.DataFrame:
-        """Get the loaded files data"""
-        return self.files_data.copy()
+    def get_files_data(self, include_hidden: bool = False) -> pd.DataFrame:
+        """Get the loaded files data.
+
+        By default, hidden samples are excluded so they are skipped in all
+        processing and visualization steps. Pass include_hidden=True to get the
+        full set (e.g. for the table display, removal, or persistence).
+        """
+        if include_hidden or "hidden" not in self.files_data.columns:
+            return self.files_data.copy()
+        return self.files_data[~self.files_data["hidden"].fillna(False).astype(bool)].copy()
+
+    def set_hidden(self, filepaths, hidden: bool):
+        """Set the hidden flag for the given filepaths."""
+        if self.files_data.empty:
+            return
+        if "hidden" not in self.files_data.columns:
+            self.files_data["hidden"] = False
+        if isinstance(filepaths, str):
+            filepaths = [filepaths]
+        self.files_data.loc[self.files_data["Filepath"].isin(filepaths), "hidden"] = bool(hidden)
+
+    def set_all_hidden(self, hidden: bool):
+        """Set the hidden flag for all samples."""
+        if self.files_data.empty:
+            return
+        self.files_data["hidden"] = bool(hidden)
+
+    def is_hidden(self, filepath: str) -> bool:
+        """Return True if the given sample is hidden."""
+        if self.files_data.empty or "hidden" not in self.files_data.columns:
+            return False
+        row = self.files_data[self.files_data["Filepath"] == filepath]
+        if row.empty:
+            return False
+        return bool(row["hidden"].iloc[0])
 
     def get_files_display_data(self) -> pd.DataFrame:
         """Get files data formatted for display in the table"""
@@ -512,7 +550,7 @@ class FileManager:
         # Reorder columns: group, Sample Name, color, then remaining columns, filepath last
         columns = list(display_data.columns)
 
-        for col in ("filename", "Filepath", "Sample Name", "group", "color"):
+        for col in ("filename", "Filepath", "Sample Name", "group", "color", "hidden"):
             if col in columns:
                 columns.remove(col)
 

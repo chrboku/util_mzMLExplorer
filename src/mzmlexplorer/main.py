@@ -1253,6 +1253,7 @@ class MzMLExplorerMainWindow(QMainWindow):
 
         # Populate table
         for i, (index, row) in enumerate(files_display_data.iterrows()):
+            row_hidden = self.file_manager.is_hidden(row["Filepath"]) if "Filepath" in row.index else False
             for j, (col_name, value) in enumerate(row.items()):
                 display_text = "" if (value is None or (isinstance(value, float) and pd.isna(value))) else str(value)
                 item = QTableWidgetItem(display_text)
@@ -1272,6 +1273,13 @@ class MzMLExplorerMainWindow(QMainWindow):
                             color = QColor(group_color)
                             color.setAlpha(50)  # Make it semi-transparent
                             item.setBackground(color)
+
+                # Grey out hidden samples so the user sees they are excluded
+                if row_hidden:
+                    item.setForeground(QColor(150, 150, 150))
+                    font = item.font()
+                    font.setItalic(True)
+                    item.setFont(font)
 
                 self.files_table.setItem(i, j, item)
 
@@ -1575,24 +1583,57 @@ class MzMLExplorerMainWindow(QMainWindow):
         # Get file information for display
         file_name = "Unknown"
         filepath = None
+        group = None
         if self.files_table.columnCount() > 0:
             name_item = self.files_table.item(row, 0)
             if name_item:
                 file_name = name_item.text()
-            # Find the Filepath column
+            # Find the Filepath and group columns
             for col in range(self.files_table.columnCount()):
                 header = self.files_table.horizontalHeaderItem(col)
-                if header and header.text() == "Filepath":
+                if not header:
+                    continue
+                if header.text() == "Filepath":
                     fp_item = self.files_table.item(row, col)
                     if fp_item:
                         filepath = fp_item.text()
-                    break
+                elif header.text() == "group":
+                    grp_item = self.files_table.item(row, col)
+                    if grp_item:
+                        group = grp_item.text()
 
         # Add explore file action
         if filepath and os.path.exists(filepath):
             explore_action = QAction("Explore File", self)
             explore_action.triggered.connect(lambda checked, fp=filepath: self._open_file_explorer(fp))
             menu.addAction(explore_action)
+            menu.addSeparator()
+
+        # Add visibility actions (hide/show samples and groups for processing)
+        is_hidden = self.file_manager.is_hidden(filepath) if filepath else False
+        if filepath:
+            if is_hidden:
+                show_sample_action = QAction("Show sample", self)
+                show_sample_action.triggered.connect(lambda checked, fp=filepath: self._set_sample_hidden([fp], False))
+                menu.addAction(show_sample_action)
+                if group is not None:
+                    show_group_action = QAction("Show group", self)
+                    show_group_action.triggered.connect(lambda checked, g=group: self._set_group_hidden(g, False))
+                    menu.addAction(show_group_action)
+            else:
+                hide_sample_action = QAction("Hide sample", self)
+                hide_sample_action.triggered.connect(lambda checked, fp=filepath: self._set_sample_hidden([fp], True))
+                menu.addAction(hide_sample_action)
+                if group is not None:
+                    hide_group_action = QAction("Hide group", self)
+                    hide_group_action.triggered.connect(lambda checked, g=group: self._set_group_hidden(g, True))
+                    menu.addAction(hide_group_action)
+            hide_all_action = QAction("Hide all samples", self)
+            hide_all_action.triggered.connect(lambda checked: self._set_all_hidden(True))
+            menu.addAction(hide_all_action)
+            show_all_action = QAction("Show all samples", self)
+            show_all_action.triggered.connect(lambda checked: self._set_all_hidden(False))
+            menu.addAction(show_all_action)
             menu.addSeparator()
 
         # Add remove file action
@@ -1602,6 +1643,23 @@ class MzMLExplorerMainWindow(QMainWindow):
 
         # Show menu at cursor position
         menu.exec(self.files_table.mapToGlobal(position))
+
+    def _set_sample_hidden(self, filepaths, hidden: bool):
+        """Hide or show specific samples and refresh the files table."""
+        self.file_manager.set_hidden(filepaths, hidden)
+        self.update_files_table()
+
+    def _set_group_hidden(self, group: str, hidden: bool):
+        """Hide or show all samples of a group and refresh the files table."""
+        group_files = self.file_manager.get_files_by_group(group)
+        if not group_files.empty:
+            self.file_manager.set_hidden(group_files["Filepath"].tolist(), hidden)
+        self.update_files_table()
+
+    def _set_all_hidden(self, hidden: bool):
+        """Hide or show all samples and refresh the files table."""
+        self.file_manager.set_all_hidden(hidden)
+        self.update_files_table()
 
     def _open_file_explorer(self, filepath: str):
         """Open the mzML file explorer window for the given file."""

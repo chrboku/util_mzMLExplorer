@@ -2181,6 +2181,8 @@ class MzMLExplorerMainWindow(QMainWindow):
                 defaults=self.eic_defaults,
                 show_predefined_only=show_predefined_only,
                 parent=None,
+                compound_update_callback=self._update_compound_from_eic,
+                adducts_df=self.compound_manager.adducts_data,
             )
 
             # Show the window
@@ -2422,6 +2424,7 @@ class MzMLExplorerMainWindow(QMainWindow):
                 integration_callback=self.record_peak_integration,  # Pass integration callback
                 settings_callback=self._on_eic_settings_changed,  # Persist control changes
                 adducts_data=self.compound_manager.adducts_data,  # For fragment annotation
+                compound_update_callback=self._update_compound_from_eic,  # Write peak info back to list
             )
 
             # Show the window
@@ -2453,6 +2456,168 @@ class MzMLExplorerMainWindow(QMainWindow):
             import traceback
 
             traceback.print_exc()
+
+    def _update_compound_from_eic(self, compound_name, rt_start, rt_end, rt_apex, adduct, dialog_parent=None, update_rt=True, save=False):
+        """Update a compound in the list with peak RT boundaries / apex and/or an adduct.
+
+        Shows a summary dialog of the proposed changes and applies them on confirmation.
+        When *update_rt* is False only the adduct is added (RT is left untouched).
+        When *save* is True the compound list is also written back to its source file.
+        Called from an EIC window via its compound_update_callback.
+        """
+        parent = dialog_parent if dialog_parent is not None else self
+        compounds = self.compound_manager.compounds_data
+        if compounds.empty or "Name" not in compounds.columns:
+            QMessageBox.warning(parent, "Compound not found", "No compound list is loaded.")
+            return
+
+        mask = compounds["Name"] == compound_name
+        if not mask.any():
+            QMessageBox.warning(parent, "Compound not found", f"'{compound_name}' is not in the compound list.")
+            return
+
+        idx = compounds.index[mask][0]
+        row = compounds.loc[idx]
+
+        def _fmt(val):
+            try:
+                return f"{float(val):.2f} min"
+            except (TypeError, ValueError):
+                return "—"
+
+        # Build summary of retention-time changes
+        changes = []
+        if update_rt:
+            changes.append(f"Start RT: {_fmt(row.get('RT_start_min'))} → {rt_start:.2f} min")
+            changes.append(f"End RT: {_fmt(row.get('RT_end_min'))} → {rt_end:.2f} min")
+            changes.append(f"Apex RT: {_fmt(row.get('RT_min'))} → {rt_apex:.2f} min")
+
+        # Determine whether the adduct needs to be added
+        current_adducts = self.compound_manager._parse_adducts_string(row.get("Common_adducts"))
+        adduct_str = str(adduct or "").strip()
+        add_adduct = bool(adduct_str) and adduct_str.lower() != "unknown" and not adduct_str.startswith("[custom]") and adduct_str not in current_adducts
+        if add_adduct:
+            changes.append(f"Add adduct: {adduct_str}")
+        elif adduct_str and adduct_str in current_adducts:
+            changes.append(f"Adduct '{adduct_str}' already in common adducts")
+
+        # Nothing meaningful to do (e.g. adduct-only update but adduct already present)
+        if not update_rt and not add_adduct:
+            QMessageBox.information(parent, "Nothing to update", f"Adduct '{adduct_str}' is already a common adduct of '{compound_name}'.")
+            return
+
+        title = "Update compound list and save" if save else "Update compound list"
+        summary = "\n".join(f"• {c}" for c in changes)
+        reply = QMessageBox.question(
+            parent,
+            title,
+            f"Apply the following changes to '{compound_name}'?\n\n{summary}",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        # Apply the changes
+        if update_rt:
+            self.compound_manager.compounds_data.at[idx, "RT_start_min"] = float(rt_start)
+            self.compound_manager.compounds_data.at[idx, "RT_end_min"] = float(rt_end)
+            self.compound_manager.compounds_data.at[idx, "RT_min"] = float(rt_apex)
+            # These are now real values, no longer imputed defaults
+            for flag_col in ("_rt_min_imputed", "_rt_start_imputed", "_rt_end_imputed"):
+                if flag_col in self.compound_manager.compounds_data.columns:
+                    self.compound_manager.compounds_data.at[idx, flag_col] = False
+        if add_adduct:
+            new_adducts = current_adducts + [adduct_str]
+            self.compound_manager.compounds_data.at[idx, "Common_adducts"] = new_adducts
+
+        # Recalculate m/z values and refresh the compound table
+        try:
+            self.compound_manager._precalculate_mz_values()
+        except Exception:
+            pass
+        self.update_compounds_table()
+
+        if save:
+            # Saving keeps the focus on the EIC window (do not switch to the main window)
+            if self._save_compounds_to_file(parent=parent):
+                self.statusBar().showMessage(f"Updated compound '{compound_name}' and saved to file.")
+            else:
+                self.statusBar().showMessage(f"Updated compound '{compound_name}' (file not saved).")
+        else:
+            # Bring the main window (compound list) to the front
+            self.show()
+            self.raise_()
+            self.activateWindow()
+            self.statusBar().showMessage(f"Updated compound '{compound_name}' from EIC peak.")
+
+    def _save_compounds_to_file(self, parent=None) -> bool:
+        """Write the current compound list back to its loaded source file.
+
+        Returns True on success. The internal Common_adducts lists are converted
+        back to comma-separated strings and internal-only columns are dropped.
+        """
+        parent = parent if parent is not None else self
+        path = self.compound_file_path
+        if not path:
+            QMessageBox.warning(parent, "No file", "No compound file is loaded to save to.")
+            return False
+
+        try:
+            df = self.compound_manager.compounds_data.copy()
+
+            # Restore originally-empty RT cells: values that were imputed with the
+            # 50/0/100 defaults at load time are written back as empty cells, so
+            # that compounds the user never edited keep their blank retention times.
+            _rt_flag_map = {
+                "RT_min": "_rt_min_imputed",
+                "RT_start_min": "_rt_start_imputed",
+                "RT_end_min": "_rt_end_imputed",
+            }
+            for rt_col, flag_col in _rt_flag_map.items():
+                if rt_col in df.columns and flag_col in df.columns:
+                    df.loc[df[flag_col].fillna(False).astype(bool), rt_col] = None
+
+            # Convert Common_adducts lists back to comma-separated strings for storage
+            if "Common_adducts" in df.columns:
+
+                def _adducts_to_str(v):
+                    if isinstance(v, list):
+                        return ", ".join(str(a) for a in v)
+                    if v is None or (isinstance(v, float) and pd.isna(v)):
+                        return ""
+                    return str(v)
+
+                df["Common_adducts"] = df["Common_adducts"].apply(_adducts_to_str)
+
+            # Drop internal-only columns that are not part of the source file
+            _internal_cols = ("compound_type", "_rt_min_imputed", "_rt_start_imputed", "_rt_end_imputed")
+            df = df.drop(columns=[c for c in _internal_cols if c in df.columns])
+
+            ext = path.lower().split(".")[-1]
+            if ext == "xlsx":
+                adducts_df = self.compound_manager.adducts_data
+                with pd.ExcelWriter(path, engine="openpyxl") as writer:
+                    df.to_excel(writer, sheet_name="Compounds", index=False)
+                    if adducts_df is not None and not adducts_df.empty:
+                        adducts_df.to_excel(writer, sheet_name="Adducts", index=False)
+            elif ext == "tsv":
+                df.to_csv(path, sep="\t", index=False)
+            else:  # csv or other
+                df.to_csv(path, index=False)
+
+            # Update monitored file stats so this save is not flagged as an external change
+            try:
+                stat = os.stat(path)
+                self.compound_file_size = stat.st_size
+                self.compound_file_mtime = stat.st_mtime
+            except Exception:
+                pass
+
+            return True
+        except Exception as exc:
+            QMessageBox.critical(parent, "Error", f"Failed to save compound file:\n{exc}")
+            return False
 
     def _open_spectrum_comparator(self):
         """Open an empty Spectrum Comparator window."""

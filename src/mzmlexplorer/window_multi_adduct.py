@@ -49,6 +49,8 @@ class InteractiveEICWidget(QWidget):
         polarity=None,
         defaults=None,
         parent=None,
+        compound_update_callback=None,
+        adducts_df=None,
     ):
         super().__init__(parent)
         self.compound = compound
@@ -57,6 +59,8 @@ class InteractiveEICWidget(QWidget):
         self.mz_value = mz_value
         self.polarity = polarity
         self.defaults = defaults or {}
+        self.compound_update_callback = compound_update_callback
+        self.adducts_df = adducts_df
 
         # Set up the plot
         self.setup_ui()
@@ -432,6 +436,8 @@ class InteractiveEICWidget(QWidget):
                 polarity=self.polarity,  # Pass the polarity
                 defaults=eic_defaults,
                 parent=self.parent(),
+                compound_update_callback=self.compound_update_callback,
+                adducts_data=self.adducts_df,
             )
             eic_window.show()
 
@@ -737,6 +743,8 @@ class MultiAdductWindow(QWidget):
         defaults=None,
         show_predefined_only=True,
         parent=None,
+        compound_update_callback=None,
+        adducts_df=None,
     ):
         super().__init__(parent)
         self.compound = compound
@@ -744,6 +752,8 @@ class MultiAdductWindow(QWidget):
         self.file_manager = file_manager
         self.defaults = defaults or {}
         self.show_predefined_only = show_predefined_only
+        self.compound_update_callback = compound_update_callback
+        self.adducts_df = adducts_df  # Adducts DataFrame for m/z calculation in child EIC windows
 
         compound_name = compound.get("Name", "Unknown")
         window_type = "Predefined Adducts" if show_predefined_only else "All Adducts"
@@ -924,6 +934,8 @@ class MultiAdductWindow(QWidget):
                 polarity,
                 self.defaults,
                 self,
+                compound_update_callback=self.compound_update_callback,
+                adducts_df=self.adducts_df,
             )
             eic_widget.setMinimumSize(350, 280)
             eic_widget.setMaximumSize(500, 380)

@@ -93,6 +93,9 @@ class InteractiveChartView(QChartView):
     # Signal emitted when right-clicking for context menu (rt_value, intensity_value, mouse_position)
     contextMenuRequested = pyqtSignal(float, float, QPointF)
 
+    # Signal emitted when Ctrl+left-clicking inside the plot (rt_value, intensity_value)
+    ctrlClickRequested = pyqtSignal(float, float)
+
     def __init__(self, chart):
         super().__init__(chart)
         self.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -145,9 +148,35 @@ class InteractiveChartView(QChartView):
         # Enable mouse tracking for smooth interactions
         self.setMouseTracking(True)
 
+    def _position_to_data(self, position: QPointF):
+        """Convert a widget pixel position to (rt_value, intensity_value) data coordinates."""
+        plot_area = self.chart().plotArea()
+        rel_x = (position.x() - plot_area.left()) / plot_area.width()
+        rel_y = (position.y() - plot_area.top()) / plot_area.height()
+        rel_x = max(0.0, min(1.0, rel_x))
+        rel_y = max(0.0, min(1.0, rel_y))
+
+        x_axis = self.chart().axes(Qt.Orientation.Horizontal)[0]
+        x_range = x_axis.max() - x_axis.min()
+        rt_value = x_axis.min() + rel_x * x_range
+
+        y_axis = self.chart().axes(Qt.Orientation.Vertical)[0]
+        y_range = y_axis.max() - y_axis.min()
+        intensity_value = y_axis.max() - rel_y * y_range
+
+        return rt_value, intensity_value
+
     def mousePressEvent(self, event: QMouseEvent):
         """Handle mouse press events"""
         if event.button() == Qt.MouseButton.LeftButton:
+            # Ctrl + left click inside the plot: add a peak boundary / baseline point
+            if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+                plot_area = self.chart().plotArea()
+                if plot_area.contains(event.position()):
+                    rt_value, intensity_value = self._position_to_data(event.position())
+                    self.ctrlClickRequested.emit(rt_value, intensity_value)
+                    return  # Don't start panning
+
             # Left click: start panning
             self.is_panning = True
             self.pan_start_pos = event.position()
@@ -667,6 +696,7 @@ class EICWindow(QWidget):
         integration_callback=None,
         settings_callback=None,
         adducts_data=None,
+        compound_update_callback=None,
     ):
         super().__init__(parent)
 
@@ -684,6 +714,7 @@ class EICWindow(QWidget):
         self.file_shifts = {}
         self.integration_callback = integration_callback
         self.settings_callback = settings_callback
+        self.compound_update_callback = compound_update_callback  # Persist peak info to compound list
         self.grouping_column = "group"  # Default grouping column
 
         # Store defaults (use application defaults if none provided)
@@ -766,6 +797,7 @@ class EICWindow(QWidget):
         self.baseline_series = None  # QLineSeries drawn on the chart
         self.baseline_scatter_series = None  # QScatterSeries for baseline point markers
         self._last_apex_rt = None  # Most recently computed apex RT for Copy RT Times
+        self._last_apex_intensity = None  # Most recently computed apex intensity (most abundant sample)
 
         # Initialize boxplot widget
         self.boxplot_widget = None
@@ -2899,6 +2931,8 @@ class EICWindow(QWidget):
 
         # Store apex RT for "Copy RT times" feature
         self._last_apex_rt = apex_rt
+        # Store apex intensity (most abundant signal across samples within the window)
+        self._last_apex_intensity = apex_intensity if apex_intensity != float("-inf") else None
 
         # Always set x-axis to start from 0 and adapt upper bound to data range
         data_max = max((max(values) for values in data_lists if values), default=0)
@@ -5377,19 +5411,142 @@ class EICWindow(QWidget):
     def _copy_rt_times_to_clipboard(self) -> None:
         """Copy peak RT information to the clipboard as tab-separated values for Excel.
 
-        Format: start_minus_2_width TAB apex_rt TAB end_plus_2_width
-        where width = peak_end_rt - peak_start_rt.
+        Format: peak_start_rt TAB apex_rt TAB peak_end_rt
         """
         if len(self.peak_boundary_lines) != 2 or self.peak_start_rt is None or self.peak_end_rt is None:
             return
         start_rt = min(self.peak_start_rt, self.peak_end_rt)
         end_rt = max(self.peak_start_rt, self.peak_end_rt)
-        peak_width = end_rt - start_rt
-        a = start_rt - 2.0 * peak_width
-        c = end_rt + 2.0 * peak_width
-        b = self._last_apex_rt if self._last_apex_rt is not None else (start_rt + end_rt) / 2.0
-        text = f"{b:.4f}\t{a:.4f}\t{c:.4f}"
+        apex_rt = self._last_apex_rt if self._last_apex_rt is not None else (start_rt + end_rt) / 2.0
+        text = f"{start_rt:.4f}\t{apex_rt:.4f}\t{end_rt:.4f}"
         QApplication.clipboard().setText(text)
+
+    def _peak_info_fields(self):
+        """Return the peak information as a tuple of values, or None if unavailable.
+
+        Returns (name, formula, ion_label, start_rt, end_rt, apex_rt, apex_intensity).
+        *ion_label* is the adduct when it is a real adduct, otherwise the m/z plus polarity.
+        """
+        if len(self.peak_boundary_lines) != 2 or self.peak_start_rt is None or self.peak_end_rt is None:
+            return None
+        start_rt = min(self.peak_start_rt, self.peak_end_rt)
+        end_rt = max(self.peak_start_rt, self.peak_end_rt)
+        apex_rt = self._last_apex_rt if self._last_apex_rt is not None else (start_rt + end_rt) / 2.0
+        apex_intensity = self._last_apex_intensity
+
+        name = str(self.compound_data.get("Name", ""))
+        formula = self.compound_data.get("ChemicalFormula", "")
+        if formula is None or (isinstance(formula, float) and pd.isna(formula)):
+            formula = ""
+        formula = str(formula).strip()
+
+        adduct = str(self.adduct or "").strip()
+        if adduct and adduct.lower() != "unknown" and not adduct.startswith("[custom]"):
+            ion_label = adduct
+        else:
+            pol = self.polarity or ""
+            ion_label = f"m/z {format_mz(self.target_mz)} {pol}".strip()
+
+        return (name, formula, ion_label, start_rt, end_rt, apex_rt, apex_intensity)
+
+    def _copy_peak_information_to_clipboard(self) -> None:
+        """Copy peak information to the clipboard as tab-separated values for Excel.
+
+        Fields (no headers): name, sum formula, adduct or m/z+polarity, start RT,
+        end RT, apex RT, apex intensity.
+        """
+        fields = self._peak_info_fields()
+        if fields is None:
+            return
+        name, formula, ion_label, start_rt, end_rt, apex_rt, apex_intensity = fields
+        intensity_str = f"{apex_intensity:.6g}" if apex_intensity is not None else ""
+        text = "\t".join(
+            [
+                name,
+                formula,
+                ion_label,
+                f"{start_rt:.4f}",
+                f"{end_rt:.4f}",
+                f"{apex_rt:.4f}",
+                intensity_str,
+            ]
+        )
+        QApplication.clipboard().setText(text)
+
+    def _set_peak_information_in_compound_list(self, save: bool = False) -> None:
+        """Write the current peak RT boundaries / apex and adduct into the compound list.
+
+        When *save* is True the compound list is also written back to its source file.
+        """
+        if self.compound_update_callback is None:
+            QMessageBox.information(
+                self,
+                "Not available",
+                "Updating the compound list is only available for EIC windows opened from the compound list.",
+            )
+            return
+        fields = self._peak_info_fields()
+        if fields is None:
+            return
+        name, _formula, _ion_label, start_rt, end_rt, apex_rt, _apex_intensity = fields
+        try:
+            self.compound_update_callback(name, start_rt, end_rt, apex_rt, self.adduct, self, update_rt=True, save=save)
+        except Exception as exc:
+            QMessageBox.critical(self, "Error", f"Failed to update compound list: {exc}")
+
+    def _add_as_common_adduct(self, save: bool = False) -> None:
+        """Add the current adduct to the compound's common adducts without changing its RT.
+
+        When *save* is True the compound list is also written back to its source file.
+        """
+        if self.compound_update_callback is None:
+            QMessageBox.information(
+                self,
+                "Not available",
+                "Updating the compound list is only available for EIC windows opened from the compound list.",
+            )
+            return
+        name = str(self.compound_data.get("Name", ""))
+        try:
+            self.compound_update_callback(name, None, None, None, self.adduct, self, update_rt=False, save=save)
+        except Exception as exc:
+            QMessageBox.critical(self, "Error", f"Failed to update compound list: {exc}")
+
+    def _is_real_adduct(self) -> bool:
+        """Return True when the current adduct is a genuine adduct (not 'Unknown'/custom m/z)."""
+        a = str(self.adduct or "").strip()
+        return bool(a) and a.lower() != "unknown" and not a.startswith("[custom]")
+
+    def _compound_has_defined_rt(self) -> bool:
+        """Return True when the compound already has a real RT window and apex defined.
+
+        The default placeholder window (0–100 min) counts as "not defined".
+        """
+        try:
+            start = float(self.compound_data.get("RT_start_min"))
+            end = float(self.compound_data.get("RT_end_min"))
+            apex = float(self.compound_data.get("RT_min"))
+        except (TypeError, ValueError):
+            return False
+        if pd.isna(start) or pd.isna(end) or pd.isna(apex):
+            return False
+        if start == 0.0 and end == 100.0:
+            return False
+        return True
+
+    def _handle_ctrl_click(self, rt_value: float, intensity_value: float) -> None:
+        """Handle a Ctrl+left-click in the plot: add a peak boundary or a baseline point.
+
+        The first two clicks add the two peak boundaries; subsequent clicks add
+        baseline points (mirroring the context-menu behaviour). The retention
+        time and intensity come from the click position.
+        """
+        if self._extra_eic_traces:
+            return  # Peak boundaries are disabled while extra traces are shown
+        if len(self.peak_boundary_lines) < 2:
+            self.add_peak_boundary(rt_value)
+        else:
+            self._add_baseline_point(rt_value, intensity_value)
 
     def _restore_peak_boundary_lines(self):
         """Restore peak boundary lines after plot update"""
@@ -5491,6 +5648,9 @@ class EICWindow(QWidget):
 
         # Connect context menu signal
         chart_view.contextMenuRequested.connect(self.show_context_menu)  # (rt, intensity, pos)
+
+        # Connect Ctrl+click signal to add peak boundaries / baseline points
+        chart_view.ctrlClickRequested.connect(self._handle_ctrl_click)  # (rt, intensity)
 
         # Connect main x-axis range changes to sync handler
         self.x_axis.rangeChanged.connect(self._on_main_x_axis_changed)
@@ -6780,10 +6940,18 @@ class EICWindow(QWidget):
 
     def _show_add_eic_trace_dialog(self):
         """Open the Add EIC Trace dialog and, if accepted, extract and display the new trace."""
+        # Pre-fill the chemical formula when the current EIC is derived from a compound
+        # that has a sum formula, and open the Formula / Mass tab.
+        initial_formula = self.compound_data.get("ChemicalFormula", "")
+        if initial_formula is None or (isinstance(initial_formula, float) and pd.isna(initial_formula)):
+            initial_formula = ""
+        initial_formula = str(initial_formula).strip() or None
+
         dialog = _AddEICTraceDialog(
             adducts_data=self._adducts_data,
             ppm_default=self.defaults.get("mz_tolerance_ppm", 5.0),
             parent=self,
+            initial_formula=initial_formula,
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
@@ -7305,13 +7473,17 @@ class EICWindow(QWidget):
         if has_extra or (self._adducts_data is not None and not self._adducts_data.empty and self.compound_data.get("ChemicalFormula")):
             add_trace_menu = context_menu.addMenu("Add EIC trace")
             # Top option: open dialog (always available)
-            custom_action = QAction("Custom (dialog)…", self)
+            custom_action = QAction("Custom…", self)
             custom_action.triggered.connect(self._show_add_eic_trace_dialog)
             add_trace_menu.addAction(custom_action)
 
             formula = self.compound_data.get("ChemicalFormula", "")
             if formula and self._adducts_data is not None and not self._adducts_data.empty:
                 add_trace_menu.addSeparator()
+
+                # Nest all adducts / isotopologs for this compound under a
+                # submenu named after the compound's sum formula.
+                formula_menu = add_trace_menu.addMenu(str(formula))
 
                 # Determine which adducts are "predefined" for this compound
                 _common_raw = self.compound_data.get("Common_adducts", "") or ""
@@ -7353,18 +7525,18 @@ class EICWindow(QWidget):
                 if predefined_actions:
                     predef_header = QAction("— Predefined adducts —", self)
                     predef_header.setEnabled(False)
-                    add_trace_menu.addAction(predef_header)
+                    formula_menu.addAction(predef_header)
                     for act in predefined_actions:
-                        add_trace_menu.addAction(act)
+                        formula_menu.addAction(act)
 
                 if other_actions:
                     if predefined_actions:
-                        add_trace_menu.addSeparator()
+                        formula_menu.addSeparator()
                     other_header = QAction("— Other adducts —", self)
                     other_header.setEnabled(False)
-                    add_trace_menu.addAction(other_header)
+                    formula_menu.addAction(other_header)
                     for act in other_actions:
-                        add_trace_menu.addAction(act)
+                        formula_menu.addAction(act)
 
                 # Isotopologs: per-element submenu with values -2,-1,0,1,...n,n+1,n+2
                 try:
@@ -7382,8 +7554,8 @@ class EICWindow(QWidget):
                         _, _charge, _ = adduct_mass_change(adduct_row_cur.iloc[0])
                         ppm = self.defaults.get("mz_tolerance_ppm", 5.0)
 
-                        add_trace_menu.addSeparator()
-                        iso_menu = add_trace_menu.addMenu("— Isotopologs —")
+                        formula_menu.addSeparator()
+                        iso_menu = formula_menu.addMenu("— Isotopologs —")
 
                         for elem, elem_mass_step in _ISO_MASSES.items():
                             n_elem = parsed.get(elem, 0)
@@ -7464,6 +7636,31 @@ class EICWindow(QWidget):
                     copy_rt_action = QAction("Copy RT times", self)
                     copy_rt_action.triggered.connect(self._copy_rt_times_to_clipboard)
                     context_menu.addAction(copy_rt_action)
+
+                    # Copy full peak information (tab-separated) to clipboard
+                    copy_peak_action = QAction("Copy peak information", self)
+                    copy_peak_action.triggered.connect(self._copy_peak_information_to_clipboard)
+                    context_menu.addAction(copy_peak_action)
+
+                    # Write peak information back into the compound list
+                    set_compound_action = QAction("Set information in compound list", self)
+                    set_compound_action.triggered.connect(lambda: self._set_peak_information_in_compound_list(save=False))
+                    context_menu.addAction(set_compound_action)
+
+                    set_compound_save_action = QAction("Set information in compound list and save", self)
+                    set_compound_save_action.triggered.connect(lambda: self._set_peak_information_in_compound_list(save=True))
+                    context_menu.addAction(set_compound_save_action)
+
+            # Adduct-only update: available when the compound already has a defined RT
+            # window/apex and the current adduct is a genuine adduct.
+            if self._is_real_adduct() and self._compound_has_defined_rt():
+                add_adduct_action = QAction("Add as common adduct", self)
+                add_adduct_action.triggered.connect(lambda: self._add_as_common_adduct(save=False))
+                context_menu.addAction(add_adduct_action)
+
+                add_adduct_save_action = QAction("Add as common adduct and save", self)
+                add_adduct_save_action.triggered.connect(lambda: self._add_as_common_adduct(save=True))
+                context_menu.addAction(add_adduct_save_action)
 
             # Baseline point actions (always available when no extra traces)
             context_menu.addSeparator()
@@ -8498,7 +8695,7 @@ class _AddEICTraceDialog(QDialog):
       * Tab 1: enter a chemical formula / neutral mass + adduct
     """
 
-    def __init__(self, adducts_data, ppm_default=5.0, parent=None):
+    def __init__(self, adducts_data, ppm_default=5.0, parent=None, initial_formula=None):
         super().__init__(parent)
         self.setWindowTitle("Add EIC Trace")
         self.setMinimumWidth(480)
@@ -8510,6 +8707,11 @@ class _AddEICTraceDialog(QDialog):
         self._result_ppm = ppm_default
         self._setup_ui()
         self._connect_signals()
+        # When a sum formula is available, preselect the Formula / Mass tab and
+        # pre-fill the chemical formula field for convenience.
+        if initial_formula:
+            self.formula_edit.setText(str(initial_formula))
+            self.tabs.setCurrentIndex(1)
         self._validate_tab1()
         self._validate_tab2()
 

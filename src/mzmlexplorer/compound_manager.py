@@ -128,12 +128,17 @@ class CompoundManager:
 
                 compound_dict = row.to_dict()
 
-                # Set default RT values if not provided (0-100 minutes)
-                if pd.isna(compound_dict.get("RT_min")) or compound_dict.get("RT_min") is None:
+                # Set default RT values if not provided (0-100 minutes).
+                # Track which values were imputed so they can be written back
+                # as empty cells when the compound list is saved to file.
+                compound_dict["_rt_min_imputed"] = pd.isna(compound_dict.get("RT_min")) or compound_dict.get("RT_min") is None
+                compound_dict["_rt_start_imputed"] = pd.isna(compound_dict.get("RT_start_min")) or compound_dict.get("RT_start_min") is None
+                compound_dict["_rt_end_imputed"] = pd.isna(compound_dict.get("RT_end_min")) or compound_dict.get("RT_end_min") is None
+                if compound_dict["_rt_min_imputed"]:
                     compound_dict["RT_min"] = 50.0  # Default center
-                if pd.isna(compound_dict.get("RT_start_min")) or compound_dict.get("RT_start_min") is None:
+                if compound_dict["_rt_start_imputed"]:
                     compound_dict["RT_start_min"] = 0.0  # Default start
-                if pd.isna(compound_dict.get("RT_end_min")) or compound_dict.get("RT_end_min") is None:
+                if compound_dict["_rt_end_imputed"]:
                     compound_dict["RT_end_min"] = 100.0  # Default end
 
                 # Determine compound type based on available data

@@ -697,6 +697,7 @@ class EICWindow(QWidget):
         settings_callback=None,
         adducts_data=None,
         compound_update_callback=None,
+        latest_compound_callback=None,
     ):
         super().__init__(parent)
 
@@ -715,6 +716,7 @@ class EICWindow(QWidget):
         self.integration_callback = integration_callback
         self.settings_callback = settings_callback
         self.compound_update_callback = compound_update_callback  # Persist peak info to compound list
+        self.latest_compound_callback = latest_compound_callback  # Look up newest saved RT window
         self.grouping_column = "group"  # Default grouping column
 
         # Store defaults (use application defaults if none provided)
@@ -813,7 +815,78 @@ class EICWindow(QWidget):
 
         self.init_ui()
         self._load_stylesheet()
+        self._reconcile_rt_window()
         self.extract_eic_data()
+
+    def _reconcile_rt_window(self):
+        """Reconcile a possibly stale RT window with the newest saved one.
+
+        A window opened from the multi-adduct view may carry a stale copy of the
+        compound if its RT window was changed and saved from another single-EIC
+        window in the meantime. When the newest saved RT window differs from the
+        one this view was opened with, ask the user whether to apply the newest
+        window or keep the old one for viewing.
+        """
+        if self.latest_compound_callback is None:
+            return
+        name = str(self.compound_data.get("Name", "")).strip()
+        if not name:
+            return
+        try:
+            latest = self.latest_compound_callback(name)
+        except Exception:
+            latest = None
+        if not latest:
+            return
+
+        def _num(val):
+            try:
+                f = float(val)
+                return None if pd.isna(f) else f
+            except (TypeError, ValueError):
+                return None
+
+        old_start = _num(self.compound_data.get("RT_start_min"))
+        old_end = _num(self.compound_data.get("RT_end_min"))
+        new_start = _num(latest.get("RT_start_min"))
+        new_end = _num(latest.get("RT_end_min"))
+
+        # A valid, non-placeholder newest window is required to offer it
+        if new_start is None or new_end is None:
+            return
+        if new_start == 0.0 and new_end == 100.0:
+            return
+
+        eps = 1e-6
+        start_changed = old_start is None or abs(old_start - new_start) > eps
+        end_changed = old_end is None or abs(old_end - new_end) > eps
+        if not (start_changed or end_changed):
+            return
+
+        new_apex = _num(latest.get("RT_min"))
+
+        def _fmt(v):
+            return f"{v:.2f} min" if v is not None else "—"
+
+        reply = QMessageBox.question(
+            self,
+            "Newer retention time window available",
+            (
+                f"The retention time window saved for '{name}' differs from the one "
+                f"this view was opened with.\n\n"
+                f"Opened with:  {_fmt(old_start)} – {_fmt(old_end)}\n"
+                f"Newest saved: {_fmt(new_start)} – {_fmt(new_end)}\n\n"
+                f"Apply the newest retention time window? "
+                f"(Choose No to keep the old one for viewing.)"
+            ),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self.compound_data["RT_start_min"] = new_start
+            self.compound_data["RT_end_min"] = new_end
+            if new_apex is not None:
+                self.compound_data["RT_min"] = new_apex
 
     def _load_stylesheet(self):
         """Apply the shared application stylesheet so table styles are consistent."""

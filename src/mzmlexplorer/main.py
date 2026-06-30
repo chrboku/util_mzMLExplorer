@@ -2183,6 +2183,7 @@ class MzMLExplorerMainWindow(QMainWindow):
                 parent=None,
                 compound_update_callback=self._update_compound_from_eic,
                 adducts_df=self.compound_manager.adducts_data,
+                latest_compound_callback=self._get_latest_compound,
             )
 
             # Show the window
@@ -2425,6 +2426,7 @@ class MzMLExplorerMainWindow(QMainWindow):
                 settings_callback=self._on_eic_settings_changed,  # Persist control changes
                 adducts_data=self.compound_manager.adducts_data,  # For fragment annotation
                 compound_update_callback=self._update_compound_from_eic,  # Write peak info back to list
+                latest_compound_callback=self._get_latest_compound,  # Look up newest saved RT window
             )
 
             # Show the window
@@ -2456,6 +2458,20 @@ class MzMLExplorerMainWindow(QMainWindow):
             import traceback
 
             traceback.print_exc()
+
+    def _get_latest_compound(self, compound_name):
+        """Return the current compound row (as a dict) from the master list, or None.
+
+        Used by EIC windows to detect when their (possibly stale) RT window
+        differs from the newest saved one.
+        """
+        compounds = self.compound_manager.compounds_data
+        if compounds is None or compounds.empty or "Name" not in compounds.columns:
+            return None
+        mask = compounds["Name"] == compound_name
+        if not mask.any():
+            return None
+        return compounds.loc[compounds.index[mask][0]].to_dict()
 
     def _update_compound_from_eic(self, compound_name, rt_start, rt_end, rt_apex, adduct, dialog_parent=None, update_rt=True, save=False):
         """Update a compound in the list with peak RT boundaries / apex and/or an adduct.

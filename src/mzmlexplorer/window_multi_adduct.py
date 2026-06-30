@@ -51,6 +51,7 @@ class InteractiveEICWidget(QWidget):
         parent=None,
         compound_update_callback=None,
         adducts_df=None,
+        latest_compound_callback=None,
     ):
         super().__init__(parent)
         self.compound = compound
@@ -61,6 +62,7 @@ class InteractiveEICWidget(QWidget):
         self.defaults = defaults or {}
         self.compound_update_callback = compound_update_callback
         self.adducts_df = adducts_df
+        self.latest_compound_callback = latest_compound_callback
 
         # Set up the plot
         self.setup_ui()
@@ -438,6 +440,7 @@ class InteractiveEICWidget(QWidget):
                 parent=self.parent(),
                 compound_update_callback=self.compound_update_callback,
                 adducts_data=self.adducts_df,
+                latest_compound_callback=self.latest_compound_callback,
             )
             eic_window.show()
 
@@ -745,6 +748,7 @@ class MultiAdductWindow(QWidget):
         parent=None,
         compound_update_callback=None,
         adducts_df=None,
+        latest_compound_callback=None,
     ):
         super().__init__(parent)
         self.compound = compound
@@ -754,6 +758,7 @@ class MultiAdductWindow(QWidget):
         self.show_predefined_only = show_predefined_only
         self.compound_update_callback = compound_update_callback
         self.adducts_df = adducts_df  # Adducts DataFrame for m/z calculation in child EIC windows
+        self.latest_compound_callback = latest_compound_callback  # Look up newest saved RT window
 
         compound_name = compound.get("Name", "Unknown")
         window_type = "Predefined Adducts" if show_predefined_only else "All Adducts"
@@ -936,6 +941,7 @@ class MultiAdductWindow(QWidget):
                 self,
                 compound_update_callback=self.compound_update_callback,
                 adducts_df=self.adducts_df,
+                latest_compound_callback=self.latest_compound_callback,
             )
             eic_widget.setMinimumSize(350, 280)
             eic_widget.setMaximumSize(500, 380)

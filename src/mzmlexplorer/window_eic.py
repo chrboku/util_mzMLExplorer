@@ -18,7 +18,7 @@ from matplotlib.figure import Figure
 from natsort import natsort_keygen, natsorted
 from PyQt6.QtCharts import QChart, QChartView, QLineSeries, QValueAxis
 from PyQt6.QtCore import QMargins, QPointF, Qt, QThread, pyqtSignal
-from PyQt6.QtGui import QAction, QBrush, QColor, QMouseEvent, QPainter, QPen
+from PyQt6.QtGui import QAction, QBrush, QColor, QKeySequence, QMouseEvent, QPainter, QPen, QShortcut
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -815,6 +815,13 @@ class EICWindow(QWidget):
 
         self.init_ui()
         self._load_stylesheet()
+
+        # Keyboard shortcut: Ctrl+S updates the compound list with the current
+        # peak information and saves it to the source file (mirrors the
+        # "Set information in compound list and save" context-menu action).
+        self._save_shortcut = QShortcut(QKeySequence.StandardKey.Save, self)
+        self._save_shortcut.activated.connect(lambda: self._set_peak_information_in_compound_list(save=True))
+
         self._reconcile_rt_window()
         self.extract_eic_data()
 

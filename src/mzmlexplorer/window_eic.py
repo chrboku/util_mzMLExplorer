@@ -51,6 +51,7 @@ from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 
 from .compound_manager import CompoundManager
+from .file_manager import ACQUISITION_DATETIME_COLUMN
 from .utils import (
     adduct_mass_change,
     calculate_molecular_mass,
@@ -1313,6 +1314,8 @@ class EICWindow(QWidget):
                 "By group, then file name",
                 "By injection order",
                 "By group, then injection order",
+                "By Acquisition Time",
+                "By Group, then Acquisition Time",
             ]
         )
         default_mode = self.defaults.get("separation_mode", "By group")
@@ -2220,8 +2223,8 @@ class EICWindow(QWidget):
 
         # Peak area table
         self.peak_area_table = QTableWidget()
-        self.peak_area_table.setColumnCount(3)
-        self.peak_area_table.setHorizontalHeaderLabels(["Group", "Sample Name", "Peak Area"])
+        self.peak_area_table.setColumnCount(4)
+        self.peak_area_table.setHorizontalHeaderLabels(["Group", "Sample Name", "Acquisition Date", "Peak Area"])
 
         # Configure table appearance
         self.peak_area_table.setAlternatingRowColors(True)
@@ -2237,7 +2240,7 @@ class EICWindow(QWidget):
 
         # Delegate for in-cell bar on the Peak Area column
         self._peak_area_bar_delegate = BarDelegate(self.peak_area_table)
-        self.peak_area_table.setItemDelegateForColumn(2, self._peak_area_bar_delegate)
+        self.peak_area_table.setItemDelegateForColumn(3, self._peak_area_bar_delegate)
 
         self.peak_area_table.verticalHeader().setDefaultSectionSize(20)
         self.peak_area_table.verticalHeader().setMinimumSectionSize(16)
@@ -2328,8 +2331,8 @@ class EICWindow(QWidget):
         mz_sample_layout.addLayout(mz_sample_buttons)
 
         self.mz_sample_table = QTableWidget()
-        self.mz_sample_table.setColumnCount(6)
-        self.mz_sample_table.setHorizontalHeaderLabels(["Group", "Sample Name", "Mean m/z", "m/z P10", "m/z P90", "EIC Width (Da)"])
+        self.mz_sample_table.setColumnCount(7)
+        self.mz_sample_table.setHorizontalHeaderLabels(["Group", "Sample Name", "Acquisition Date", "Mean m/z", "m/z P10", "m/z P90", "EIC Width (Da)"])
         self.mz_sample_table.setAlternatingRowColors(True)
         self.mz_sample_table.setSortingEnabled(True)
         self.mz_sample_table.horizontalHeader().setStretchLastSection(False)
@@ -2346,7 +2349,7 @@ class EICWindow(QWidget):
         mz_sample_layout.addWidget(self.mz_sample_table)
         # Centred bar delegate for ppm deviation visualisation (always shown)
         self._mz_ppm_bar_delegate_sample = CenteredBarDelegate(self.mz_sample_table)
-        for _col in (2, 3, 4):
+        for _col in (3, 4, 5):
             self.mz_sample_table.setItemDelegateForColumn(_col, self._mz_ppm_bar_delegate_sample)
         self.boxplot_widget.addTab(mz_sample_tab, "m/z statistics per sample")
 
@@ -2418,11 +2421,12 @@ class EICWindow(QWidget):
         rt_sample_layout.addLayout(rt_sample_buttons)
 
         self.rt_sample_table = QTableWidget()
-        self.rt_sample_table.setColumnCount(6)
+        self.rt_sample_table.setColumnCount(7)
         self.rt_sample_table.setHorizontalHeaderLabels(
             [
                 "Group",
                 "Sample Name",
+                "Acquisition Date",
                 "FWHM Left RT",
                 "Apex RT",
                 "FWHM Right RT",
@@ -2443,10 +2447,10 @@ class EICWindow(QWidget):
 
         # CenteredBarDelegate for RT-position columns (apex, left, right); BarDelegate for width
         self._rt_sample_centered_delegate = CenteredBarDelegate(self.rt_sample_table)
-        for _col in (2, 3, 4):
+        for _col in (3, 4, 5):
             self.rt_sample_table.setItemDelegateForColumn(_col, self._rt_sample_centered_delegate)
         self._rt_sample_width_delegate = BarDelegate(self.rt_sample_table)
-        self.rt_sample_table.setItemDelegateForColumn(5, self._rt_sample_width_delegate)
+        self.rt_sample_table.setItemDelegateForColumn(6, self._rt_sample_width_delegate)
 
         self.boxplot_widget.addTab(rt_sample_tab, "RT statistics per sample")
 
@@ -2826,9 +2830,13 @@ class EICWindow(QWidget):
         # Collect data for boxplot, table, and apex detection
         boxplot_data = {}  # group_name -> list of integrated areas
         table_data = []  # list of tuples (group, sample_name, peak_area)
-        rt_data = []  # list of tuples (group, sample_name, apex_rt, fwhm_left, fwhm_right, fwhm_width)
+        rt_data = []  # list of tuples (group, sample_name, acquisition_date, apex_rt, fwhm_left, fwhm_right, fwhm_width)
         apex_rt = None
         apex_intensity = float("-inf")
+
+        # Sample name -> acquisition date/time string (YYYY-MM-DD-HH-mm), used to
+        # annotate the peak-area, m/z-statistics, and RT-statistics tables.
+        self._sample_acquisition_dates = {}
 
         sep_mode = self._separation_mode()
         separate_groups = sep_mode == "By group"
@@ -2849,6 +2857,8 @@ class EICWindow(QWidget):
             # Remove file extension from sample name for cleaner display
             if "." in sample_name:
                 sample_name = sample_name.rsplit(".", 1)[0]
+
+            self._sample_acquisition_dates[sample_name] = metadata.get(ACQUISITION_DATETIME_COLUMN) or ""
 
             # Use original RT values for integration (not shifted)
             # This ensures we always use the same RT scale regardless of visualization
@@ -2933,6 +2943,7 @@ class EICWindow(QWidget):
                 (
                     group,
                     sample_name,
+                    self._sample_acquisition_dates.get(sample_name, ""),
                     sample_apex_rt,
                     sample_fwhm_left,
                     sample_fwhm_right,
@@ -3071,9 +3082,10 @@ class EICWindow(QWidget):
                 ion_mode = "unknown"
 
             # Prepare sample data list for the callback
+            acquisition_dates = getattr(self, "_sample_acquisition_dates", {})
             sample_data_list = []
             for group, sample_name, peak_area in table_data:
-                sample_data_list.append((sample_name, group, peak_area))
+                sample_data_list.append((sample_name, group, peak_area, acquisition_dates.get(sample_name, "")))
 
             # Call the integration callback to record the first sample
             if sample_data_list:
@@ -3089,6 +3101,7 @@ class EICWindow(QWidget):
                     peak_start_rt=start_rt,
                     peak_end_rt=end_rt,
                     peak_area=first_sample[2],
+                    acquisition_date=first_sample[3],
                 )
 
                 # Update with all sample data
@@ -3134,6 +3147,13 @@ class EICWindow(QWidget):
                 sample_item.setBackground(gc)
             self.peak_area_table.setItem(row, 1, sample_item)
 
+            # Acquisition date column
+            acq_date = getattr(self, "_sample_acquisition_dates", {}).get(sample_name, "")
+            acq_item = QTableWidgetItem(str(acq_date))
+            if group_color:
+                acq_item.setBackground(gc)
+            self.peak_area_table.setItem(row, 2, acq_item)
+
             # Peak area column (formatted to scientific notation) with bar
             area_item = NumericTableWidgetItem(f"{peak_area:.2e}")
             area_item.setData(Qt.ItemDataRole.UserRole, peak_area)
@@ -3145,7 +3165,7 @@ class EICWindow(QWidget):
             if group_color:
                 area_item.setData(BarDelegate.BAR_COLOR_ROLE, QColor(group_color))
 
-            self.peak_area_table.setItem(row, 2, area_item)
+            self.peak_area_table.setItem(row, 3, area_item)
 
         self.peak_area_table.setSortingEnabled(True)
         # Auto-resize columns to fit content
@@ -3406,7 +3426,7 @@ class EICWindow(QWidget):
         mz_tolerance = self.mz_tolerance_da_spin.value()
         polarity = self.polarity
 
-        sample_rows = []  # list of (group, sample_name, mean_mz, p10, p90, eic_width)
+        sample_rows = []  # list of (group, sample_name, acquisition_date, mean_mz, p10, p90, eic_width)
 
         for filepath, data in self.eic_data.items():
             metadata = data["metadata"]
@@ -3415,6 +3435,7 @@ class EICWindow(QWidget):
             sample_name = metadata.get("filename", "Unknown")
             if "." in sample_name:
                 sample_name = sample_name.rsplit(".", 1)[0]
+            acquisition_date = metadata.get(ACQUISITION_DATETIME_COLUMN) or ""
 
             stats = self.file_manager.get_mz_stats_in_rt_window(filepath, self.target_mz, mz_tolerance, start_rt, end_rt, polarity)
             if stats is None:
@@ -3425,6 +3446,7 @@ class EICWindow(QWidget):
                 (
                     group,
                     sample_name,
+                    acquisition_date,
                     stats["mean_mz"],
                     stats["p10_mz"],
                     stats["p90_mz"],
@@ -3441,7 +3463,7 @@ class EICWindow(QWidget):
 
         # --- Per-group aggregation ---
         group_data: dict = {}
-        for group, _, mean_mz, p10, p90, _ in sample_rows:
+        for group, _, _acq, mean_mz, p10, p90, _ in sample_rows:
             group_data.setdefault(group, {"mean": [], "p10": [], "p90": []})
             group_data[group]["mean"].append(mean_mz)
             group_data[group]["p10"].append(p10)
@@ -3504,7 +3526,7 @@ class EICWindow(QWidget):
             rows_data.append(row_vals)
         col_lines = []
         for ci, h in enumerate(headers):
-            vals = [f'"{rows_data[ri][ci]}"' if ci < 2 else rows_data[ri][ci] for ri in range(len(rows_data))]
+            vals = [f'"{rows_data[ri][ci]}"' if ci < 3 else rows_data[ri][ci] for ri in range(len(rows_data))]
             col_lines.append(f"  {h} = c({', '.join(vals)})")
         r_code = "df <- data.frame(\n" + ",\n".join(col_lines) + "\n)"
         QApplication.clipboard().setText(r_code)
@@ -3550,7 +3572,7 @@ class EICWindow(QWidget):
         Parameters
         ----------
         rt_data : list of tuples
-            Each tuple: (group, sample_name, apex_rt, fwhm_left, fwhm_right, fwhm_width)
+            Each tuple: (group, sample_name, acquisition_date, apex_rt, fwhm_left, fwhm_right, fwhm_width)
             Any of the float fields can be None if not computable.
         """
         self.rt_sample_table.setRowCount(0)
@@ -3574,8 +3596,8 @@ class EICWindow(QWidget):
         if rt_range < 1e-6:
             rt_range = 0.5  # fallback ±0.5 min
 
-        # Max for FWHM Width BarDelegate (col 5 only)
-        fwhm_width_vals = [row[5] for row in sample_rows if row[5] is not None]
+        # Max for FWHM Width BarDelegate (col 6 only)
+        fwhm_width_vals = [row[6] for row in sample_rows if row[6] is not None]
         fwhm_width_max = max(fwhm_width_vals) if fwhm_width_vals else 1.0
 
         # --- Per-sample table ---
@@ -3585,6 +3607,7 @@ class EICWindow(QWidget):
         for row_idx, (
             group,
             sample_name,
+            acquisition_date,
             apex_rt,
             fwhm_left,
             fwhm_right,
@@ -3602,9 +3625,10 @@ class EICWindow(QWidget):
 
             self.rt_sample_table.setItem(row_idx, 0, _colored_item(group))
             self.rt_sample_table.setItem(row_idx, 1, _colored_item(sample_name))
+            self.rt_sample_table.setItem(row_idx, 2, _colored_item(str(acquisition_date)))
 
-            # Cols 2–4: RT positions — display actual value, centred bar shows offset from RT_min
-            for col_idx, val in enumerate([fwhm_left, apex_rt, fwhm_right], start=2):
+            # Cols 3–5: RT positions — display actual value, centred bar shows offset from RT_min
+            for col_idx, val in enumerate([fwhm_left, apex_rt, fwhm_right], start=3):
                 if val is not None:
                     item = NumericTableWidgetItem(f"{val:.4f}")
                     item.setData(Qt.ItemDataRole.UserRole, val)
@@ -3615,7 +3639,7 @@ class EICWindow(QWidget):
                     item.setData(Qt.ItemDataRole.UserRole, -1)
                 self.rt_sample_table.setItem(row_idx, col_idx, item)
 
-            # Col 5: FWHM Width — proportional bar
+            # Col 6: FWHM Width — proportional bar
             if fwhm_width is not None:
                 item = NumericTableWidgetItem(f"{fwhm_width:.4f}")
                 item.setData(Qt.ItemDataRole.UserRole, fwhm_width)
@@ -3626,14 +3650,14 @@ class EICWindow(QWidget):
             else:
                 item = QTableWidgetItem("N/A")
                 item.setData(Qt.ItemDataRole.UserRole, -1)
-            self.rt_sample_table.setItem(row_idx, 5, item)
+            self.rt_sample_table.setItem(row_idx, 6, item)
 
         self.rt_sample_table.setSortingEnabled(True)
         self.rt_sample_table.resizeColumnsToContents()
 
         # --- Per-group aggregation ---
         group_data: dict = {}
-        for group, _, apex_rt, _fl, _fr, fwhm_width in sample_rows:
+        for group, _, _acq, apex_rt, _fl, _fr, fwhm_width in sample_rows:
             entry = group_data.setdefault(group, {"apex": [], "fwhm": []})
             if apex_rt is not None:
                 entry["apex"].append(apex_rt)
@@ -3732,7 +3756,7 @@ class EICWindow(QWidget):
             return
         headers = [tbl.horizontalHeaderItem(c).text().replace(" ", "_").replace("/", "_") for c in range(tbl.columnCount())]
         rows_data = [[tbl.item(r, c).text() if tbl.item(r, c) else "" for c in range(tbl.columnCount())] for r in range(tbl.rowCount())]
-        text_cols = {0, 1}
+        text_cols = {0, 1, 2}
         col_lines = []
         for ci, h in enumerate(headers):
             vals = [f'"{rows_data[ri][ci]}"' if ci in text_cols else rows_data[ri][ci] for ri in range(len(rows_data))]
@@ -3800,6 +3824,7 @@ class EICWindow(QWidget):
                 [
                     "Group",
                     "Sample Name",
+                    "Acquisition Date",
                     "Mean \u0394m/z (ppm)",
                     "\u0394m/z P10 (ppm)",
                     "\u0394m/z P90 (ppm)",
@@ -3822,6 +3847,7 @@ class EICWindow(QWidget):
                 [
                     "Group",
                     "Sample Name",
+                    "Acquisition Date",
                     "Mean m/z",
                     "m/z P10",
                     "m/z P90",
@@ -3844,7 +3870,7 @@ class EICWindow(QWidget):
         self.mz_sample_table.setSortingEnabled(False)
         self.mz_sample_table.verticalHeader().setDefaultSectionSize(20)
         self.mz_sample_table.setRowCount(len(self._mz_stats_sample_rows))
-        for row_idx, (group, sample_name, mean_mz, p10, p90, eic_w) in enumerate(self._mz_stats_sample_rows):
+        for row_idx, (group, sample_name, acquisition_date, mean_mz, p10, p90, eic_w) in enumerate(self._mz_stats_sample_rows):
             grp_color = self._get_group_color(group)
 
             def _colored_item(text, color=grp_color):
@@ -3857,8 +3883,9 @@ class EICWindow(QWidget):
 
             self.mz_sample_table.setItem(row_idx, 0, _colored_item(group))
             self.mz_sample_table.setItem(row_idx, 1, _colored_item(sample_name))
+            self.mz_sample_table.setItem(row_idx, 2, _colored_item(str(acquisition_date)))
             _ppm_range = self.mz_tolerance_ppm_spin.value()
-            for col_idx, val in enumerate([mean_mz, p10, p90], start=2):
+            for col_idx, val in enumerate([mean_mz, p10, p90], start=3):
                 disp = to_disp(val)
                 item = QTableWidgetItem(fmt(disp))
                 item.setData(Qt.ItemDataRole.UserRole, disp)
@@ -3871,7 +3898,7 @@ class EICWindow(QWidget):
                 self.mz_sample_table.setItem(row_idx, col_idx, item)
             eic_item = QTableWidgetItem(f"{eic_w:.6f}")
             eic_item.setData(Qt.ItemDataRole.UserRole, eic_w)
-            self.mz_sample_table.setItem(row_idx, 5, eic_item)
+            self.mz_sample_table.setItem(row_idx, 6, eic_item)
         self.mz_sample_table.setSortingEnabled(True)
         self.mz_sample_table.resizeColumnsToContents()
 
@@ -3928,7 +3955,7 @@ class EICWindow(QWidget):
             for col in range(self.peak_area_table.columnCount()):
                 item = self.peak_area_table.item(row, col)
                 if item:
-                    if col == 2:  # Peak area column - use actual numeric value
+                    if col == 3:  # Peak area column - use actual numeric value
                         value = item.data(Qt.ItemDataRole.UserRole)
                         row_data.append(str(value))
                     else:
@@ -3962,7 +3989,7 @@ class EICWindow(QWidget):
                 item = self.peak_area_table.item(row, col)
                 header = headers[col]
                 if item:
-                    if col == 2:  # Peak area column - use actual numeric value
+                    if col == 3:  # Peak area column - use actual numeric value
                         value = item.data(Qt.ItemDataRole.UserRole)
                         columns_data[header].append(str(value))
                     else:
@@ -6034,6 +6061,11 @@ class EICWindow(QWidget):
         * ``"By group, then injection order"`` — rank files by group first
           (natural sort of the current grouping column), then by
           ``injection_order`` within each group.
+        * ``"By Acquisition Time"`` — rank files globally by their acquisition
+          date/time (extracted from the mzML file).
+        * ``"By Group, then Acquisition Time"`` — rank files by group first
+          (natural sort of the current grouping column), then by acquisition
+          date/time within each group.
 
         The file with rank 0 receives no shift; each subsequent rank adds one
         ``rt_shift_min`` unit.
@@ -6109,6 +6141,35 @@ class EICWindow(QWidget):
                 ]
             else:
                 sorted_df = work_df.iloc[sorted(range(len(work_df)), key=lambda i: natsort_key(work_df["_filename"].iloc[i]))]
+            for rank, (_, row) in enumerate(sorted_df.iterrows()):
+                self.file_shifts[row["Filepath"]] = rank * shift_amount
+        elif mode == "By Acquisition Time":
+            # Sort globally by acquisition date/time (string sort works since format is zero-padded)
+            acq_col = ACQUISITION_DATETIME_COLUMN if ACQUISITION_DATETIME_COLUMN in df.columns else None
+            if acq_col is not None:
+                acq_vals = df[acq_col].fillna("").astype(str)
+                sorted_df = df.assign(_acq=acq_vals).sort_values("_acq")
+            else:
+                sorted_df = df
+            for rank, (_, row) in enumerate(sorted_df.iterrows()):
+                self.file_shifts[row["Filepath"]] = rank * shift_amount
+        elif mode == "By Group, then Acquisition Time":
+            # Sort by group (natural sort), then by acquisition date/time within each group
+            group_col = self.grouping_column if self.grouping_column in df.columns else "group"
+            if group_col not in df.columns:
+                group_col = None
+
+            acq_col = ACQUISITION_DATETIME_COLUMN if ACQUISITION_DATETIME_COLUMN in df.columns else None
+            acq_vals = df[acq_col].fillna("").astype(str) if acq_col is not None else pd.Series([""] * len(df), index=df.index)
+            work_df = df.assign(_acq=acq_vals)
+            if group_col is not None:
+                group_vals = work_df[group_col].astype(str)
+                all_groups = natsorted(group_vals.unique())
+                group_rank = group_vals.map({g: i for i, g in enumerate(all_groups)})
+                work_df = work_df.assign(_group_rank=group_rank)
+                sorted_df = work_df.sort_values(["_group_rank", "_acq"])
+            else:
+                sorted_df = work_df.sort_values("_acq")
             for rank, (_, row) in enumerate(sorted_df.iterrows()):
                 self.file_shifts[row["Filepath"]] = rank * shift_amount
         else:
@@ -6305,6 +6366,8 @@ class EICWindow(QWidget):
             "By group, then injection order",
             "By file name",
             "By group, then file name",
+            "By Acquisition Time",
+            "By Group, then Acquisition Time",
         )
         crop_rt = self.crop_rt_cb.isChecked()
         normalize_mode = self.normalize_combo.currentText() if hasattr(self, "normalize_combo") else "No normalization"
@@ -7193,7 +7256,14 @@ class EICWindow(QWidget):
         # Read the same view settings as the main plot
         sep_mode = self._separation_mode()
         separate_groups = sep_mode == "By group"
-        separate_injection = sep_mode in ("By injection order", "By group, then injection order", "By file name", "By group, then file name")
+        separate_injection = sep_mode in (
+            "By injection order",
+            "By group, then injection order",
+            "By file name",
+            "By group, then file name",
+            "By Acquisition Time",
+            "By Group, then Acquisition Time",
+        )
         crop_rt = self.crop_rt_cb.isChecked()
         normalize_mode = self.normalize_combo.currentText() if hasattr(self, "normalize_combo") else "No normalization"
         normalize = normalize_mode != "No normalization"

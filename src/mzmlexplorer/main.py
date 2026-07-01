@@ -3461,6 +3461,7 @@ class MzMLExplorerMainWindow(QMainWindow):
         peak_start_rt,
         peak_end_rt,
         peak_area,
+        acquisition_date=None,
     ):
         """
         Record peak integration data for a compound and ion.
@@ -3477,6 +3478,7 @@ class MzMLExplorerMainWindow(QMainWindow):
             peak_start_rt: start of peak boundary
             peak_end_rt: end of peak boundary
             peak_area: integrated peak area
+            acquisition_date: acquisition date/time of the sample (YYYY-MM-DD-HH-mm)
         """
         key = (compound_name, ion_name)
 
@@ -3489,14 +3491,14 @@ class MzMLExplorerMainWindow(QMainWindow):
                 "ion_mode": ion_mode,
                 "peak_start_rt": peak_start_rt,
                 "peak_end_rt": peak_end_rt,
-                "sample_data": [],  # List of (sample_name, group_name, peak_area) tuples
+                "sample_data": [],  # List of (sample_name, group_name, peak_area, acquisition_date) tuples
             }
 
         # Update the integration data - only keep latest boundaries and sample data
         integration_data = self.peak_integration_data[key]
         integration_data["peak_start_rt"] = peak_start_rt
         integration_data["peak_end_rt"] = peak_end_rt
-        integration_data["sample_data"] = [(sample_name, group_name, peak_area)]
+        integration_data["sample_data"] = [(sample_name, group_name, peak_area, acquisition_date)]
 
     def update_peak_integration_samples(self, compound_name, ion_name, sample_data_list):
         """
@@ -3505,7 +3507,7 @@ class MzMLExplorerMainWindow(QMainWindow):
         Args:
             compound_name: Name of the compound
             ion_name: Name/description of the ion
-            sample_data_list: List of (sample_name, group_name, peak_area) tuples
+            sample_data_list: List of (sample_name, group_name, peak_area, acquisition_date) tuples
         """
         key = (compound_name, ion_name)
 
@@ -3547,12 +3549,13 @@ class MzMLExplorerMainWindow(QMainWindow):
                 }
 
                 # Add a row for each sample
-                for sample_name, group_name, peak_area in integration_data["sample_data"]:
+                for sample_name, group_name, peak_area, acquisition_date in integration_data["sample_data"]:
                     row = base_row.copy()
                     row.update(
                         {
                             "sample_name": sample_name,
                             "group_name": group_name,
+                            "acquisition_date": acquisition_date,
                             "peak_area": peak_area,
                         }
                     )

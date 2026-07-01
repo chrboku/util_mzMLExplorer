@@ -4,6 +4,8 @@ File manager for handling mzML files and their metadata
 
 import hashlib
 import os
+import xml.etree.ElementTree as ET
+from datetime import datetime
 
 try:
     import _pickle as pickle  # C-accelerated pickle (cPickle equivalent in Python 3)
@@ -21,6 +23,9 @@ import pymzml
 from natsort import index_natsorted, natsort_keygen, natsorted
 
 from .utils import generate_color_palette
+
+# Column name used to store the formatted acquisition date/time (YYYY-MM-DD-HH-mm)
+ACQUISITION_DATETIME_COLUMN = "Acquisition Date"
 
 
 class FileManager:
@@ -129,6 +134,41 @@ class FileManager:
             print(f"Cache save failed for {os.path.basename(filepath)}: {e}")
 
     # ------------------------------------------------------------------
+
+    def _extract_acquisition_datetime(self, filepath: str) -> Optional[str]:
+        """
+        Extract the acquisition date/time from the ``startTimeStamp`` attribute
+        of the ``<run>`` element in an mzML file.
+
+        Only the file header is scanned (parsing stops as soon as the ``run``
+        element is seen, or once the spectrum list starts), so this is fast
+        even for large mzML files.
+
+        Returns the timestamp formatted as "YYYY-MM-DD-HH-mm", or None if the
+        attribute is missing or cannot be parsed.
+        """
+        try:
+            for event, elem in ET.iterparse(filepath, events=("start",)):
+                tag = elem.tag.rsplit("}", 1)[-1]  # strip XML namespace
+                if tag == "run":
+                    start_ts = elem.get("startTimeStamp")
+                    if not start_ts:
+                        return None
+                    ts = start_ts.strip()
+                    if ts.endswith("Z"):
+                        ts = ts[:-1] + "+00:00"
+                    try:
+                        dt = datetime.fromisoformat(ts)
+                    except ValueError:
+                        return None
+                    return dt.strftime("%Y-%m-%d-%H-%M")
+                if tag == "spectrumList":
+                    # The run element always precedes the spectrum list; if we
+                    # reach this point without finding it, give up.
+                    break
+        except Exception as e:
+            print(f"Warning: could not extract acquisition date/time from {os.path.basename(filepath)}: {e}")
+        return None
 
     def _get_filter_string(self, spectrum) -> Optional[str]:
         """Extract the filter string (MS:1000512) from a spectrum element."""
@@ -412,6 +452,9 @@ class FileManager:
         # Add filename column
         new_files_df["filename"] = new_files_df["Filepath"].apply(lambda x: os.path.basename(x))
 
+        # Extract the acquisition date/time (run/@startTimeStamp) for each new file
+        new_files_df[ACQUISITION_DATETIME_COLUMN] = new_files_df["Filepath"].apply(self._extract_acquisition_datetime)
+
         # Add Dilution column with default value of 1 if not present
         if "Dilution" not in new_files_df.columns:
             new_files_df["Dilution"] = 1.0
@@ -547,16 +590,16 @@ class FileManager:
         # Derive sample name from path (filename without extension)
         display_data["Sample Name"] = display_data["Filepath"].apply(lambda p: os.path.splitext(os.path.basename(p))[0])
 
-        # Reorder columns: group, Sample Name, color, then remaining columns, filepath last
+        # Reorder columns: group, Sample Name, color, acquisition date, then remaining columns, filepath last
         columns = list(display_data.columns)
 
-        for col in ("filename", "Filepath", "Sample Name", "group", "color", "hidden"):
+        for col in ("filename", "Filepath", "Sample Name", "group", "color", "hidden", ACQUISITION_DATETIME_COLUMN):
             if col in columns:
                 columns.remove(col)
 
         rest = columns  # everything that isn't in the fixed-position set
 
-        new_columns = ["group", "Sample Name", "color"] + rest + ["Filepath"]
+        new_columns = ["group", "Sample Name", "color", ACQUISITION_DATETIME_COLUMN] + rest + ["Filepath"]
 
         # Filter to only include columns that exist
         existing_columns = [col for col in new_columns if col in display_data.columns]

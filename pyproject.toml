@@ -1,6 +1,6 @@
 [project]
 name = "util-mzmlexplorer"
-version = "8.1.0"
+version = "8.2.0"
 description = "mzmlexplorer - a python tool for compound-centric LC-HRMS data exploration"
 readme = "README.md"
 requires-python = ">=3.13"

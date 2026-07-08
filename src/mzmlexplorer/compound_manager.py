@@ -162,6 +162,8 @@ class CompoundManager:
                     has_mz_adducts = any(self._is_mz_adduct(adduct) for adduct in adduct_list)
                     if has_mz_adducts:
                         compound_dict["compound_type"] = "mz_only"
+                        # Explicitly parse and normalise Common_adducts for mz_only compounds
+                        compound_dict["Common_adducts"] = adduct_list
                     else:
                         raise ValueError("Either ChemicalFormula, Mass, or m/z adducts must be provided")
 
@@ -202,6 +204,10 @@ class CompoundManager:
 
             # Get the specified Common_adducts for this compound
             specified_adducts = compound.get("Common_adducts", [])
+            if not isinstance(specified_adducts, list):
+                # Defensive: normalise stray non-list values (e.g. NaN/str) that may
+                # slip through from older save files or direct table edits.
+                specified_adducts = self._parse_adducts_string(specified_adducts)
             # For formula/mass compounds, pre-calculate for ALL adducts from the
             # Adducts table (specified ones first, then remaining).  This avoids
             # on-the-fly calculation in the context menu and ensures every adduct

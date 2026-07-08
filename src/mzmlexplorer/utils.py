@@ -115,9 +115,12 @@ def adduct_mass_change(adduct_info) -> tuple:
         added_mass = calculate_molecular_mass(ea) if ea else 0.0
         lost_mass = calculate_molecular_mass(el) if el else 0.0
         mass_change = added_mass - lost_mass - charge * ELECTRON_MASS
-    else:
+    # check if MAss_change is not NaN
+    elif adduct_info["Mass_change"] is not None and not pd.isna(adduct_info["Mass_change"]):
         mass_change = float(adduct_info["Mass_change"])
-
+    else:
+        mass_change = -ELECTRON_MASS * charge
+        
     return mass_change, charge, multiplier
 
 

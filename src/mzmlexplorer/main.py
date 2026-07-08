@@ -5,6 +5,7 @@ import json
 import os
 import re
 import sys
+import traceback
 import unicodedata
 
 import pandas as pd
@@ -66,7 +67,13 @@ from .compound_manager import CompoundManager
 from .file_manager import FileManager
 from .window_file_explorer import MzMLFileExplorerWindow
 from .window_manager import WindowManager, WindowManagerPanel, set_window_manager
-from .window_eic import NORMALIZATION_MODES, resolve_normalization_mode
+from .window_eic import (
+    EIC_VIEW_MODE_CROP_PADDED,
+    EIC_VIEW_MODES,
+    NORMALIZATION_MODES,
+    resolve_eic_view_mode,
+    resolve_normalization_mode,
+)
 from .window_msms import USISpectrumComparisonWindow
 from .window_shared import NoScrollComboBox, NoScrollDoubleSpinBox, NoScrollSpinBox
 from .windows import EICWindow, MultiAdductWindow
@@ -936,7 +943,7 @@ class MzMLExplorerMainWindow(QMainWindow):
             self._process_files_dataframe(df, source=source, excel_path=file_path)
 
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to load files: {str(e)}")
+            QMessageBox.critical(self, "Error", f"Failed to load files: {str(e)}\n{traceback.format_exc()}")
 
     def _process_files_dataframe(self, df, source="menu", excel_path=None):
         """
@@ -1222,7 +1229,7 @@ class MzMLExplorerMainWindow(QMainWindow):
             self.statusBar().showMessage("Template files generated successfully")
 
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to generate templates: {str(e)}")
+            QMessageBox.critical(self, "Error", f"Failed to generate templates: {str(e)}\n{traceback.format_exc()}")
 
     def update_files_table(self):
         """Update the files table with loaded data"""
@@ -1719,7 +1726,7 @@ class MzMLExplorerMainWindow(QMainWindow):
                     self.statusBar().showMessage(f"File removed. Remaining: {remaining_files} files")
 
             except Exception as e:
-                QMessageBox.critical(self, "Error", f"Failed to remove file: {str(e)}")
+                QMessageBox.critical(self, "Error", f"Failed to remove file: {str(e)}\n{traceback.format_exc()}")
 
     def show_compound_context_menu(self, position):
         """Show context menu for compound adducts"""
@@ -2095,6 +2102,13 @@ class MzMLExplorerMainWindow(QMainWindow):
             predefined_action.setEnabled(True)
             predefined_action.triggered.connect(lambda checked, c=compound_data: self.show_multi_adduct_window(c, show_predefined_only=True))
             menu.addAction(predefined_action)
+
+            # Single EIC window with the primary common adduct on top and the
+            # remaining common adducts stacked below as additional EIC traces.
+            single_eic_action = QAction("📈 Show Common Adducts (Single EIC)", self)
+            single_eic_action.setToolTip("Open one EIC window for the first common adduct, with the other common adducts added as additional EIC traces below")
+            single_eic_action.triggered.connect(lambda checked, c=compound_data: self.show_eic_all_common_adducts(c))
+            menu.addAction(single_eic_action)
         elif specified_adducts:
             # Provide contextual feedback when adducts exist but no m/z can be derived
             predefined_action = QAction("📊 Show Predefined Adducts (Multi-EIC) - no valid m/z", self)
@@ -2118,6 +2132,51 @@ class MzMLExplorerMainWindow(QMainWindow):
             )
             info_action.setEnabled(False)
             menu.addAction(info_action)
+
+    def _resolve_common_adducts(self, compound_name):
+        """Return an ordered list of (adduct, mz_value, polarity) for a compound's
+        common adducts, preserving the order of ``Common_adducts`` and skipping
+        any adduct whose m/z could not be calculated.
+        """
+        resolved = []
+        for adduct in self.compound_manager.get_compound_adducts(compound_name):
+            precalc = self.compound_manager.get_precalculated_data(compound_name, adduct)
+            mz_value = precalc.get("mz") if precalc else None
+            polarity = precalc.get("polarity") if precalc else None
+            if mz_value is None:
+                mz_value = self.compound_manager.calculate_compound_mz(compound_name, adduct)
+            if polarity is None:
+                polarity = self.compound_manager._determine_polarity(adduct)
+            if mz_value is not None:
+                resolved.append((adduct, mz_value, polarity))
+        return resolved
+
+    def show_eic_all_common_adducts(self, compound):
+        """Open a single EIC window showing all of a compound's common adducts.
+
+        The first common adduct is shown as the main EIC; the remaining common
+        adducts are added underneath as additional EIC traces.
+        Returns the created ``EICWindow`` instance, or ``None`` on failure.
+        """
+        compound_name = compound["Name"]
+        resolved = self._resolve_common_adducts(compound_name)
+        if not resolved:
+            QMessageBox.information(self, "Information", f"No common adducts with a calculable m/z are available for '{compound_name}'.")
+            return None
+
+        primary_adduct, primary_mz, primary_polarity = resolved[0]
+        eic_window = self.show_eic_window(compound, primary_adduct, primary_mz, primary_polarity)
+        if eic_window is None:
+            return None
+
+        ppm = self.eic_defaults.get("mz_tolerance_ppm", 5.0)
+        for adduct, mz_value, polarity in resolved[1:]:
+            try:
+                eic_window._add_extra_eic_trace(adduct, mz_value, ppm, polarity)
+            except Exception as exc:
+                print(f"Failed to add extra EIC trace for {compound_name} {adduct}: {exc}")
+
+        return eic_window
 
     def show_multi_adduct_window(self, compound, show_predefined_only=True):
         """Show multi-adduct EIC window"""
@@ -2210,7 +2269,7 @@ class MzMLExplorerMainWindow(QMainWindow):
             )
 
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to create multi-adduct window: {str(e)}")
+            QMessageBox.critical(self, "Error", f"Failed to create multi-adduct window: {str(e)}\n{traceback.format_exc()}")
             import traceback
 
             traceback.print_exc()
@@ -2403,10 +2462,14 @@ class MzMLExplorerMainWindow(QMainWindow):
             self.show_eic_window(compound_data, adduct, mz_value=mz_value, polarity=polarity, ppm_override=ppm)
 
     def show_eic_window(self, compound, adduct, mz_value=None, polarity=None, ppm_override=None):
-        """Show EIC window for the selected compound and adduct"""
+        """Show EIC window for the selected compound and adduct.
+
+        Returns the created ``EICWindow`` instance, or ``None`` if the window
+        could not be created (e.g. no files loaded, or an error occurred).
+        """
         if self.file_manager.get_files_data().empty:
             QMessageBox.warning(self, "Warning", "No files loaded!")
-            return
+            return None
 
         try:
             # Create EIC window as independent window (no parent)
@@ -2453,11 +2516,14 @@ class MzMLExplorerMainWindow(QMainWindow):
                 wtype="EIC",
             )
 
+            return eic_window
+
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to create EIC window: {str(e)}")
+            QMessageBox.critical(self, "Error", f"Failed to create EIC window: {str(e)}\n{traceback.format_exc()}")
             import traceback
 
             traceback.print_exc()
+            return None
 
     def _get_latest_compound(self, compound_name):
         """Return the current compound row (as a dict) from the master list, or None.
@@ -2632,8 +2698,112 @@ class MzMLExplorerMainWindow(QMainWindow):
 
             return True
         except Exception as exc:
-            QMessageBox.critical(parent, "Error", f"Failed to save compound file:\n{exc}")
+            QMessageBox.critical(parent, "Error", f"Failed to save compound file:\n{exc}\n{traceback.format_exc()}")
             return False
+
+    def open_all_compounds_primary_adduct(self):
+        """Open a separate single-EIC window for every loaded compound, each
+        showing only its primary (first) common adduct. Reports a summary
+        once every window has been opened.
+        """
+        compounds_df = self.compound_manager.compounds_data
+        if compounds_df is None or compounds_df.empty:
+            QMessageBox.information(self, "No Compounds", "No compound list is loaded.")
+            return
+        if self.file_manager.get_files_data().empty:
+            QMessageBox.warning(self, "Warning", "No files loaded!")
+            return
+
+        opened = 0
+        skipped = []
+        for _, row in compounds_df.iterrows():
+            compound = row.to_dict()
+            compound_name = str(compound.get("Name", "")).strip()
+            if not compound_name:
+                continue
+
+            resolved = self._resolve_common_adducts(compound_name)
+            if not resolved:
+                skipped.append(compound_name)
+                continue
+
+            primary_adduct, primary_mz, primary_polarity = resolved[0]
+            eic_window = self.show_eic_window(compound, primary_adduct, primary_mz, primary_polarity)
+            if eic_window is not None:
+                opened += 1
+            else:
+                skipped.append(compound_name)
+
+        message = f"Opened {opened} EIC window(s) using each compound's primary common adduct."
+        if skipped:
+            shown = ", ".join(skipped[:20])
+            more = ", …" if len(skipped) > 20 else ""
+            message += f"\n\nSkipped {len(skipped)} compound(s) without a usable primary common adduct:\n{shown}{more}"
+        QMessageBox.information(self, "Open All Compounds — Primary Adduct", message)
+
+    @staticmethod
+    def _parse_compound_groups(groups_str) -> list:
+        """Parse a compound's (semicolon-separated) ``Group`` field into a list of group names."""
+        if groups_str is None or pd.isna(groups_str):
+            return []
+        groups_str = str(groups_str).strip()
+        if not groups_str or groups_str.lower() == "none":
+            return []
+        return [g.strip() for g in groups_str.split(";") if g.strip()]
+
+    def open_all_eics_current_group(self):
+        """Open a separate single-EIC window (primary common adduct) for every
+        compound that shares a group with the currently selected compound.
+        """
+        item = self.compounds_table.currentItem()
+        compound_data = item.data(0, Qt.ItemDataRole.UserRole) if item is not None else None
+        if not compound_data:
+            QMessageBox.information(self, "No Selection", "Please select a compound (not a group header) in the compound list first.")
+            return
+
+        selected_groups = self._parse_compound_groups(compound_data.get("Group", ""))
+        if not selected_groups:
+            QMessageBox.information(self, "No Group", f"'{compound_data.get('Name', '?')}' is not assigned to a group.")
+            return
+        target_group = selected_groups[0]
+
+        if self.file_manager.get_files_data().empty:
+            QMessageBox.warning(self, "Warning", "No files loaded!")
+            return
+
+        compounds_df = self.compound_manager.compounds_data
+        if compounds_df is None or compounds_df.empty:
+            QMessageBox.information(self, "No Compounds", "No compound list is loaded.")
+            return
+
+        opened = 0
+        skipped = []
+        for _, row in compounds_df.iterrows():
+            compound = row.to_dict()
+            compound_name = str(compound.get("Name", "")).strip()
+            if not compound_name:
+                continue
+            if target_group not in self._parse_compound_groups(compound.get("Group", "")):
+                continue
+
+            resolved = self._resolve_common_adducts(compound_name)
+            if not resolved:
+                skipped.append(compound_name)
+                continue
+
+            primary_adduct, primary_mz, primary_polarity = resolved[0]
+            eic_window = self.show_eic_window(compound, primary_adduct, primary_mz, primary_polarity)
+            if eic_window is not None:
+                opened += 1
+            else:
+                skipped.append(compound_name)
+
+        message = f"Opened {opened} EIC window(s) for compounds in group '{target_group}'."
+        if skipped:
+            shown = ", ".join(skipped[:20])
+            more = ", …" if len(skipped) > 20 else ""
+            message += f"\n\nSkipped {len(skipped)} compound(s) without a usable primary common adduct:\n{shown}{more}"
+        QMessageBox.information(self, "Open Group EICs", message)
 
     def _open_spectrum_comparator(self):
         """Open an empty Spectrum Comparator window."""
@@ -2839,6 +3009,18 @@ class MzMLExplorerMainWindow(QMainWindow):
         inclusion_list_action.triggered.connect(self._generate_inclusion_list)
         tools_menu.addAction(inclusion_list_action)
 
+        tools_menu.addSeparator()
+
+        open_all_primary_action = QAction("Open all compounds with primary common adduct", self)
+        open_all_primary_action.setToolTip("Open a separate single-EIC window for every compound, each showing its first common adduct")
+        open_all_primary_action.triggered.connect(self.open_all_compounds_primary_adduct)
+        tools_menu.addAction(open_all_primary_action)
+
+        open_group_action = QAction("Open all EICs of current group", self)
+        open_group_action.setToolTip("Open a separate single-EIC window for every compound sharing a group with the currently selected compound")
+        open_group_action.triggered.connect(self.open_all_eics_current_group)
+        tools_menu.addAction(open_group_action)
+
         # Help menu
         help_menu = menubar.addMenu("Help")
 
@@ -2971,7 +3153,7 @@ class MzMLExplorerMainWindow(QMainWindow):
                 event.acceptProposedAction()
 
             except Exception as e:
-                QMessageBox.critical(self, "Error", f"Failed to load file: {str(e)}")
+                QMessageBox.critical(self, "Error", f"Failed to load file: {str(e)}\n{traceback.format_exc()}")
 
         event.ignore()
 
@@ -2998,7 +3180,7 @@ class MzMLExplorerMainWindow(QMainWindow):
                 )
 
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to load compounds: {str(e)}")
+            QMessageBox.critical(self, "Error", f"Failed to load compounds: {str(e)}\n{traceback.format_exc()}")
 
     def load_compounds_from_csv_tsv(self, file_path):
         """Load compounds from CSV/TSV file using import dialog"""
@@ -3115,9 +3297,10 @@ class MzMLExplorerMainWindow(QMainWindow):
         """Return the hardcoded default values for EIC/MSMS settings."""
         return {
             "mz_tolerance_ppm": 5.0,
+            "alt_wheel_zoom_step_min": 0.1,
             "separate_groups": False,
             "rt_shift_min": 1.0,
-            "crop_rt_window": True,
+            "eic_view_mode": EIC_VIEW_MODE_CROP_PADDED,
             "normalize_samples": False,
             "normalize_mode": "No normalization",
             "show_multi_adduct_sample_eics": True,
@@ -3155,9 +3338,10 @@ class MzMLExplorerMainWindow(QMainWindow):
         _d = self._get_default_eic_settings()
         self.eic_defaults = {
             "mz_tolerance_ppm": float(self.settings.value("eic/mz_tolerance_ppm", _d["mz_tolerance_ppm"])),
+            "alt_wheel_zoom_step_min": float(self.settings.value("eic/alt_wheel_zoom_step_min", _d["alt_wheel_zoom_step_min"])),
             "separate_groups": self.settings.value("eic/separate_groups", _d["separate_groups"], type=bool),
             "rt_shift_min": float(self.settings.value("eic/rt_shift_min", _d["rt_shift_min"])),
-            "crop_rt_window": self.settings.value("eic/crop_rt_window", _d["crop_rt_window"], type=bool),
+            "eic_view_mode": self.settings.value("eic/eic_view_mode", _d["eic_view_mode"]),
             "normalize_samples": self.settings.value("eic/normalize_samples", _d["normalize_samples"], type=bool),
             "normalize_mode": self.settings.value("eic/normalize_mode", _d["normalize_mode"]),
             "show_multi_adduct_sample_eics": self.settings.value("eic/show_multi_adduct_sample_eics", _d["show_multi_adduct_sample_eics"], type=bool),
@@ -3202,9 +3386,10 @@ class MzMLExplorerMainWindow(QMainWindow):
     def save_eic_defaults(self):
         """Save EIC window default settings"""
         self.settings.setValue("eic/mz_tolerance_ppm", self.eic_defaults["mz_tolerance_ppm"])
+        self.settings.setValue("eic/alt_wheel_zoom_step_min", self.eic_defaults.get("alt_wheel_zoom_step_min", 0.1))
         self.settings.setValue("eic/separate_groups", self.eic_defaults["separate_groups"])
         self.settings.setValue("eic/rt_shift_min", self.eic_defaults["rt_shift_min"])
-        self.settings.setValue("eic/crop_rt_window", self.eic_defaults["crop_rt_window"])
+        self.settings.setValue("eic/eic_view_mode", self.eic_defaults["eic_view_mode"])
         self.settings.setValue("eic/normalize_samples", self.eic_defaults["normalize_samples"])
         self.settings.setValue("eic/normalize_mode", self.eic_defaults.get("normalize_mode", "No normalization"))
         self.settings.setValue(
@@ -3572,7 +3757,7 @@ class MzMLExplorerMainWindow(QMainWindow):
             )
 
         except Exception as e:
-            QMessageBox.critical(self, "Export Error", f"Failed to export data:\n{str(e)}")
+            QMessageBox.critical(self, "Export Error", f"Failed to export data:\n{str(e)}\n{traceback.format_exc()}")
 
     def generate_r_code(self):
         """Generate R code for loading the exported Excel file"""
@@ -3691,7 +3876,7 @@ ggplot(peak_data, aes(x = group_name, y = peak_area)) +
         try:
             df = pd.read_excel(file_path)
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to read Excel file:\n{str(e)}")
+            QMessageBox.critical(self, "Error", f"Failed to read Excel file:\n{str(e)}\n{traceback.format_exc()}")
             return
 
         if df.empty:
@@ -3883,7 +4068,7 @@ ggplot(peak_data, aes(x = group_name, y = peak_area)) +
                 ),
             )
         except Exception as e:
-            QMessageBox.critical(self, "Save Error", f"Failed to save file:\n{str(e)}")
+            QMessageBox.critical(self, "Save Error", f"Failed to save file:\n{str(e)}\n{traceback.format_exc()}")
 
     def _save_enriched_excel(self, df: pd.DataFrame, path: str, cell_colors: dict):
         """Write *df* to an Excel file at *path*, applying yellow/orange cell fills."""
@@ -3935,7 +4120,7 @@ ggplot(peak_data, aes(x = group_name, y = peak_area)) +
                     f.write(r_code)
                 QMessageBox.information(self, "Save Complete", f"R code saved to:\n{file_path}")
             except Exception as e:
-                QMessageBox.critical(self, "Save Error", f"Failed to save R code:\n{str(e)}")
+                QMessageBox.critical(self, "Save Error", f"Failed to save R code:\n{str(e)}\n{traceback.format_exc()}")
 
 
 class RotatedTabBar(QTabBar):
@@ -4126,6 +4311,15 @@ class UnifiedOptionsDialog(QDialog):
         self.mz_tolerance_spin.setSingleStep(1.0)
         form_layout.addRow("m/z Tolerance:", self.mz_tolerance_spin)
 
+        # Alt+Mouse-Wheel x-axis zoom step (minutes)
+        self.alt_wheel_zoom_step_spin = NoScrollDoubleSpinBox()
+        self.alt_wheel_zoom_step_spin.setRange(0.01, 60.0)
+        self.alt_wheel_zoom_step_spin.setValue(self.eic_defaults.get("alt_wheel_zoom_step_min", 0.1))
+        self.alt_wheel_zoom_step_spin.setSuffix(" min")
+        self.alt_wheel_zoom_step_spin.setDecimals(2)
+        self.alt_wheel_zoom_step_spin.setSingleStep(0.01)
+        form_layout.addRow("Alt+Wheel Zoom Step:", self.alt_wheel_zoom_step_spin)
+
         # Separate by groups
         self.separate_groups_cb = QCheckBox()
         self.separate_groups_cb.setChecked(self.eic_defaults["separate_groups"])
@@ -4139,10 +4333,13 @@ class UnifiedOptionsDialog(QDialog):
         self.rt_shift_spin.setDecimals(1)
         form_layout.addRow("Group RT Shift:", self.rt_shift_spin)
 
-        # Crop to RT Window
-        self.crop_rt_cb = QCheckBox()
-        self.crop_rt_cb.setChecked(self.eic_defaults["crop_rt_window"])
-        form_layout.addRow("Crop to RT Window:", self.crop_rt_cb)
+        # EIC view mode (crop / padding / full view + automatic integration borders)
+        self.eic_view_mode_combo = NoScrollComboBox()
+        self.eic_view_mode_combo.addItems(EIC_VIEW_MODES)
+        _view_mode = resolve_eic_view_mode(self.eic_defaults)
+        _view_idx = self.eic_view_mode_combo.findText(_view_mode)
+        self.eic_view_mode_combo.setCurrentIndex(_view_idx if _view_idx >= 0 else 0)
+        form_layout.addRow("EIC View:", self.eic_view_mode_combo)
 
         # Normalization mode
         self.normalize_combo = NoScrollComboBox()
@@ -4396,9 +4593,12 @@ class UnifiedOptionsDialog(QDialog):
 
         # Reset EIC defaults
         self.mz_tolerance_spin.setValue(defaults["mz_tolerance_ppm"])
+        self.alt_wheel_zoom_step_spin.setValue(defaults.get("alt_wheel_zoom_step_min", 0.1))
         self.separate_groups_cb.setChecked(defaults["separate_groups"])
         self.rt_shift_spin.setValue(defaults["rt_shift_min"])
-        self.crop_rt_cb.setChecked(defaults["crop_rt_window"])
+        _view_idx = self.eic_view_mode_combo.findText(resolve_eic_view_mode(defaults))
+        if _view_idx >= 0:
+            self.eic_view_mode_combo.setCurrentIndex(_view_idx)
         self.normalize_cb.setChecked(defaults["normalize_samples"])
 
         # Reset memory settings
@@ -4446,9 +4646,10 @@ class UnifiedOptionsDialog(QDialog):
 
         eic_values = {
             "mz_tolerance_ppm": self.mz_tolerance_spin.value(),
+            "alt_wheel_zoom_step_min": self.alt_wheel_zoom_step_spin.value(),
             "separate_groups": self.separate_groups_cb.isChecked(),
             "rt_shift_min": self.rt_shift_spin.value(),
-            "crop_rt_window": self.crop_rt_cb.isChecked(),
+            "eic_view_mode": self.eic_view_mode_combo.currentText(),
             "normalize_samples": self.normalize_combo.currentText() == "Normalize to Apex per Sample",
             "normalize_mode": self.normalize_combo.currentText(),
             "show_multi_adduct_sample_eics": self.show_multi_adduct_sample_eics_cb.isChecked(),
@@ -4516,10 +4717,12 @@ class EICDefaultsDialog(QDialog):
         self.rt_shift_spin.setDecimals(1)
         form_layout.addRow("Group RT Shift:", self.rt_shift_spin)
 
-        # Crop to RT Window
-        self.crop_rt_cb = QCheckBox()
-        self.crop_rt_cb.setChecked(self.current_defaults["crop_rt_window"])
-        form_layout.addRow("Crop to RT Window:", self.crop_rt_cb)
+        # EIC view mode
+        self.eic_view_mode_combo = NoScrollComboBox()
+        self.eic_view_mode_combo.addItems(EIC_VIEW_MODES)
+        _view_idx = self.eic_view_mode_combo.findText(resolve_eic_view_mode(self.current_defaults))
+        self.eic_view_mode_combo.setCurrentIndex(_view_idx if _view_idx >= 0 else 0)
+        form_layout.addRow("EIC View:", self.eic_view_mode_combo)
 
         # Normalize to Max per Sample
         self.normalize_cb = QCheckBox()
@@ -4552,7 +4755,9 @@ class EICDefaultsDialog(QDialog):
         self.mz_tolerance_spin.setValue(5.0)
         self.separate_groups_cb.setChecked(True)
         self.rt_shift_spin.setValue(1.0)
-        self.crop_rt_cb.setChecked(False)
+        _view_idx = self.eic_view_mode_combo.findText(EIC_VIEW_MODE_CROP_PADDED)
+        if _view_idx >= 0:
+            self.eic_view_mode_combo.setCurrentIndex(_view_idx)
         self.normalize_cb.setChecked(False)
 
     def get_values(self):
@@ -4561,7 +4766,7 @@ class EICDefaultsDialog(QDialog):
             "mz_tolerance_ppm": self.mz_tolerance_spin.value(),
             "separate_groups": self.separate_groups_cb.isChecked(),
             "rt_shift_min": self.rt_shift_spin.value(),
-            "crop_rt_window": self.crop_rt_cb.isChecked(),
+            "eic_view_mode": self.eic_view_mode_combo.currentText(),
             "normalize_samples": self.normalize_cb.isChecked(),
         }
 

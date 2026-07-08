@@ -424,7 +424,7 @@ class InteractiveEICWidget(QWidget):
             # Ensure required keys exist and align the view defaults with the matrix view
             eic_defaults.setdefault("mz_tolerance_ppm", 5.0)
             eic_defaults.setdefault("rt_shift_min", 1.0)
-            eic_defaults.setdefault("crop_rt_window", False)
+            eic_defaults.setdefault("eic_view_mode", "Show Entire EIC")
             eic_defaults.setdefault("normalize_samples", False)
             eic_defaults.setdefault("normalize_mode", "No normalization")
             eic_defaults["separate_groups"] = False

@@ -17,7 +17,7 @@ from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as Navigatio
 from matplotlib.figure import Figure
 from natsort import natsort_keygen, natsorted
 from PyQt6.QtCharts import QChart, QChartView, QLineSeries, QValueAxis
-from PyQt6.QtCore import QMargins, QPointF, Qt, QThread, pyqtSignal
+from PyQt6.QtCore import QMargins, QPointF, QRect, Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QAction, QBrush, QColor, QKeySequence, QMouseEvent, QPainter, QPen, QShortcut
 from PyQt6.QtWidgets import (
     QAbstractItemView,
@@ -35,6 +35,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QProgressDialog,
     QPushButton,
+    QRubberBand,
     QScrollArea,
     QSizePolicy,
     QSlider,
@@ -88,6 +89,49 @@ def resolve_normalization_mode(defaults):
     return "No normalization"
 
 
+# Available EIC view modes (control x-axis cropping and automatic integration borders)
+EIC_VIEW_MODE_FULL = "Show Entire EIC"
+EIC_VIEW_MODE_CROP = "Crop to Compound RT Window"
+EIC_VIEW_MODE_CROP_PADDED = "Crop to Compound RT Window (+/-100% Padding)"
+EIC_VIEW_MODE_FULL_SET_BORDERS = "Show Entire EIC (Set Integration Borders)"
+
+EIC_VIEW_MODES = [
+    EIC_VIEW_MODE_FULL,
+    EIC_VIEW_MODE_CROP,
+    EIC_VIEW_MODE_CROP_PADDED,
+    EIC_VIEW_MODE_FULL_SET_BORDERS,
+]
+
+
+def resolve_eic_view_mode(defaults):
+    """Return the EIC view mode from a defaults dict with backward compatibility.
+
+    Older settings used a boolean ``crop_rt_window`` flag which maps to
+    "Crop to Compound RT Window" when true, "Show Entire EIC" when false.
+    """
+    mode = defaults.get("eic_view_mode") if isinstance(defaults, dict) else None
+    if mode in EIC_VIEW_MODES:
+        return mode
+    if isinstance(defaults, dict) and "crop_rt_window" in defaults:
+        return EIC_VIEW_MODE_CROP if defaults.get("crop_rt_window") else EIC_VIEW_MODE_FULL
+    return EIC_VIEW_MODE_CROP_PADDED
+
+
+# Very large y-value used for the endpoints of peak boundary lines so that they are
+# always clipped to the full height of the plot area, regardless of the current
+# y-axis zoom/pan range (simulates a line spanning from -inf to +inf).
+_BOUNDARY_LINE_Y_EXTENT = 1e15
+
+
+def _safe_float_or_none(value):
+    """Convert *value* to float, returning None for missing/NaN/invalid values."""
+    try:
+        f = float(value)
+        return None if pd.isna(f) else f
+    except (TypeError, ValueError):
+        return None
+
+
 class InteractiveChartView(QChartView):
     """Custom chart view with interactive mouse controls"""
 
@@ -96,6 +140,13 @@ class InteractiveChartView(QChartView):
 
     # Signal emitted when Ctrl+left-clicking inside the plot (rt_value, intensity_value)
     ctrlClickRequested = pyqtSignal(float, float)
+
+    # Signal emitted when Ctrl+right-clicking (a click, not a drag) inside the plot
+    # (rt_value, intensity_value) -- used to set the reference RT ("RT_min") marker
+    ctrlRightClickRequested = pyqtSignal(float, float)
+
+    # Signal emitted when double-clicking inside the plot area
+    doubleClickRequested = pyqtSignal()
 
     def __init__(self, chart):
         super().__init__(chart)
@@ -107,6 +158,14 @@ class InteractiveChartView(QChartView):
         self.last_mouse_pos = QPointF()
         self.pan_start_pos = QPointF()
         self.zoom_start_pos = QPointF()
+
+        # Alt+left-drag x-axis range selection zoom state
+        self.is_alt_zooming = False
+        self.alt_zoom_start_pos = QPointF()
+        self.alt_zoom_rubber_band = QRubberBand(QRubberBand.Shape.Rectangle, self)
+
+        # Alt+mouse-wheel x-axis zoom step, in minutes (configurable via Options)
+        self.alt_wheel_zoom_step_min = 0.1
 
         # Store chart ranges for interactions
         self.interaction_start_x_range = None
@@ -120,6 +179,7 @@ class InteractiveChartView(QChartView):
         self.mouse_press_time = 0
         self.mouse_press_pos = None
         self.right_click_pending = False
+        self.ctrl_right_click_pending = False  # Ctrl+right-click sets RT_min instead of opening the menu
         self.drag_threshold = 5  # pixels
         self.click_timeout = 0.5  # seconds
 
@@ -167,9 +227,36 @@ class InteractiveChartView(QChartView):
 
         return rt_value, intensity_value
 
+    def _alt_zoom_rubber_band_rect(self, current_pos: QPointF):
+        """Compute the rubber-band rectangle for the Alt+drag x-axis zoom selection.
+
+        The rectangle spans the full plot-area height and covers the x range
+        between the drag start position and the current position.
+        """
+        plot_area = self.chart().plotArea()
+        x1 = self.alt_zoom_start_pos.x()
+        x2 = current_pos.x()
+        left = max(min(x1, x2), plot_area.left())
+        right = min(max(x1, x2), plot_area.right())
+        return QRect(int(left), int(plot_area.top()), int(right - left), int(plot_area.height()))
+
     def mousePressEvent(self, event: QMouseEvent):
         """Handle mouse press events"""
         if event.button() == Qt.MouseButton.LeftButton:
+            # Alt + left click: start an x-axis range-selection zoom
+            if event.modifiers() & Qt.KeyboardModifier.AltModifier:
+                plot_area = self.chart().plotArea()
+                if plot_area.contains(event.position()):
+                    self.is_alt_zooming = True
+                    self.alt_zoom_start_pos = event.position()
+
+                    rubber_band_rect = self._alt_zoom_rubber_band_rect(event.position())
+                    self.alt_zoom_rubber_band.setGeometry(rubber_band_rect)
+                    self.alt_zoom_rubber_band.show()
+
+                    self.setCursor(Qt.CursorShape.CrossCursor)
+                    return  # Don't start panning
+
             # Ctrl + left click inside the plot: add a peak boundary / baseline point
             if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
                 plot_area = self.chart().plotArea()
@@ -195,10 +282,11 @@ class InteractiveChartView(QChartView):
             # Check if we're over the plot area for potential context menu
             plot_area = self.chart().plotArea()
             if plot_area.contains(event.position()):
-                # Start tracking for context menu
+                # Start tracking for context menu (or Ctrl+right-click to set RT_min)
                 self.mouse_press_time = time.time()
                 self.mouse_press_pos = event.position().toPoint()
                 self.right_click_pending = True
+                self.ctrl_right_click_pending = bool(event.modifiers() & Qt.KeyboardModifier.ControlModifier)
                 return  # Don't start zooming yet
 
             # If not over plot area, start zooming
@@ -243,6 +331,7 @@ class InteractiveChartView(QChartView):
             # If movement exceeds threshold, it's a drag - cancel context menu and start zooming
             if distance > self.drag_threshold:
                 self.right_click_pending = False
+                self.ctrl_right_click_pending = False
                 self.mouse_press_pos = None
 
                 # Start zooming interaction
@@ -267,7 +356,10 @@ class InteractiveChartView(QChartView):
                 self.zoom_anchor_x = self.interaction_start_x_range[0] + rel_x * x_range
                 self.zoom_anchor_y = self.interaction_start_y_range[1] - rel_y * y_range
 
-        if self.is_panning:
+        if self.is_alt_zooming:
+            rubber_band_rect = self._alt_zoom_rubber_band_rect(event.position())
+            self.alt_zoom_rubber_band.setGeometry(rubber_band_rect)
+        elif self.is_panning:
             self._handle_panning(event)
         elif self.is_zooming:
             self._handle_zooming(event)
@@ -275,7 +367,7 @@ class InteractiveChartView(QChartView):
         self.last_mouse_pos = event.position()
 
         # Handle hover detection for tooltips (only when not interacting)
-        if not self.is_panning and not self.is_zooming and not self.right_click_pending:
+        if not self.is_panning and not self.is_zooming and not self.is_alt_zooming and not self.right_click_pending:
             self._handle_hover(event)
 
         super().mouseMoveEvent(event)
@@ -470,6 +562,8 @@ class InteractiveChartView(QChartView):
     def mouseReleaseEvent(self, event: QMouseEvent):
         """Handle mouse release events"""
         if event.button() == Qt.MouseButton.LeftButton:
+            if self.is_alt_zooming:
+                self._finish_alt_zoom(event)
             self.is_panning = False
         elif event.button() == Qt.MouseButton.RightButton:
             # Check if this was a pending right-click for context menu
@@ -502,11 +596,16 @@ class InteractiveChartView(QChartView):
                         y_range = y_axis.max() - y_axis.min()
                         intensity_value = y_axis.max() - rel_y * y_range
 
-                        # Emit signal for context menu
-                        self.contextMenuRequested.emit(rt_value, intensity_value, event.position())
+                        # Ctrl+right-click sets the RT_min marker instead of opening the menu
+                        if self.ctrl_right_click_pending:
+                            self.ctrlRightClickRequested.emit(rt_value, intensity_value)
+                        else:
+                            # Emit signal for context menu
+                            self.contextMenuRequested.emit(rt_value, intensity_value, event.position())
 
                 # Reset context menu tracking
                 self.right_click_pending = False
+                self.ctrl_right_click_pending = False
                 self.mouse_press_pos = None
                 self.mouse_press_time = 0
             else:
@@ -514,6 +613,82 @@ class InteractiveChartView(QChartView):
 
         self.setCursor(Qt.CursorShape.ArrowCursor)
         super().mouseReleaseEvent(event)
+
+    def _finish_alt_zoom(self, event: QMouseEvent):
+        """Complete an Alt+left-drag x-axis range zoom on mouse release."""
+        self.is_alt_zooming = False
+        self.alt_zoom_rubber_band.hide()
+        self.setCursor(Qt.CursorShape.ArrowCursor)
+
+        start_rt, _ = self._position_to_data(self.alt_zoom_start_pos)
+        end_rt, _ = self._position_to_data(event.position())
+
+        # Ignore negligible drags (e.g. an accidental click) - require a
+        # minimum pixel distance so a plain Alt+click doesn't zoom to nothing.
+        if abs(event.position().x() - self.alt_zoom_start_pos.x()) < self.drag_threshold:
+            return
+
+        new_x_min = min(start_rt, end_rt)
+        new_x_max = max(start_rt, end_rt)
+        if new_x_max <= new_x_min:
+            return
+
+        x_axis = self.chart().axes(Qt.Orientation.Horizontal)[0]
+        x_axis.setRange(new_x_min, new_x_max)
+
+    def wheelEvent(self, event):
+        """Handle mouse wheel events.
+
+        Alt + wheel zooms the x-axis in/out by a fixed step (in minutes),
+        anchored at the RT value under the mouse cursor so that point stays
+        fixed on screen while the range shrinks/grows around it.
+        """
+        if event.modifiers() & Qt.KeyboardModifier.AltModifier:
+            plot_area = self.chart().plotArea()
+            position = event.position()
+            if plot_area.contains(position):
+                anchor_rt, _ = self._position_to_data(position)
+                x_axis = self.chart().axes(Qt.Orientation.Horizontal)[0]
+                x_min = x_axis.min()
+                x_max = x_axis.max()
+                range_width = x_max - x_min
+
+                if range_width > 0:
+                    # Wheel up/away from user = zoom in (shrink range); wheel down/toward
+                    # user = zoom out (grow range). Some systems remap the vertical wheel
+                    # to angleDelta().x() while a modifier key (like Alt) is held, so fall
+                    # back to the horizontal component when the vertical one is zero.
+                    delta = event.angleDelta().y()
+                    if delta == 0:
+                        delta = event.angleDelta().x()
+                    if delta == 0:
+                        event.accept()
+                        return
+                    direction = 1 if delta > 0 else -1
+                    step = max(0.0, self.alt_wheel_zoom_step_min)
+
+                    left_frac = (anchor_rt - x_min) / range_width
+                    right_frac = (x_max - anchor_rt) / range_width
+
+                    new_x_min = x_min + (step * direction) * left_frac
+                    new_x_max = x_max - (step * direction) * right_frac
+
+                    if new_x_max - new_x_min > 1e-6:
+                        x_axis.setRange(new_x_min, new_x_max)
+
+            event.accept()
+            return
+
+        super().wheelEvent(event)
+
+    def mouseDoubleClickEvent(self, event: QMouseEvent):
+        """Handle double-click events: request a full zoom-out on the plot."""
+        if event.button() == Qt.MouseButton.LeftButton:
+            plot_area = self.chart().plotArea()
+            if plot_area.contains(event.position()):
+                self.doubleClickRequested.emit()
+                return
+        super().mouseDoubleClickEvent(event)
 
     def _handle_panning(self, event: QMouseEvent):
         """Handle panning interaction"""
@@ -728,7 +903,7 @@ class EICWindow(QWidget):
                 "mz_tolerance_ppm": 5.0,
                 "separation_mode": "By group",
                 "rt_shift_min": 1.0,
-                "crop_rt_window": False,
+                "eic_view_mode": EIC_VIEW_MODE_CROP_PADDED,
                 "normalize_samples": False,
                 "normalize_mode": "No normalization",
             }
@@ -794,6 +969,14 @@ class EICWindow(QWidget):
         self.dragging_line = None  # Reference to line being dragged
         self.drag_offset = 0.0  # Offset for smooth dragging
 
+        # Reference RT marker ("RT_min"): a vertical line shown for reference only,
+        # never used for peak integration. Restored from the compound list if
+        # already defined; can be set via Ctrl+right-click or cleared via the
+        # context menu. Only shown on the main chart (like peak boundaries).
+        self.rt_min_line = None  # QLineSeries drawn on the main chart
+        self.rt_min_value = _safe_float_or_none(self.compound_data.get("RT_min")) if self.compound_data else None
+        self._rt_min_user_defined = self.rt_min_value is not None
+
         # Baseline points for baseline-corrected integration
         # Each entry is a (rt, intensity) tuple
         self.baseline_points = []
@@ -822,6 +1005,11 @@ class EICWindow(QWidget):
         # "Set information in compound list and save" context-menu action).
         self._save_shortcut = QShortcut(QKeySequence.StandardKey.Save, self)
         self._save_shortcut.activated.connect(lambda: self._set_peak_information_in_compound_list(save=True))
+
+        # Keyboard shortcut: Ctrl+D removes any integration boundaries and
+        # baseline points on the current plot.
+        self._clear_boundaries_shortcut = QShortcut(QKeySequence("Ctrl+D"), self)
+        self._clear_boundaries_shortcut.activated.connect(self._clear_boundaries_and_baseline)
 
         self._reconcile_rt_window()
         self.extract_eic_data()
@@ -1339,11 +1527,14 @@ class EICWindow(QWidget):
         self.rt_shift_spin.valueChanged.connect(lambda v: self._notify_setting("rt_shift_min", v))
         layout.addRow("Group RT Shift:", self.rt_shift_spin)
 
-        # RT cropping option
-        self.crop_rt_cb = QCheckBox("Crop to RT Window")
-        self.crop_rt_cb.setChecked(self.defaults["crop_rt_window"])  # Use default
-        self.crop_rt_cb.stateChanged.connect(self.update_plot)
-        layout.addRow(self.crop_rt_cb)
+        # EIC view mode: controls x-axis cropping and automatic integration borders
+        self.eic_view_mode_combo = NoScrollComboBox()
+        self.eic_view_mode_combo.addItems(EIC_VIEW_MODES)
+        _init_view_mode = resolve_eic_view_mode(self.defaults)
+        _view_mode_idx = self.eic_view_mode_combo.findText(_init_view_mode)
+        self.eic_view_mode_combo.setCurrentIndex(_view_mode_idx if _view_mode_idx >= 0 else EIC_VIEW_MODES.index(EIC_VIEW_MODE_CROP_PADDED))
+        self.eic_view_mode_combo.currentTextChanged.connect(self._on_eic_view_mode_changed)
+        layout.addRow("EIC View:", self.eic_view_mode_combo)
 
         # Normalization option
         self.normalize_combo = NoScrollComboBox()
@@ -1878,7 +2069,7 @@ class EICWindow(QWidget):
                 "eic_method": self.eic_method_combo.currentText() if hasattr(self, "eic_method_combo") else self.defaults.get("eic_method", "Sum of all signals"),
                 "separation_mode": self.separation_mode_combo.currentText() if hasattr(self, "separation_mode_combo") else self.defaults.get("separation_mode", "None"),
                 "rt_shift_min": self.rt_shift_spin.value() if hasattr(self, "rt_shift_spin") else self.defaults.get("rt_shift_min", 1.0),
-                "crop_rt_window": self.crop_rt_cb.isChecked() if hasattr(self, "crop_rt_cb") else self.defaults.get("crop_rt_window", False),
+                "eic_view_mode": self.eic_view_mode_combo.currentText() if hasattr(self, "eic_view_mode_combo") else resolve_eic_view_mode(self.defaults),
                 "normalize_mode": self.normalize_combo.currentText() if hasattr(self, "normalize_combo") else resolve_normalization_mode(self.defaults),
                 "legend_position": self.legend_position_combo.currentText() if hasattr(self, "legend_position_combo") else self.defaults.get("legend_position", "Right"),
                 "rt_unit": self.rt_unit_combo.currentText() if hasattr(self, "rt_unit_combo") else self.defaults.get("rt_unit", "min"),
@@ -1914,8 +2105,14 @@ class EICWindow(QWidget):
                     self.separation_mode_combo.setCurrentIndex(idx)
             if hasattr(self, "rt_shift_spin") and "rt_shift_min" in extraction:
                 self.rt_shift_spin.setValue(extraction["rt_shift_min"])
-            if hasattr(self, "crop_rt_cb") and "crop_rt_window" in extraction:
-                self.crop_rt_cb.setChecked(extraction["crop_rt_window"])
+            if hasattr(self, "eic_view_mode_combo"):
+                _tmpl_view_mode = extraction.get("eic_view_mode")
+                if _tmpl_view_mode not in EIC_VIEW_MODES and "crop_rt_window" in extraction:
+                    _tmpl_view_mode = EIC_VIEW_MODE_CROP if extraction["crop_rt_window"] else EIC_VIEW_MODE_FULL
+                if _tmpl_view_mode in EIC_VIEW_MODES:
+                    _idx = self.eic_view_mode_combo.findText(_tmpl_view_mode)
+                    if _idx >= 0:
+                        self.eic_view_mode_combo.setCurrentIndex(_idx)
             if hasattr(self, "normalize_combo"):
                 _tmpl_mode = extraction.get("normalize_mode")
                 if _tmpl_mode not in NORMALIZATION_MODES and "normalize_samples" in extraction:
@@ -2726,17 +2923,17 @@ class EICWindow(QWidget):
         y_axis = self.chart.axes(Qt.Orientation.Vertical)[0]
 
         x_min, x_max = x_axis.min(), x_axis.max()
-        y_min, y_max = y_axis.min(), y_axis.max()
 
         # Ensure the RT is within the visible range
         line_x = max(x_min, min(x_max, rt_value))
 
-        # Create vertical line
+        # Create vertical line spanning the full y-axis (clipped to the plot area),
+        # so it always reaches top and bottom regardless of zoom/pan.
         line_series = QLineSeries()
         line_series.setName("")  # No legend entry
         line_series.setProperty("is_decoration", True)
-        line_series.append(line_x, y_min)
-        line_series.append(line_x, y_max)
+        line_series.append(line_x, -_BOUNDARY_LINE_Y_EXTENT)
+        line_series.append(line_x, _BOUNDARY_LINE_Y_EXTENT)
 
         # Style: solid red line for peak boundaries
         pen = QPen(QColor(255, 0, 0))  # Red
@@ -3024,6 +3221,11 @@ class EICWindow(QWidget):
         self._last_apex_rt = apex_rt
         # Store apex intensity (most abundant signal across samples within the window)
         self._last_apex_intensity = apex_intensity if apex_intensity != float("-inf") else None
+
+        # Automatically set the reference RT ("RT_min") marker to the apex of the
+        # most abundant sample, but only if the user hasn't already defined it.
+        if apex_rt is not None and not self._rt_min_user_defined:
+            self.set_rt_min_marker(apex_rt, user_defined=False)
 
         # Always set x-axis to start from 0 and adapt upper bound to data range
         data_max = max((max(values) for values in data_lists if values), default=0)
@@ -5515,6 +5717,11 @@ class EICWindow(QWidget):
         if len(self.peak_boundary_lines) == 2:
             self.update_boxplot()
 
+    def _clear_boundaries_and_baseline(self) -> None:
+        """Remove all peak integration boundaries and baseline points (Ctrl+D)."""
+        self.remove_peak_boundaries()
+        self._clear_baseline_points()
+
     def _copy_rt_times_to_clipboard(self) -> None:
         """Copy peak RT information to the clipboard as tab-separated values for Excel.
 
@@ -5538,7 +5745,15 @@ class EICWindow(QWidget):
             return None
         start_rt = min(self.peak_start_rt, self.peak_end_rt)
         end_rt = max(self.peak_start_rt, self.peak_end_rt)
-        apex_rt = self._last_apex_rt if self._last_apex_rt is not None else (start_rt + end_rt) / 2.0
+        # Prefer the reference RT ("RT_min") marker -- which may have been set
+        # automatically from the apex or explicitly overridden by the user via
+        # Ctrl+right-click -- falling back to the computed apex / midpoint.
+        if self.rt_min_value is not None:
+            apex_rt = self.rt_min_value
+        elif self._last_apex_rt is not None:
+            apex_rt = self._last_apex_rt
+        else:
+            apex_rt = (start_rt + end_rt) / 2.0
         apex_intensity = self._last_apex_intensity
 
         name = str(self.compound_data.get("Name", ""))
@@ -5670,7 +5885,6 @@ class EICWindow(QWidget):
         # Get axes for the new chart
         x_axis = self.chart.axes(Qt.Orientation.Horizontal)[0]
         y_axis = self.chart.axes(Qt.Orientation.Vertical)[0]
-        y_min, y_max = y_axis.min(), y_axis.max()
 
         # Recreate boundary lines using stored RT values
         stored_rts = []
@@ -5680,12 +5894,13 @@ class EICWindow(QWidget):
             stored_rts.append(self.peak_end_rt)
 
         for rt_pos in stored_rts:
-            # Create new boundary line
+            # Create new boundary line spanning the full y-axis (clipped to the plot
+            # area), so it always reaches top and bottom regardless of zoom/pan.
             line_series = QLineSeries()
             line_series.setName("")  # No legend entry
             line_series.setProperty("is_decoration", True)
-            line_series.append(rt_pos, y_min)
-            line_series.append(rt_pos, y_max)
+            line_series.append(rt_pos, -_BOUNDARY_LINE_Y_EXTENT)
+            line_series.append(rt_pos, _BOUNDARY_LINE_Y_EXTENT)
 
             # Style: solid red line for peak boundaries
             pen = QPen(QColor(255, 0, 0))  # Red
@@ -5705,6 +5920,73 @@ class EICWindow(QWidget):
         if len(self.peak_boundary_lines) == 2:
             self.update_boundary_info()
             self.update_boxplot()
+
+    def _draw_rt_min_line(self) -> None:
+        """Draw (or redraw) the reference RT ("RT_min") vertical line on the main chart.
+
+        This marker is purely informational (e.g. an expected/reference retention
+        time) and is never used for peak integration.
+        """
+        if self.rt_min_line is not None:
+            self.chart.removeSeries(self.rt_min_line)
+            self.rt_min_line = None
+
+        if self.rt_min_value is None:
+            return
+
+        axes_h = self.chart.axes(Qt.Orientation.Horizontal)
+        axes_v = self.chart.axes(Qt.Orientation.Vertical)
+        if not axes_h or not axes_v:
+            return
+        x_axis = axes_h[0]
+        y_axis = axes_v[0]
+
+        # Create new line spanning the full y-axis (clipped to the plot area), so it
+        # always reaches top and bottom regardless of zoom/pan.
+        line_series = QLineSeries()
+        line_series.setName("")  # No legend entry
+        line_series.setProperty("is_decoration", True)
+        line_series.append(self.rt_min_value, -_BOUNDARY_LINE_Y_EXTENT)
+        line_series.append(self.rt_min_value, _BOUNDARY_LINE_Y_EXTENT)
+
+        # Style: solid blue line, distinct in color from the red peak boundaries and
+        # the orange dashed baseline. A dashed/dash-dot pattern must NOT be used here:
+        # with the huge +/-_BOUNDARY_LINE_Y_EXTENT span used to fake a full-height
+        # line, Qt's dash-pattern rendering becomes unstable as the visible axis
+        # range changes (the line appears "stuck" on screen instead of tracking the
+        # data value while panning/zooming). A solid pen does not have this issue.
+        pen = QPen(QColor(30, 100, 220))
+        pen.setWidth(2)
+        pen.setStyle(Qt.PenStyle.SolidLine)
+        line_series.setPen(pen)
+
+        self.chart.addSeries(line_series)
+        line_series.attachAxis(x_axis)
+        line_series.attachAxis(y_axis)
+
+        self.rt_min_line = line_series
+
+    def set_rt_min_marker(self, rt_value, user_defined: bool = True) -> None:
+        """Set the reference RT ("RT_min") marker to *rt_value* and redraw its line.
+
+        This never affects peak integration boundaries. Pass *user_defined=True*
+        when the value was explicitly chosen by the user (e.g. via Ctrl+right-click),
+        to prevent the automatic apex-based calculation from overwriting it later.
+        """
+        self.rt_min_value = rt_value
+        self._rt_min_user_defined = user_defined
+        if self.compound_data is not None:
+            self.compound_data["RT_min"] = rt_value
+        self._draw_rt_min_line()
+        self._update_main_chart_title()
+
+    def _clear_rt_min_marker(self) -> None:
+        """Clear the reference RT ("RT_min") marker and its vertical line."""
+        self.set_rt_min_marker(None, user_defined=False)
+
+    def _handle_ctrl_right_click(self, rt_value: float, intensity_value: float) -> None:
+        """Handle a Ctrl+right-click in the plot: set the reference RT ("RT_min") marker."""
+        self.set_rt_min_marker(rt_value, user_defined=True)
 
     def update_mz_tolerance_da(self):
         """Update Da value when ppm value changes"""
@@ -5752,12 +6034,19 @@ class EICWindow(QWidget):
 
         # Use custom interactive chart view
         chart_view = InteractiveChartView(self.chart)
+        chart_view.alt_wheel_zoom_step_min = self.defaults.get("alt_wheel_zoom_step_min", 0.1) if self.defaults else 0.1
 
         # Connect context menu signal
         chart_view.contextMenuRequested.connect(self.show_context_menu)  # (rt, intensity, pos)
 
         # Connect Ctrl+click signal to add peak boundaries / baseline points
         chart_view.ctrlClickRequested.connect(self._handle_ctrl_click)  # (rt, intensity)
+
+        # Connect Ctrl+right-click signal to set the reference RT ("RT_min") marker
+        chart_view.ctrlRightClickRequested.connect(self._handle_ctrl_right_click)  # (rt, intensity)
+
+        # Connect double-click to reset zoom to the full data extent
+        chart_view.doubleClickRequested.connect(self._reset_all_axes_to_full_extent)
 
         # Connect main x-axis range changes to sync handler
         self.x_axis.rangeChanged.connect(self._on_main_x_axis_changed)
@@ -6001,6 +6290,10 @@ class EICWindow(QWidget):
 
         # Populate sample settings table
         self.populate_sample_settings_table()
+
+        # Automatically set integration borders to the compound's RT window
+        # for view modes that request it (all except "Show Entire EIC")
+        self._apply_auto_integration_borders()
 
         # Update plot
         self.update_plot()
@@ -6334,6 +6627,68 @@ class EICWindow(QWidget):
 
         return factors, mode
 
+    def _eic_view_mode(self) -> str:
+        """Return the currently selected EIC view mode."""
+        if hasattr(self, "eic_view_mode_combo"):
+            return self.eic_view_mode_combo.currentText()
+        return resolve_eic_view_mode(self.defaults)
+
+    def _crop_rt_range(self):
+        """Return (crop_rt, rt_start, rt_end) describing the RT window used to filter
+        the plotted EIC data for the active view mode.
+
+        For the padded-crop mode, rt_start/rt_end are extended by 100% of the
+        compound's RT window width on either side.
+        """
+        mode = self._eic_view_mode()
+        if mode not in (EIC_VIEW_MODE_CROP, EIC_VIEW_MODE_CROP_PADDED):
+            return False, None, None
+
+        rt_start = self.compound_data.get("RT_start_min")
+        rt_end = self.compound_data.get("RT_end_min")
+        if rt_start is None or rt_end is None:
+            return False, None, None
+        try:
+            rt_start = float(rt_start)
+            rt_end = float(rt_end)
+        except (TypeError, ValueError):
+            return False, None, None
+        if pd.isna(rt_start) or pd.isna(rt_end):
+            return False, None, None
+
+        if rt_start > rt_end:
+            rt_start, rt_end = rt_end, rt_start
+
+        if mode == EIC_VIEW_MODE_CROP_PADDED:
+            width = rt_end - rt_start
+            return True, rt_start - width, rt_end + width
+        return True, rt_start, rt_end
+
+    def _apply_auto_integration_borders(self):
+        """Automatically set the peak integration borders to the compound's RT
+        window for every view mode except "Show Entire EIC".
+
+        Does nothing when the compound has no defined RT window (the 0–100 min
+        placeholder counts as undefined).
+        """
+        if self._eic_view_mode() == EIC_VIEW_MODE_FULL:
+            return
+        if not self._compound_has_defined_rt():
+            return
+        try:
+            rt_start = float(self.compound_data.get("RT_start_min"))
+            rt_end = float(self.compound_data.get("RT_end_min"))
+        except (TypeError, ValueError):
+            return
+        self.peak_start_rt = min(rt_start, rt_end)
+        self.peak_end_rt = max(rt_start, rt_end)
+
+    def _on_eic_view_mode_changed(self, _text=None):
+        """Handle a change of the EIC view mode combo box."""
+        self._apply_auto_integration_borders()
+        self.update_plot()
+        self._notify_setting("eic_view_mode", self._eic_view_mode())
+
     def update_plot(self, preserve_view=False):
         """Update the EIC plot
 
@@ -6369,15 +6724,11 @@ class EICWindow(QWidget):
             "By Acquisition Time",
             "By Group, then Acquisition Time",
         )
-        crop_rt = self.crop_rt_cb.isChecked()
+        crop_rt, rt_start, rt_end = self._crop_rt_range()
         normalize_mode = self.normalize_combo.currentText() if hasattr(self, "normalize_combo") else "No normalization"
         normalize_active = normalize_mode != "No normalization"
         # Only per-sample apex normalization scales every curve to a fixed 0–1 range
         normalize_unit_range = normalize_mode == "Normalize to Apex per Sample"
-
-        # Get RT window if cropping is enabled
-        rt_start = self.compound_data.get("RT_start_min") if crop_rt else None
-        rt_end = self.compound_data.get("RT_end_min") if crop_rt else None
 
         # Pre-compute per-file normalization divisors (handles per-group modes too)
         norm_factors, _ = self._compute_normalization_factors(crop_rt, rt_start, rt_end)
@@ -6663,6 +7014,9 @@ class EICWindow(QWidget):
         # Re-add peak boundary lines if they exist
         self._restore_peak_boundary_lines()
 
+        # Re-draw the reference RT ("RT_min") marker line if defined
+        self._draw_rt_min_line()
+
         # Re-draw baseline series if baseline points exist
         self._draw_baseline_series()
 
@@ -6928,6 +7282,18 @@ class EICWindow(QWidget):
             # Fallback to recalculating ranges
             self.update_axes_ranges()
 
+    def _reset_all_axes_to_full_extent(self):
+        """Zoom out the main chart and any extra EIC trace charts to show the
+        full min/max data range on both the x and y axes (double-click handler).
+        """
+        # Reset extra traces first (each recomputes its own full x/y extent);
+        # resetting the main chart afterwards will resync all trace x-axes to
+        # the main chart's range via the existing rangeChanged sync mechanism.
+        for trace in self._extra_eic_traces:
+            self._update_extra_trace_chart(trace)
+
+        self.update_axes_ranges(force_x_auto_zoom=True, force_y_auto_zoom=True)
+
     def _parse_filter_string_type(self, filter_string: str) -> Optional[str]:
         """Apply the user-configured regex to a filter string and return the type label.
 
@@ -7170,12 +7536,16 @@ class EICWindow(QWidget):
         trace_chart.addAxis(trace_y_axis, Qt.AlignmentFlag.AlignLeft)
 
         trace_chart_view = InteractiveChartView(trace_chart)
+        trace_chart_view.alt_wheel_zoom_step_min = self.defaults.get("alt_wheel_zoom_step_min", 0.1) if self.defaults else 0.1
 
         # Synchronize scroll/zoom with the main chart
         trace_x_axis.rangeChanged.connect(self._on_trace_x_axis_changed)
 
         # Connect context menu so the extra trace chart shows the same menu
         trace_chart_view.contextMenuRequested.connect(lambda rt_val, int_val, pos, cv=trace_chart_view: self.show_context_menu(rt_val, int_val, pos, source_chart_view=cv))
+
+        # Connect double-click to reset all panes' zoom to the full data extent
+        trace_chart_view.doubleClickRequested.connect(self._reset_all_axes_to_full_extent)
 
         # Build compact info label above this trace chart
         pol_str = f" [{polarity[0].upper() if polarity else '?'}]"
@@ -7264,16 +7634,13 @@ class EICWindow(QWidget):
             "By Acquisition Time",
             "By Group, then Acquisition Time",
         )
-        crop_rt = self.crop_rt_cb.isChecked()
+        crop_rt, rt_start_crop, rt_end_crop = self._crop_rt_range()
         normalize_mode = self.normalize_combo.currentText() if hasattr(self, "normalize_combo") else "No normalization"
         normalize = normalize_mode != "No normalization"
         normalize_unit_range = normalize_mode == "Normalize to Apex per Sample"
         log_y = self.log_y_cb.isChecked()
         ridge = self.ridge_plot_cb.isChecked()
         ridge_increment = self._get_ridge_increment() if ridge else 0.0
-
-        rt_start_crop = self.compound_data.get("RT_start_min") if crop_rt else None
-        rt_end_crop = self.compound_data.get("RT_end_min") if crop_rt else None
 
         # Pre-compute normalization divisors over this trace's own data
         trace_norm_factors, _ = self._compute_normalization_factors(crop_rt, rt_start_crop, rt_end_crop, eic_data=eic_data)
@@ -7826,6 +8193,17 @@ class EICWindow(QWidget):
                 clear_baseline_action = QAction("Clear all baseline points", self)
                 clear_baseline_action.triggered.connect(self._clear_baseline_points)
                 context_menu.addAction(clear_baseline_action)
+
+            # Reference RT ("RT_min") marker actions
+            context_menu.addSeparator()
+            set_rt_min_action = QAction("Set reference RT (RT_min) here", self)
+            set_rt_min_action.triggered.connect(lambda: self.set_rt_min_marker(rt_value, user_defined=True))
+            context_menu.addAction(set_rt_min_action)
+
+            if self.rt_min_value is not None:
+                clear_rt_min_action = QAction("Clear reference RT (RT_min)", self)
+                clear_rt_min_action.triggered.connect(self._clear_rt_min_marker)
+                context_menu.addAction(clear_rt_min_action)
 
             context_menu.addSeparator()
 

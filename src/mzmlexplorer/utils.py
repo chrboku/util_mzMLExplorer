@@ -120,7 +120,7 @@ def adduct_mass_change(adduct_info) -> tuple:
         mass_change = float(adduct_info["Mass_change"])
     else:
         mass_change = -ELECTRON_MASS * charge
-        
+
     return mass_change, charge, multiplier
 
 

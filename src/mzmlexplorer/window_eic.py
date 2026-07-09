@@ -8,6 +8,7 @@ import os
 import re
 import time
 import traceback
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional
 
 import numpy as np
@@ -18,12 +19,13 @@ from matplotlib.figure import Figure
 from natsort import natsort_keygen, natsorted
 from PyQt6.QtCharts import QChart, QChartView, QLineSeries, QValueAxis
 from PyQt6.QtCore import QMargins, QPointF, QRect, Qt, QThread, pyqtSignal
-from PyQt6.QtGui import QAction, QBrush, QColor, QKeySequence, QMouseEvent, QPainter, QPen, QShortcut
+from PyQt6.QtGui import QAction, QBrush, QColor, QCursor, QKeySequence, QMouseEvent, QPainter, QPen, QShortcut
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QApplication,
     QCheckBox,
     QDialog,
+    QDialogButtonBox,
     QDoubleSpinBox,
     QFormLayout,
     QGroupBox,
@@ -796,6 +798,7 @@ class EICExtractionWorker(QThread):
         eic_method="Sum of all signals",
         adduct=None,
         polarity=None,
+        parallel_tasks=4,
     ):
         super().__init__()
         self.file_manager = file_manager
@@ -806,6 +809,7 @@ class EICExtractionWorker(QThread):
         self.eic_method = eic_method
         self.adduct = adduct
         self.polarity = self._normalize_polarity(polarity)
+        self.parallel_tasks = max(1, int(parallel_tasks))
 
     def _normalize_polarity(self, polarity):
         """Convert different polarity representations to '+', '-', or None."""
@@ -826,11 +830,10 @@ class EICExtractionWorker(QThread):
             files_data = self.file_manager.get_files_data()
             total_files = len(files_data)
             eic_data = {}
+            completed = 0
 
-            for i, (_, row) in enumerate(files_data.iterrows()):
+            def extract_one(row):
                 filepath = row["Filepath"]
-
-                # Extract EIC with polarity consideration
                 rt, intensity = self.file_manager.extract_eic(
                     filepath,
                     self.target_mz,
@@ -840,16 +843,24 @@ class EICExtractionWorker(QThread):
                     self.eic_method,
                     self.polarity,
                 )
+                return filepath, rt, intensity, row.to_dict()
 
-                eic_data[filepath] = {
-                    "rt": rt,
-                    "intensity": intensity,
-                    "metadata": row.to_dict(),
-                }
+            rows = [row for _, row in files_data.iterrows()]
+            max_workers = min(self.parallel_tasks, max(total_files, 1))
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = [executor.submit(extract_one, row) for row in rows]
+                for future in as_completed(futures):
+                    filepath, rt, intensity, metadata = future.result()
+                    eic_data[filepath] = {
+                        "rt": rt,
+                        "intensity": intensity,
+                        "metadata": metadata,
+                    }
 
-                # Update progress
-                progress_value = int((i + 1) / total_files * 100)
-                self.progress.emit(progress_value)
+                    # Update progress
+                    completed += 1
+                    progress_value = int(completed / total_files * 100)
+                    self.progress.emit(progress_value)
 
             self.finished.emit(eic_data)
 
@@ -893,6 +904,7 @@ class EICWindow(QWidget):
         self.settings_callback = settings_callback
         self.compound_update_callback = compound_update_callback  # Persist peak info to compound list
         self.latest_compound_callback = latest_compound_callback  # Look up newest saved RT window
+        self._pending_comment = None  # Staged (unsaved) Comment edit, applied together with the next compound-list save
         self.grouping_column = "group"  # Default grouping column
 
         # Store defaults (use application defaults if none provided)
@@ -1011,6 +1023,16 @@ class EICWindow(QWidget):
         self._clear_boundaries_shortcut = QShortcut(QKeySequence("Ctrl+D"), self)
         self._clear_boundaries_shortcut.activated.connect(self._clear_boundaries_and_baseline)
 
+        # Keyboard shortcut: Ctrl+E zooms out to show the entire EIC (full RT
+        # range and full intensity range of all plotted data).
+        self._zoom_full_eic_shortcut = QShortcut(QKeySequence("Ctrl+E"), self)
+        self._zoom_full_eic_shortcut.activated.connect(self.reset_view)
+
+        # Keyboard shortcut: Ctrl+I sets the intensity value under the mouse
+        # cursor as the compound intensity (appended to its Comment field).
+        self._set_click_intensity_shortcut = QShortcut(QKeySequence("Ctrl+I"), self)
+        self._set_click_intensity_shortcut.activated.connect(self._set_click_intensity_as_compound_intensity_at_cursor)
+
         self._reconcile_rt_window()
         self.extract_eic_data()
 
@@ -1108,7 +1130,8 @@ class EICWindow(QWidget):
         """Initialize the user interface"""
         _pol_suffix = f" [{self.polarity}]" if self.polarity else ""
         _mz_suffix = f"  m/z {format_mz(self.target_mz)}{_pol_suffix}" if self.target_mz else ""
-        self.setWindowTitle(f"EIC: {self.compound_data['Name']} - {self.adduct}{_mz_suffix}")
+        self._base_window_title = f"EIC: {self.compound_data['Name']} - {self.adduct}{_mz_suffix}"
+        self._update_window_title()
         self.setGeometry(200, 200, 1400, 800)
 
         layout = QHBoxLayout(self)
@@ -2618,7 +2641,7 @@ class EICWindow(QWidget):
         rt_sample_layout.addLayout(rt_sample_buttons)
 
         self.rt_sample_table = QTableWidget()
-        self.rt_sample_table.setColumnCount(7)
+        self.rt_sample_table.setColumnCount(12)
         self.rt_sample_table.setHorizontalHeaderLabels(
             [
                 "Group",
@@ -2628,6 +2651,11 @@ class EICWindow(QWidget):
                 "Apex RT",
                 "FWHM Right RT",
                 "FWHM Width",
+                "Asymmetry at FWHM",
+                "FW10% Left RT",
+                "FW10% Right RT",
+                "Asymmetry at FW10%",
+                "Apex Intensity",
             ]
         )
         self.rt_sample_table.setAlternatingRowColors(True)
@@ -2644,10 +2672,15 @@ class EICWindow(QWidget):
 
         # CenteredBarDelegate for RT-position columns (apex, left, right); BarDelegate for width
         self._rt_sample_centered_delegate = CenteredBarDelegate(self.rt_sample_table)
-        for _col in (3, 4, 5):
+        for _col in (3, 4, 5, 8, 9):
             self.rt_sample_table.setItemDelegateForColumn(_col, self._rt_sample_centered_delegate)
         self._rt_sample_width_delegate = BarDelegate(self.rt_sample_table)
         self.rt_sample_table.setItemDelegateForColumn(6, self._rt_sample_width_delegate)
+        self._rt_sample_asymmetry_delegate = BarDelegate(self.rt_sample_table)
+        for _col in (7, 10):
+            self.rt_sample_table.setItemDelegateForColumn(_col, self._rt_sample_asymmetry_delegate)
+        self._rt_sample_intensity_delegate = BarDelegate(self.rt_sample_table)
+        self.rt_sample_table.setItemDelegateForColumn(11, self._rt_sample_intensity_delegate)
 
         self.boxplot_widget.addTab(rt_sample_tab, "RT statistics per sample")
 
@@ -2666,7 +2699,7 @@ class EICWindow(QWidget):
         rt_group_layout.addLayout(rt_group_buttons)
 
         self.rt_group_table = QTableWidget()
-        self.rt_group_table.setColumnCount(7)
+        self.rt_group_table.setColumnCount(15)
         self.rt_group_table.setHorizontalHeaderLabels(
             [
                 "Group",
@@ -2676,6 +2709,14 @@ class EICWindow(QWidget):
                 "Std FWHM Width",
                 "Min FWHM Width",
                 "Max FWHM Width",
+                "Mean Asymmetry at FWHM",
+                "Std Asymmetry at FWHM",
+                "Mean FW10% Width",
+                "Std FW10% Width",
+                "Mean Asymmetry at FW10%",
+                "Std Asymmetry at FW10%",
+                "Mean Apex Intensity",
+                "Std Apex Intensity",
             ]
         )
         self.rt_group_table.setAlternatingRowColors(True)
@@ -2690,11 +2731,11 @@ class EICWindow(QWidget):
         self.rt_group_table.verticalHeader().setMinimumSectionSize(16)
         rt_group_layout.addWidget(self.rt_group_table)
 
-        # CenteredBarDelegate for Mean Apex RT (col 1); BarDelegate for the rest (cols 2–6)
+        # CenteredBarDelegate for Mean Apex RT (col 1); BarDelegate for the rest (cols 2–12)
         self._rt_group_centered_delegate = CenteredBarDelegate(self.rt_group_table)
         self.rt_group_table.setItemDelegateForColumn(1, self._rt_group_centered_delegate)
         self._rt_group_bar_delegates = []
-        for _col in range(2, 7):
+        for _col in range(2, 15):
             _d = BarDelegate(self.rt_group_table)
             self.rt_group_table.setItemDelegateForColumn(_col, _d)
             self._rt_group_bar_delegates.append(_d)
@@ -3080,6 +3121,10 @@ class EICWindow(QWidget):
             sample_fwhm_left = None
             sample_fwhm_right = None
             sample_fwhm_width = None
+            sample_fwhm_asymmetry = None
+            sample_fw10_left = None
+            sample_fw10_right = None
+            sample_fw10_asymmetry = None
 
             # Build arrays confined to the integration window
             win_rt = []
@@ -3102,39 +3147,17 @@ class EICWindow(QWidget):
                 apex_idx = int(np.argmax(win_int))
                 sample_apex_rt = win_rt[apex_idx]
                 sample_apex_intensity = win_int[apex_idx]
-                half_max = sample_apex_intensity / 2.0
 
-                # Find left FWHM crossing by scanning leftward from apex
-                fwhm_left = None
-                for i in range(apex_idx - 1, -1, -1):
-                    if win_int[i] <= half_max:
-                        # Linear interpolation between point i and i+1
-                        dI = win_int[i + 1] - win_int[i]
-                        if dI != 0:
-                            fwhm_left = win_rt[i] + (half_max - win_int[i]) / dI * (win_rt[i + 1] - win_rt[i])
-                        else:
-                            fwhm_left = win_rt[i]
-                        break
-                if fwhm_left is None:
-                    fwhm_left = win_rt[0]  # clamp to window start
-
-                # Find right FWHM crossing by scanning rightward from apex
-                fwhm_right = None
-                for i in range(apex_idx + 1, len(win_rt)):
-                    if win_int[i] <= half_max:
-                        # Linear interpolation between point i-1 and i
-                        dI = win_int[i] - win_int[i - 1]
-                        if dI != 0:
-                            fwhm_right = win_rt[i - 1] + (half_max - win_int[i - 1]) / dI * (win_rt[i] - win_rt[i - 1])
-                        else:
-                            fwhm_right = win_rt[i]
-                        break
-                if fwhm_right is None:
-                    fwhm_right = win_rt[-1]  # clamp to window end
-
+                fwhm_left, fwhm_right = self._find_peak_width_at_height(win_rt, win_int, apex_idx, 0.5)
                 sample_fwhm_left = fwhm_left
                 sample_fwhm_right = fwhm_right
                 sample_fwhm_width = fwhm_right - fwhm_left
+                sample_fwhm_asymmetry = self._peak_asymmetry(sample_apex_rt, fwhm_left, fwhm_right)
+
+                fw10_left, fw10_right = self._find_peak_width_at_height(win_rt, win_int, apex_idx, 0.1)
+                sample_fw10_left = fw10_left
+                sample_fw10_right = fw10_right
+                sample_fw10_asymmetry = self._peak_asymmetry(sample_apex_rt, fw10_left, fw10_right)
 
             rt_data.append(
                 (
@@ -3145,6 +3168,11 @@ class EICWindow(QWidget):
                     sample_fwhm_left,
                     sample_fwhm_right,
                     sample_fwhm_width,
+                    sample_fwhm_asymmetry,
+                    sample_fw10_left,
+                    sample_fw10_right,
+                    sample_fw10_asymmetry,
+                    None if sample_apex_intensity == float("-inf") else sample_apex_intensity,
                 )
             )
 
@@ -3774,7 +3802,9 @@ class EICWindow(QWidget):
         Parameters
         ----------
         rt_data : list of tuples
-            Each tuple: (group, sample_name, acquisition_date, apex_rt, fwhm_left, fwhm_right, fwhm_width)
+            Each tuple: (group, sample_name, acquisition_date, apex_rt, fwhm_left,
+            fwhm_right, fwhm_width, fwhm_asymmetry, fw10_left, fw10_right, fw10_asymmetry,
+            apex_intensity)
             Any of the float fields can be None if not computable.
         """
         self.rt_sample_table.setRowCount(0)
@@ -3798,9 +3828,16 @@ class EICWindow(QWidget):
         if rt_range < 1e-6:
             rt_range = 0.5  # fallback ±0.5 min
 
-        # Max for FWHM Width BarDelegate (col 6 only)
+        # Max for width/asymmetry BarDelegate columns
         fwhm_width_vals = [row[6] for row in sample_rows if row[6] is not None]
         fwhm_width_max = max(fwhm_width_vals) if fwhm_width_vals else 1.0
+        fwhm_asym_vals = [row[7] for row in sample_rows if row[7] is not None]
+        fwhm_asym_max = max(fwhm_asym_vals) if fwhm_asym_vals else 1.0
+        fw10_asym_vals = [row[10] for row in sample_rows if row[10] is not None]
+        fw10_asym_max = max(fw10_asym_vals) if fw10_asym_vals else 1.0
+        asym_max = max(fwhm_asym_max, fw10_asym_max, 1.0)
+        apex_intensity_vals = [row[11] for row in sample_rows if row[11] is not None]
+        apex_intensity_max = max(apex_intensity_vals) if apex_intensity_vals else 1.0
 
         # --- Per-sample table ---
         self.rt_sample_table.setSortingEnabled(False)
@@ -3814,6 +3851,11 @@ class EICWindow(QWidget):
             fwhm_left,
             fwhm_right,
             fwhm_width,
+            fwhm_asymmetry,
+            fw10_left,
+            fw10_right,
+            fw10_asymmetry,
+            apex_intensity,
         ) in enumerate(sample_rows):
             grp_color = self._get_group_color(group)
 
@@ -3854,22 +3896,98 @@ class EICWindow(QWidget):
                 item.setData(Qt.ItemDataRole.UserRole, -1)
             self.rt_sample_table.setItem(row_idx, 6, item)
 
+            # Col 7: Asymmetry at FWHM — proportional bar
+            if fwhm_asymmetry is not None:
+                item = NumericTableWidgetItem(f"{fwhm_asymmetry:.4f}")
+                item.setData(Qt.ItemDataRole.UserRole, fwhm_asymmetry)
+                frac = (fwhm_asymmetry / asym_max) if asym_max > 0 else 0.0
+                item.setData(BarDelegate.BAR_FRAC_ROLE, frac)
+                if grp_color:
+                    item.setData(BarDelegate.BAR_COLOR_ROLE, QColor(grp_color))
+            else:
+                item = QTableWidgetItem("N/A")
+                item.setData(Qt.ItemDataRole.UserRole, -1)
+            self.rt_sample_table.setItem(row_idx, 7, item)
+
+            # Cols 8–9: FW10% Left/Right RT positions — centred bar
+            for col_idx, val in enumerate([fw10_left, fw10_right], start=8):
+                if val is not None:
+                    item = NumericTableWidgetItem(f"{val:.4f}")
+                    item.setData(Qt.ItemDataRole.UserRole, val)
+                    item.setData(CenteredBarDelegate.PPM_DEVIATION_ROLE, val - ref_rt)
+                    item.setData(CenteredBarDelegate.PPM_RANGE_ROLE, rt_range)
+                else:
+                    item = QTableWidgetItem("N/A")
+                    item.setData(Qt.ItemDataRole.UserRole, -1)
+                self.rt_sample_table.setItem(row_idx, col_idx, item)
+
+            # Col 10: Asymmetry at FW10% — proportional bar
+            if fw10_asymmetry is not None:
+                item = NumericTableWidgetItem(f"{fw10_asymmetry:.4f}")
+                item.setData(Qt.ItemDataRole.UserRole, fw10_asymmetry)
+                frac = (fw10_asymmetry / asym_max) if asym_max > 0 else 0.0
+                item.setData(BarDelegate.BAR_FRAC_ROLE, frac)
+                if grp_color:
+                    item.setData(BarDelegate.BAR_COLOR_ROLE, QColor(grp_color))
+            else:
+                item = QTableWidgetItem("N/A")
+                item.setData(Qt.ItemDataRole.UserRole, -1)
+            self.rt_sample_table.setItem(row_idx, 10, item)
+
+            # Col 11: Apex Intensity — proportional bar
+            if apex_intensity is not None:
+                item = NumericTableWidgetItem(f"{apex_intensity:.4g}")
+                item.setData(Qt.ItemDataRole.UserRole, apex_intensity)
+                frac = (apex_intensity / apex_intensity_max) if apex_intensity_max > 0 else 0.0
+                item.setData(BarDelegate.BAR_FRAC_ROLE, frac)
+                if grp_color:
+                    item.setData(BarDelegate.BAR_COLOR_ROLE, QColor(grp_color))
+            else:
+                item = QTableWidgetItem("N/A")
+                item.setData(Qt.ItemDataRole.UserRole, -1)
+            self.rt_sample_table.setItem(row_idx, 11, item)
+
         self.rt_sample_table.setSortingEnabled(True)
         self.rt_sample_table.resizeColumnsToContents()
 
         # --- Per-group aggregation ---
         group_data: dict = {}
-        for group, _, _acq, apex_rt, _fl, _fr, fwhm_width in sample_rows:
-            entry = group_data.setdefault(group, {"apex": [], "fwhm": []})
+        for (
+            group,
+            _,
+            _acq,
+            apex_rt,
+            _fl,
+            _fr,
+            fwhm_width,
+            fwhm_asymmetry,
+            fw10_left,
+            fw10_right,
+            fw10_asymmetry,
+            apex_intensity,
+        ) in sample_rows:
+            entry = group_data.setdefault(group, {"apex": [], "fwhm": [], "fwhm_asym": [], "fw10_width": [], "fw10_asym": [], "apex_intensity": []})
             if apex_rt is not None:
                 entry["apex"].append(apex_rt)
             if fwhm_width is not None:
                 entry["fwhm"].append(fwhm_width)
+            if fwhm_asymmetry is not None:
+                entry["fwhm_asym"].append(fwhm_asymmetry)
+            if fw10_left is not None and fw10_right is not None:
+                entry["fw10_width"].append(fw10_right - fw10_left)
+            if fw10_asymmetry is not None:
+                entry["fw10_asym"].append(fw10_asymmetry)
+            if apex_intensity is not None:
+                entry["apex_intensity"].append(apex_intensity)
 
         group_rows = []
         for grp, vals in group_data.items():
             a = np.array(vals["apex"]) if vals["apex"] else np.array([])
             f = np.array(vals["fwhm"]) if vals["fwhm"] else np.array([])
+            fa = np.array(vals["fwhm_asym"]) if vals["fwhm_asym"] else np.array([])
+            f10w = np.array(vals["fw10_width"]) if vals["fw10_width"] else np.array([])
+            f10a = np.array(vals["fw10_asym"]) if vals["fw10_asym"] else np.array([])
+            ai = np.array(vals["apex_intensity"]) if vals["apex_intensity"] else np.array([])
             group_rows.append(
                 {
                     "group": grp,
@@ -3879,6 +3997,14 @@ class EICWindow(QWidget):
                     "std_fwhm": float(np.std(f, ddof=1)) if len(f) > 1 else (0.0 if len(f) == 1 else None),
                     "min_fwhm": float(np.min(f)) if len(f) > 0 else None,
                     "max_fwhm": float(np.max(f)) if len(f) > 0 else None,
+                    "mean_fwhm_asym": float(np.mean(fa)) if len(fa) > 0 else None,
+                    "std_fwhm_asym": float(np.std(fa, ddof=1)) if len(fa) > 1 else (0.0 if len(fa) == 1 else None),
+                    "mean_fw10_width": float(np.mean(f10w)) if len(f10w) > 0 else None,
+                    "std_fw10_width": float(np.std(f10w, ddof=1)) if len(f10w) > 1 else (0.0 if len(f10w) == 1 else None),
+                    "mean_fw10_asym": float(np.mean(f10a)) if len(f10a) > 0 else None,
+                    "std_fw10_asym": float(np.std(f10a, ddof=1)) if len(f10a) > 1 else (0.0 if len(f10a) == 1 else None),
+                    "mean_apex_intensity": float(np.mean(ai)) if len(ai) > 0 else None,
+                    "std_apex_intensity": float(np.std(ai, ddof=1)) if len(ai) > 1 else (0.0 if len(ai) == 1 else None),
                 }
             )
         group_rows.sort(key=lambda x: natsort_key(x["group"]))
@@ -3892,9 +4018,19 @@ class EICWindow(QWidget):
             "std_fwhm",
             "min_fwhm",
             "max_fwhm",
+            "mean_fwhm_asym",
+            "std_fwhm_asym",
+            "mean_fw10_width",
+            "std_fw10_width",
+            "mean_fw10_asym",
+            "std_fw10_asym",
+            "mean_apex_intensity",
+            "std_apex_intensity",
         ]
         grp_col_maxima = {}
-        for key in ["std_apex", "mean_fwhm", "std_fwhm", "min_fwhm", "max_fwhm"]:
+        for key in grp_col_keys:
+            if key == "mean_apex":
+                continue
             vals = [r[key] for r in group_rows if r[key] is not None]
             grp_col_maxima[key] = max(vals) if vals else 1.0
 
@@ -5462,6 +5598,61 @@ class EICWindow(QWidget):
             lines.append(f"{col_name} = c({', '.join(values)})")
         QApplication.clipboard().setText(f"data.frame(\n  {',\n  '.join(lines)}\n)")
 
+    @staticmethod
+    def _find_peak_width_at_height(win_rt, win_int, apex_idx, height_fraction):
+        """Find the left/right RT positions where the peak crosses a given
+        fraction of the apex intensity (e.g. 0.5 for FWHM, 0.1 for FW10%).
+
+        ``win_rt``/``win_int`` are the RT/intensity arrays confined to the
+        integration window, ``apex_idx`` is the index of the apex within
+        those arrays. Crossings are linearly interpolated between the two
+        surrounding data points; if no crossing is found the window boundary
+        is returned (clamped).
+        """
+        apex_intensity = win_int[apex_idx]
+        threshold = apex_intensity * height_fraction
+
+        left = None
+        for i in range(apex_idx - 1, -1, -1):
+            if win_int[i] <= threshold:
+                dI = win_int[i + 1] - win_int[i]
+                if dI != 0:
+                    left = win_rt[i] + (threshold - win_int[i]) / dI * (win_rt[i + 1] - win_rt[i])
+                else:
+                    left = win_rt[i]
+                break
+        if left is None:
+            left = win_rt[0]  # clamp to window start
+
+        right = None
+        for i in range(apex_idx + 1, len(win_rt)):
+            if win_int[i] <= threshold:
+                dI = win_int[i] - win_int[i - 1]
+                if dI != 0:
+                    right = win_rt[i - 1] + (threshold - win_int[i - 1]) / dI * (win_rt[i] - win_rt[i - 1])
+                else:
+                    right = win_rt[i]
+                break
+        if right is None:
+            right = win_rt[-1]  # clamp to window end
+
+        return left, right
+
+    @staticmethod
+    def _peak_asymmetry(apex_rt, left_rt, right_rt):
+        """Return the peak asymmetry ratio: (apex - left) / (right - apex).
+
+        A value of 1.0 indicates a symmetric peak; >1 indicates a peak that
+        tails to the right, <1 indicates tailing to the left. Returns
+        ``None`` if any input is missing or the denominator is zero.
+        """
+        if apex_rt is None or left_rt is None or right_rt is None:
+            return None
+        denom = right_rt - apex_rt
+        if denom == 0:
+            return None
+        return (apex_rt - left_rt) / denom
+
     def _calculate_peak_area_with_boundaries(self, rt_array, intensity_array, start_rt, end_rt):
         """
         Calculate peak area using proper numerical integration with boundary handling.
@@ -5812,7 +6003,10 @@ class EICWindow(QWidget):
             return
         name, _formula, _ion_label, start_rt, end_rt, apex_rt, _apex_intensity = fields
         try:
-            self.compound_update_callback(name, start_rt, end_rt, apex_rt, self.adduct, self, update_rt=True, save=save)
+            applied = self.compound_update_callback(name, start_rt, end_rt, apex_rt, self.adduct, self, update_rt=True, save=save, new_comment=self._pending_comment)
+            if applied:
+                self._pending_comment = None
+                self._update_window_title()
         except Exception as exc:
             QMessageBox.critical(self, "Error", f"Failed to update compound list: {exc}")
 
@@ -5830,9 +6024,103 @@ class EICWindow(QWidget):
             return
         name = str(self.compound_data.get("Name", ""))
         try:
-            self.compound_update_callback(name, None, None, None, self.adduct, self, update_rt=False, save=save)
+            applied = self.compound_update_callback(name, None, None, None, self.adduct, self, update_rt=False, save=save, new_comment=self._pending_comment)
+            if applied:
+                self._pending_comment = None
+                self._update_window_title()
         except Exception as exc:
             QMessageBox.critical(self, "Error", f"Failed to update compound list: {exc}")
+
+    def _update_window_title(self) -> None:
+        """Refresh the window title, adding a marker while a comment edit is unsaved."""
+        title = getattr(self, "_base_window_title", self.windowTitle())
+        if self._pending_comment is not None:
+            title += "  [comment unsaved]"
+        self.setWindowTitle(title)
+
+    def _show_comment_dialog(self, prefill_text: str | None = None) -> None:
+        """Show a dialog to add/modify the compound's Comment field.
+
+        If *prefill_text* is given it is shown instead of the current comment
+        (used by the Ctrl+I flow, which appends the clicked intensity first).
+        The edited text is only staged locally — it is not written to the
+        compound list until the user saves the compound information (e.g. via
+        "Set information in compound list" or Ctrl+S).
+        """
+        if self.compound_update_callback is None:
+            QMessageBox.information(
+                self,
+                "Not available",
+                "Updating the compound list is only available for EIC windows opened from the compound list.",
+            )
+            return
+
+        current_comment = str(self.compound_data.get("Comment", "") or "")
+        initial_text = prefill_text if prefill_text is not None else current_comment
+        name = str(self.compound_data.get("Name", ""))
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Add/Modify Comment")
+        dialog.resize(420, 260)
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(QLabel(f"Comment for '{name}':"))
+        text_edit = QTextEdit()
+        text_edit.setPlainText(initial_text)
+        layout.addWidget(text_edit)
+        hint_label = QLabel("This comment will be saved the next time you save the compound information.")
+        hint_label.setStyleSheet("color: #666; font-style: italic;")
+        layout.addWidget(hint_label)
+        button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        button_box.accepted.connect(dialog.accept)
+        button_box.rejected.connect(dialog.reject)
+        layout.addWidget(button_box)
+
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        new_text = text_edit.toPlainText()
+        if new_text == current_comment:
+            return  # Nothing changed - do not stage anything
+
+        # Stage the change locally; it is applied together with the next
+        # compound-list save (see _set_peak_information_in_compound_list /
+        # _add_as_common_adduct).
+        self._pending_comment = new_text
+        self.compound_data["Comment"] = new_text
+        self._update_window_title()
+
+    def _set_click_intensity_as_compound_intensity(self, intensity_value: float) -> None:
+        """Append the clicked intensity value (with the current adduct) to the compound's
+        Comment field, then show the comment dialog so the user can review/adjust it
+        before it is staged for saving.
+        """
+        if self.compound_update_callback is None:
+            QMessageBox.information(
+                self,
+                "Not available",
+                "Updating the compound list is only available for EIC windows opened from the compound list.",
+            )
+            return
+        current_comment = str(self.compound_data.get("Comment", "") or "")
+        adduct_label = str(self.adduct or "Unknown")
+        appended_text = f"{current_comment}Intensity {adduct_label}: {float(intensity_value):.6g}; "
+        self._show_comment_dialog(prefill_text=appended_text)
+
+    def _set_click_intensity_as_compound_intensity_at_cursor(self) -> None:
+        """Ctrl+I handler: use the intensity value under the current mouse cursor
+        position on the main chart."""
+        chart_view = self.chart_view
+        cursor_pos = chart_view.mapFromGlobal(QCursor.pos())
+        plot_area = chart_view.chart().plotArea()
+        if not plot_area.contains(QPointF(cursor_pos)):
+            QMessageBox.information(
+                self,
+                "Not available",
+                "Move the mouse over the EIC plot before using Ctrl+I.",
+            )
+            return
+        _rt_value, intensity_value = chart_view._position_to_data(QPointF(cursor_pos))
+        self._set_click_intensity_as_compound_intensity(intensity_value)
 
     def _is_real_adduct(self) -> bool:
         """Return True when the current adduct is a genuine adduct (not 'Unknown'/custom m/z)."""
@@ -6257,6 +6545,7 @@ class EICWindow(QWidget):
             self.eic_method_combo.currentText(),
             self.adduct,  # Pass adduct for polarity determination
             polarity=self.polarity,
+            parallel_tasks=self.defaults.get("parallel_tasks", 4),
         )
 
         self.extraction_worker.progress.connect(self._extraction_progress.setValue)
@@ -6713,6 +7002,17 @@ class EICWindow(QWidget):
 
         # Clear existing series
         self.chart.removeAllSeries()
+
+        # removeAllSeries() destroys the underlying C++ objects for every series
+        # that was attached to the chart (including decorative ones we keep our
+        # own Python-side references to). Reset those cached references now so
+        # later redraw helpers (_draw_rt_min_line, _draw_baseline_series,
+        # _restore_peak_boundary_lines) don't try to call removeSeries() on an
+        # already-deleted QLineSeries/QScatterSeries.
+        self.rt_min_line = None
+        self.baseline_series = None
+        self.baseline_scatter_series = None
+        self.peak_boundary_lines = []
 
         sep_mode = self._separation_mode()
         separate_groups = sep_mode == "By group"
@@ -8178,6 +8478,16 @@ class EICWindow(QWidget):
                 add_adduct_save_action = QAction("Add as common adduct and save", self)
                 add_adduct_save_action.triggered.connect(lambda: self._add_as_common_adduct(save=True))
                 context_menu.addAction(add_adduct_save_action)
+
+            # Set the clicked intensity value as the compound's intensity (appended to Comment)
+            set_click_intensity_action = QAction("Set click intensity as compound intensity", self)
+            set_click_intensity_action.triggered.connect(lambda: self._set_click_intensity_as_compound_intensity(intensity_value))
+            context_menu.addAction(set_click_intensity_action)
+
+            # Freely add/modify the compound's Comment field
+            edit_comment_action = QAction("Add/Modify comment", self)
+            edit_comment_action.triggered.connect(lambda: self._show_comment_dialog())
+            context_menu.addAction(edit_comment_action)
 
             # Baseline point actions (always available when no extra traces)
             context_menu.addSeparator()

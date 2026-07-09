@@ -112,6 +112,12 @@ class CompoundManager:
         if "Group" not in compounds_data.columns:
             compounds_data["Group"] = None
 
+        # Add Comment column if it doesn't exist (optional, free-text notes field)
+        if "Comment" not in compounds_data.columns:
+            compounds_data["Comment"] = ""
+        else:
+            compounds_data["Comment"] = compounds_data["Comment"].apply(lambda v: "" if pd.isna(v) else str(v))
+
         # Get existing compound names to avoid duplicates
         existing_compounds = set(self.compounds_data["Name"].tolist()) if not self.compounds_data.empty else set()
 

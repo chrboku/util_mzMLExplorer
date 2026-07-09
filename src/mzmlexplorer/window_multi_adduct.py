@@ -2,6 +2,8 @@
 Multi-adduct EIC window for displaying multiple adduct chromatograms
 """
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
@@ -20,6 +22,48 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+
+def extract_eic_for_target(file_manager, files_data, mz_value, polarity, mz_tolerance_ppm, calculation_method):
+    """Extract EIC data (keyed by filename) for a given m/z / polarity across all loaded files.
+
+    Shared helper so both the per-adduct and per-sample widgets, as well as the
+    parallel adduct-extraction pass in ``MultiAdductWindow``, use identical
+    extraction logic.
+    """
+    mz_tolerance_da = (mz_value * mz_tolerance_ppm) / 1e6
+    eic_results = {}
+
+    for idx, file_row in files_data.iterrows():
+        filename = file_row["filename"]
+        file_path = file_row["Filepath"]  # Use capital F as in the file_manager
+
+        try:
+            rt_values, intensity_values = file_manager.extract_eic(
+                filepath=file_path,
+                target_mz=mz_value,
+                mz_tolerance=mz_tolerance_da,
+                rt_start=None,
+                rt_end=None,
+                calculation_method=calculation_method,
+                polarity=polarity,
+            )
+
+            if len(rt_values) > 0 and len(intensity_values) > 0:
+                eic_results[filename] = {
+                    "rt": rt_values,
+                    "intensity": intensity_values,
+                    "metadata": file_row.to_dict(),  # Include all file metadata
+                }
+
+        except Exception as e:
+            print(f"ERROR processing file {filename}: {str(e)}")
+            import traceback
+
+            traceback.print_exc()
+            continue
+
+    return eic_results
 
 
 class ClickableLabel(QLabel):
@@ -52,6 +96,7 @@ class InteractiveEICWidget(QWidget):
         compound_update_callback=None,
         adducts_df=None,
         latest_compound_callback=None,
+        eic_data=None,
     ):
         super().__init__(parent)
         self.compound = compound
@@ -63,6 +108,9 @@ class InteractiveEICWidget(QWidget):
         self.compound_update_callback = compound_update_callback
         self.adducts_df = adducts_df
         self.latest_compound_callback = latest_compound_callback
+        # Optional precomputed EIC data (e.g. extracted in parallel ahead of
+        # widget creation) to avoid re-extracting it synchronously here.
+        self._precomputed_eic_data = eic_data
 
         # Set up the plot
         self.setup_ui()
@@ -156,8 +204,12 @@ class InteractiveEICWidget(QWidget):
             return
 
         try:
-            # Get EIC data for this adduct
-            eic_data = self._extract_eic_data()
+            # Use precomputed EIC data if it was extracted ahead of time
+            # (e.g. in parallel across adducts), otherwise extract it now.
+            if self._precomputed_eic_data is not None:
+                eic_data = self._precomputed_eic_data
+            else:
+                eic_data = self._extract_eic_data()
             self.plot_eic(eic_data)
         except Exception as e:
             print(f"Error loading EIC data for {self.adduct}: {str(e)}")
@@ -171,49 +223,10 @@ class InteractiveEICWidget(QWidget):
         # Use the same ppm→Da conversion as the single EIC window so both
         # visualisations rely on an identical extraction tolerance.
         mz_tolerance_ppm = self.defaults.get("mz_tolerance_ppm", 5.0)
-        mz_tolerance_da = (self.mz_value * mz_tolerance_ppm) / 1e6
-
         calculation_method = self.defaults.get("calculation_method", "Sum of all signals")
-
         files_data = self.file_manager.get_files_data()
-        eic_results = {}
 
-        for idx, file_row in files_data.iterrows():
-            filename = file_row["filename"]
-            file_path = file_row["Filepath"]  # Use capital F as in the file_manager
-
-            try:
-                # Use the file_manager's extract_eic method
-                rt_values, intensity_values = self.file_manager.extract_eic(
-                    filepath=file_path,
-                    target_mz=self.mz_value,
-                    mz_tolerance=mz_tolerance_da,
-                    rt_start=None,
-                    rt_end=None,
-                    calculation_method=calculation_method,
-                    polarity=self.polarity,
-                )
-
-                if len(rt_values) > 0 and len(intensity_values) > 0:
-                    # Check if we have any non-zero intensities
-                    max_intensity = intensity_values.max() if len(intensity_values) > 0 else 0
-                    non_zero_points = np.sum(intensity_values > 0)
-
-                    # Store the data with metadata including group info
-                    eic_results[filename] = {
-                        "rt": rt_values,
-                        "intensity": intensity_values,
-                        "metadata": file_row.to_dict(),  # Include all file metadata
-                    }
-
-            except Exception as e:
-                print(f"ERROR processing file {filename}: {str(e)}")
-                import traceback
-
-                traceback.print_exc()
-                continue
-
-        return eic_results
+        return extract_eic_for_target(self.file_manager, files_data, self.mz_value, self.polarity, mz_tolerance_ppm, calculation_method)
 
     def plot_eic(self, eic_data):
         """Plot EIC data with auto-zoom to compound RT range and intelligent y-scaling"""
@@ -493,6 +506,7 @@ class SampleEICWidget(QWidget):
         file_manager,
         defaults=None,
         parent=None,
+        adduct_results=None,
     ):
         super().__init__(parent)
         self.compound = compound
@@ -501,6 +515,9 @@ class SampleEICWidget(QWidget):
         self.adducts_data = adducts_data  # list of (adduct, mz_value, polarity)
         self.file_manager = file_manager
         self.defaults = defaults or {}
+        # Optional precomputed per-adduct EIC results for this sample (e.g.
+        # extracted in parallel across adducts ahead of widget creation).
+        self._precomputed_adduct_results = adduct_results
 
         self.setup_ui()
         self.load_data()
@@ -564,7 +581,10 @@ class SampleEICWidget(QWidget):
     def load_data(self):
         """Load and plot EIC data for all adducts"""
         try:
-            eic_data = self._extract_eic_data()
+            if self._precomputed_adduct_results is not None:
+                eic_data = self._precomputed_adduct_results
+            else:
+                eic_data = self._extract_eic_data()
             self.plot_eic(eic_data)
         except Exception as e:
             print(f"Error loading sample EIC data for {self.sample_filename}: {str(e)}")
@@ -770,88 +790,60 @@ class MultiAdductWindow(QWidget):
 
         self.setup_ui()
 
-    def _calculate_max_intensity_in_rt_window(self, adduct, mz_value, polarity):
-        """Calculate maximum intensity for an adduct within the compound's RT window"""
+    def _get_rt_window(self):
+        """Return (rt_window_start, rt_window_end) for the compound, or (None, None)."""
+        rt_start = self.compound.get("RT_start_min")
+        rt_end = self.compound.get("RT_end_min")
+        rt_center = self.compound.get("RT_min")
+
+        if rt_start is not None and rt_end is not None:
+            return rt_start, rt_end
+        elif rt_center is not None:
+            return rt_center - 1.0, rt_center + 1.0
+        return None, None
+
+    @staticmethod
+    def _max_intensity_in_window(eic_data, rt_window_start, rt_window_end):
+        """Compute the maximum intensity across all files within an RT window,
+        given already-extracted EIC data (as returned by ``extract_eic_for_target``)."""
+        max_intensity = 0
+        for data in eic_data.values():
+            rt_values = data.get("rt")
+            intensity_values = data.get("intensity")
+            if rt_values is None or len(rt_values) == 0:
+                continue
+            rt_mask = (rt_values >= rt_window_start) & (rt_values <= rt_window_end)
+            if np.any(rt_mask):
+                intensities_in_window = intensity_values[rt_mask]
+                if len(intensities_in_window) > 0:
+                    max_intensity = max(max_intensity, intensities_in_window.max())
+        return max_intensity
+
+    def _process_adduct(self, adduct, mz_value, polarity):
+        """Extract EIC data for one adduct and compute its maximum intensity within
+        the compound's RT window. Safe to run inside a worker thread - only reads
+        from ``file_manager`` and performs no Qt calls."""
         if mz_value is None:
-            return 0
+            return adduct, mz_value, polarity, {}, 0
 
-        try:
-            # Use the same tolerance conversion as the single viewer
-            mz_tolerance_ppm = self.defaults.get("mz_tolerance_ppm", 5.0)
-            mz_tolerance_da = (mz_value * mz_tolerance_ppm) / 1e6
-            calculation_method = self.defaults.get("calculation_method", "Sum of all signals")
+        mz_tolerance_ppm = self.defaults.get("mz_tolerance_ppm", 5.0)
+        calculation_method = self.defaults.get("calculation_method", "Sum of all signals")
+        files_data = self.file_manager.get_files_data()
 
-            # Get compound RT range
-            rt_start = self.compound.get("RT_start_min")
-            rt_end = self.compound.get("RT_end_min")
-            rt_center = self.compound.get("RT_min")
+        eic_data = extract_eic_for_target(self.file_manager, files_data, mz_value, polarity, mz_tolerance_ppm, calculation_method)
 
-            # Determine RT window for intensity calculation
-            if rt_start is not None and rt_end is not None:
-                rt_window_start = rt_start
-                rt_window_end = rt_end
-            elif rt_center is not None:
-                rt_window_start = rt_center - 1.0  # 1 minute around center
-                rt_window_end = rt_center + 1.0
-            else:
-                # No RT info, return 0 (will be sorted last)
-                return 0
+        rt_window_start, rt_window_end = self._get_rt_window()
+        max_intensity = 0
+        if rt_window_start is not None and rt_window_end is not None:
+            max_intensity = self._max_intensity_in_window(eic_data, rt_window_start, rt_window_end)
 
-            max_intensity = 0
-            files_data = self.file_manager.get_files_data()
+            # Fall back to an unfiltered-polarity extraction purely for sorting
+            # purposes if nothing was found in-window with the given polarity.
+            if max_intensity == 0 and polarity is not None:
+                fallback_data = extract_eic_for_target(self.file_manager, files_data, mz_value, None, mz_tolerance_ppm, calculation_method)
+                max_intensity = self._max_intensity_in_window(fallback_data, rt_window_start, rt_window_end)
 
-            for idx, file_row in files_data.iterrows():
-                file_path = file_row["Filepath"]
-
-                try:
-                    # Extract EIC data
-                    rt_values, intensity_values = self.file_manager.extract_eic(
-                        filepath=file_path,
-                        target_mz=mz_value,
-                        mz_tolerance=mz_tolerance_da,
-                        rt_start=None,
-                        rt_end=None,
-                        calculation_method=calculation_method,
-                        polarity=polarity,
-                    )
-
-                    if len(rt_values) > 0 and len(intensity_values) > 0:
-                        # Filter to RT window
-                        rt_mask = (rt_values >= rt_window_start) & (rt_values <= rt_window_end)
-                        if np.any(rt_mask):
-                            intensities_in_window = intensity_values[rt_mask]
-                            if len(intensities_in_window) > 0:
-                                window_max = intensities_in_window.max()
-                                max_intensity = max(max_intensity, window_max)
-
-                    # Try without polarity filter if no data found
-                    if max_intensity == 0 and polarity is not None:
-                        rt_values_no_pol, intensity_values_no_pol = self.file_manager.extract_eic(
-                            filepath=file_path,
-                            target_mz=mz_value,
-                            mz_tolerance=mz_tolerance_da,
-                            rt_start=None,
-                            rt_end=None,
-                            calculation_method=calculation_method,
-                            polarity=None,
-                        )
-
-                        if len(rt_values_no_pol) > 0 and len(intensity_values_no_pol) > 0:
-                            rt_mask = (rt_values_no_pol >= rt_window_start) & (rt_values_no_pol <= rt_window_end)
-                            if np.any(rt_mask):
-                                intensities_in_window = intensity_values_no_pol[rt_mask]
-                                if len(intensities_in_window) > 0:
-                                    window_max = intensities_in_window.max()
-                                    max_intensity = max(max_intensity, window_max)
-
-                except Exception:
-                    continue
-
-            return max_intensity
-
-        except Exception as e:
-            print(f"Error calculating max intensity for {adduct}: {e}")
-            return 0
+        return adduct, mz_value, polarity, eic_data, max_intensity
 
     def setup_ui(self):
         """Setup the window UI"""
@@ -891,12 +883,19 @@ class MultiAdductWindow(QWidget):
         QApplication.processEvents()
 
         adducts_with_intensity = []
-        for idx, (adduct, mz_value, polarity) in enumerate(valid_adducts):
-            progress.setValue(idx)
-            progress.setLabelText(f"Processing adduct {idx + 1}/{total}: {adduct}")
-            QApplication.processEvents()
-            max_intensity = self._calculate_max_intensity_in_rt_window(adduct, mz_value, polarity)
-            adducts_with_intensity.append((adduct, mz_value, polarity, max_intensity))
+        eic_data_by_adduct = {}
+        parallel_tasks = max(1, int(self.defaults.get("parallel_tasks", 4)))
+        completed = 0
+        with ThreadPoolExecutor(max_workers=min(parallel_tasks, max(n_adducts, 1))) as executor:
+            futures = {executor.submit(self._process_adduct, adduct, mz_value, polarity): adduct for adduct, mz_value, polarity in valid_adducts}
+            for future in as_completed(futures):
+                adduct, mz_value, polarity, eic_data, max_intensity = future.result()
+                eic_data_by_adduct[adduct] = eic_data
+                adducts_with_intensity.append((adduct, mz_value, polarity, max_intensity))
+                completed += 1
+                progress.setValue(completed)
+                progress.setLabelText(f"Processed adduct {completed}/{total}: {adduct}")
+                QApplication.processEvents()
 
         progress.setValue(total)
 
@@ -942,6 +941,7 @@ class MultiAdductWindow(QWidget):
                 compound_update_callback=self.compound_update_callback,
                 adducts_df=self.adducts_df,
                 latest_compound_callback=self.latest_compound_callback,
+                eic_data=eic_data_by_adduct.get(adduct),
             )
             eic_widget.setMinimumSize(350, 280)
             eic_widget.setMaximumSize(500, 380)
@@ -983,6 +983,19 @@ class MultiAdductWindow(QWidget):
             s_row = 0
             s_col = 0
 
+            # Reshape the already-extracted per-adduct EIC data into a
+            # per-sample structure so SampleEICWidget doesn't need to
+            # re-extract anything from the mzML files.
+            adduct_mz_lookup = {a: mz for a, mz, _pol in sorted_adducts}
+            eic_data_by_sample = {}
+            for adduct, mz_value, _pol in sorted_adducts:
+                for filename, data in eic_data_by_adduct.get(adduct, {}).items():
+                    eic_data_by_sample.setdefault(filename, {})[adduct] = {
+                        "rt": data["rt"],
+                        "intensity": data["intensity"],
+                        "mz_value": adduct_mz_lookup.get(adduct, mz_value),
+                    }
+
             for _, file_row in files_data.iterrows():
                 filename = file_row["filename"]
                 filepath = file_row["Filepath"]
@@ -995,6 +1008,7 @@ class MultiAdductWindow(QWidget):
                     self.file_manager,
                     self.defaults,
                     self,
+                    adduct_results=eic_data_by_sample.get(filename, {}),
                 )
                 sample_widget.setMinimumSize(350, 280)
                 sample_widget.setMaximumSize(500, 380)

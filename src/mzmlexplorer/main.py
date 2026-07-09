@@ -1188,6 +1188,7 @@ class MzMLExplorerMainWindow(QMainWindow):
                     "Unknown",
                 ],
                 "cas_number": ["58-08-2", "58-55-9", "", "", ""],
+                "Comment": ["", "", "", "", ""],
             }
 
             compounds_template_df = pd.DataFrame(compounds_template_data)
@@ -1220,6 +1221,7 @@ class MzMLExplorerMainWindow(QMainWindow):
                 f"  - Use either 'ChemicalFormula' OR 'Mass' column\n"
                 f"  - 'Common_adducts': Standard adducts (e.g., [M+H]+) or\n"
                 f"    custom m/z values (e.g., [197.1234]+, [255.0987]-)\n"
+                f"  - 'Comment': Optional free-text notes field\n"
                 f"  - 'Adducts' sheet: Defines standard adduct properties\n\n"
                 f"• Files will be sorted by group first, then by filename\n"
                 f"• The table will show filename first, then metadata, then full path\n\n"
@@ -1436,7 +1438,7 @@ class MzMLExplorerMainWindow(QMainWindow):
 
             # Add group header as a top-level item
             group_item = QTreeWidgetItem(self.compounds_table)
-            group_item.setText(0, group_name)
+            group_item.setText(0, f"{group_name}  ({len(compound_indices)})")
             group_item.setFont(0, QFont("", -1, QFont.Weight.Bold))
             group_item.setBackground(0, QColor(230, 230, 230))
             group_item.setBackground(1, QColor(230, 230, 230))
@@ -1456,7 +1458,7 @@ class MzMLExplorerMainWindow(QMainWindow):
         if ungrouped_compounds:
             # Add empty group header for ungrouped compounds
             group_item = QTreeWidgetItem(self.compounds_table)
-            group_item.setText(0, " - no group")
+            group_item.setText(0, f" - no group  ({len(ungrouped_compounds)})")
             group_item.setFont(0, QFont("", -1, QFont.Weight.Bold))
             group_item.setBackground(0, QColor(245, 245, 245))
             group_item.setBackground(1, QColor(245, 245, 245))
@@ -2178,11 +2180,17 @@ class MzMLExplorerMainWindow(QMainWindow):
 
         return eic_window
 
-    def show_multi_adduct_window(self, compound, show_predefined_only=True):
-        """Show multi-adduct EIC window"""
+    def show_multi_adduct_window(self, compound, show_predefined_only=True, silent=False):
+        """Show multi-adduct EIC window.
+
+        Returns ``True`` if a window was opened, ``False`` otherwise. When
+        ``silent`` is ``True``, informational/error dialogs are suppressed
+        (used when opening multi-adduct windows in bulk for many compounds).
+        """
         if self.file_manager.get_files_data().empty:
-            QMessageBox.warning(self, "Warning", "No files loaded!")
-            return
+            if not silent:
+                QMessageBox.warning(self, "Warning", "No files loaded!")
+            return False
 
         try:
             compound_name = compound["Name"]
@@ -2229,8 +2237,9 @@ class MzMLExplorerMainWindow(QMainWindow):
                             adducts_data.append((adduct, mz_value, polarity))
 
             if not adducts_data:
-                QMessageBox.information(self, "Information", "No adducts available for this compound.")
-                return
+                if not silent:
+                    QMessageBox.information(self, "Information", "No adducts available for this compound.")
+                return False
 
             # Create multi-adduct window
             multi_window = MultiAdductWindow(
@@ -2268,11 +2277,15 @@ class MzMLExplorerMainWindow(QMainWindow):
                 wtype="MultiAdduct",
             )
 
+            return True
+
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to create multi-adduct window: {str(e)}\n{traceback.format_exc()}")
+            if not silent:
+                QMessageBox.critical(self, "Error", f"Failed to create multi-adduct window: {str(e)}\n{traceback.format_exc()}")
             import traceback
 
             traceback.print_exc()
+            return False
 
     def filter_compounds(self):
         """Filter compounds based on the filter text"""
@@ -2539,24 +2552,29 @@ class MzMLExplorerMainWindow(QMainWindow):
             return None
         return compounds.loc[compounds.index[mask][0]].to_dict()
 
-    def _update_compound_from_eic(self, compound_name, rt_start, rt_end, rt_apex, adduct, dialog_parent=None, update_rt=True, save=False):
-        """Update a compound in the list with peak RT boundaries / apex and/or an adduct.
+    def _update_compound_from_eic(self, compound_name, rt_start, rt_end, rt_apex, adduct, dialog_parent=None, update_rt=True, save=False, new_comment=None):
+        """Update a compound in the list with peak RT boundaries / apex, an adduct, and/or a comment.
 
         Shows a summary dialog of the proposed changes and applies them on confirmation.
         When *update_rt* is False only the adduct is added (RT is left untouched).
         When *save* is True the compound list is also written back to its source file.
+        When *new_comment* is given (and differs from the compound's current comment) it
+        is also applied and shown in the confirmation summary.
         Called from an EIC window via its compound_update_callback.
+
+        Returns True if the changes were applied, False otherwise (so the caller can
+        keep an unsaved comment edit staged for the next attempt).
         """
         parent = dialog_parent if dialog_parent is not None else self
         compounds = self.compound_manager.compounds_data
         if compounds.empty or "Name" not in compounds.columns:
             QMessageBox.warning(parent, "Compound not found", "No compound list is loaded.")
-            return
+            return False
 
         mask = compounds["Name"] == compound_name
         if not mask.any():
             QMessageBox.warning(parent, "Compound not found", f"'{compound_name}' is not in the compound list.")
-            return
+            return False
 
         idx = compounds.index[mask][0]
         row = compounds.loc[idx]
@@ -2583,10 +2601,21 @@ class MzMLExplorerMainWindow(QMainWindow):
         elif adduct_str and adduct_str in current_adducts:
             changes.append(f"Adduct '{adduct_str}' already in common adducts")
 
+        # Determine whether the comment needs to be updated
+        current_comment = row.get("Comment")
+        if current_comment is None or (isinstance(current_comment, float) and pd.isna(current_comment)):
+            current_comment = ""
+        else:
+            current_comment = str(current_comment)
+        update_comment = new_comment is not None and new_comment != current_comment
+        if update_comment:
+            preview = new_comment if len(new_comment) <= 80 else new_comment[:77] + "..."
+            changes.append(f'Comment: "{preview}"')
+
         # Nothing meaningful to do (e.g. adduct-only update but adduct already present)
-        if not update_rt and not add_adduct:
+        if not update_rt and not add_adduct and not update_comment:
             QMessageBox.information(parent, "Nothing to update", f"Adduct '{adduct_str}' is already a common adduct of '{compound_name}'.")
-            return
+            return False
 
         title = "Update compound list and save" if save else "Update compound list"
         summary = "\n".join(f"• {c}" for c in changes)
@@ -2598,7 +2627,7 @@ class MzMLExplorerMainWindow(QMainWindow):
             QMessageBox.StandardButton.No,
         )
         if reply != QMessageBox.StandardButton.Yes:
-            return
+            return False
 
         # Apply the changes
         if update_rt:
@@ -2612,6 +2641,10 @@ class MzMLExplorerMainWindow(QMainWindow):
         if add_adduct:
             new_adducts = current_adducts + [adduct_str]
             self.compound_manager.compounds_data.at[idx, "Common_adducts"] = new_adducts
+        if update_comment:
+            if "Comment" not in self.compound_manager.compounds_data.columns:
+                self.compound_manager.compounds_data["Comment"] = ""
+            self.compound_manager.compounds_data.at[idx, "Comment"] = new_comment
 
         # Recalculate m/z values and refresh the compound table
         try:
@@ -2632,6 +2665,8 @@ class MzMLExplorerMainWindow(QMainWindow):
             self.raise_()
             self.activateWindow()
             self.statusBar().showMessage(f"Updated compound '{compound_name}' from EIC peak.")
+
+        return True
 
     def _save_compounds_to_file(self, parent=None) -> bool:
         """Write the current compound list back to its loaded source file.
@@ -2804,6 +2839,86 @@ class MzMLExplorerMainWindow(QMainWindow):
             more = ", …" if len(skipped) > 20 else ""
             message += f"\n\nSkipped {len(skipped)} compound(s) without a usable primary common adduct:\n{shown}{more}"
         QMessageBox.information(self, "Open Group EICs", message)
+
+    def open_all_compounds_multi_eic(self):
+        """Open a multi-adduct EIC window for every loaded compound.
+
+        Reports a summary once every window has been opened.
+        """
+        compounds_df = self.compound_manager.compounds_data
+        if compounds_df is None or compounds_df.empty:
+            QMessageBox.information(self, "No Compounds", "No compound list is loaded.")
+            return
+        if self.file_manager.get_files_data().empty:
+            QMessageBox.warning(self, "Warning", "No files loaded!")
+            return
+
+        opened = 0
+        skipped = []
+        for _, row in compounds_df.iterrows():
+            compound = row.to_dict()
+            compound_name = str(compound.get("Name", "")).strip()
+            if not compound_name:
+                continue
+
+            if self.show_multi_adduct_window(compound, show_predefined_only=False, silent=True):
+                opened += 1
+            else:
+                skipped.append(compound_name)
+
+        message = f"Opened {opened} multi-adduct EIC window(s)."
+        if skipped:
+            shown = ", ".join(skipped[:20])
+            more = ", …" if len(skipped) > 20 else ""
+            message += f"\n\nSkipped {len(skipped)} compound(s) without usable adducts:\n{shown}{more}"
+        QMessageBox.information(self, "Open All Compounds — Multi-EIC", message)
+
+    def open_all_eics_current_group_multi(self):
+        """Open a multi-adduct EIC window for every compound that shares a
+        group with the currently selected compound.
+        """
+        item = self.compounds_table.currentItem()
+        compound_data = item.data(0, Qt.ItemDataRole.UserRole) if item is not None else None
+        if not compound_data:
+            QMessageBox.information(self, "No Selection", "Please select a compound (not a group header) in the compound list first.")
+            return
+
+        selected_groups = self._parse_compound_groups(compound_data.get("Group", ""))
+        if not selected_groups:
+            QMessageBox.information(self, "No Group", f"'{compound_data.get('Name', '?')}' is not assigned to a group.")
+            return
+        target_group = selected_groups[0]
+
+        if self.file_manager.get_files_data().empty:
+            QMessageBox.warning(self, "Warning", "No files loaded!")
+            return
+
+        compounds_df = self.compound_manager.compounds_data
+        if compounds_df is None or compounds_df.empty:
+            QMessageBox.information(self, "No Compounds", "No compound list is loaded.")
+            return
+
+        opened = 0
+        skipped = []
+        for _, row in compounds_df.iterrows():
+            compound = row.to_dict()
+            compound_name = str(compound.get("Name", "")).strip()
+            if not compound_name:
+                continue
+            if target_group not in self._parse_compound_groups(compound.get("Group", "")):
+                continue
+
+            if self.show_multi_adduct_window(compound, show_predefined_only=False, silent=True):
+                opened += 1
+            else:
+                skipped.append(compound_name)
+
+        message = f"Opened {opened} multi-adduct EIC window(s) for compounds in group '{target_group}'."
+        if skipped:
+            shown = ", ".join(skipped[:20])
+            more = ", …" if len(skipped) > 20 else ""
+            message += f"\n\nSkipped {len(skipped)} compound(s) without usable adducts:\n{shown}{more}"
+        QMessageBox.information(self, "Open Group Multi-EICs", message)
 
     def _open_spectrum_comparator(self):
         """Open an empty Spectrum Comparator window."""
@@ -3020,6 +3135,16 @@ class MzMLExplorerMainWindow(QMainWindow):
         open_group_action.setToolTip("Open a separate single-EIC window for every compound sharing a group with the currently selected compound")
         open_group_action.triggered.connect(self.open_all_eics_current_group)
         tools_menu.addAction(open_group_action)
+
+        open_all_primary_multi_action = QAction("Open all compounds with multi-EIC view", self)
+        open_all_primary_multi_action.setToolTip("Open a multi-adduct EIC window for every compound")
+        open_all_primary_multi_action.triggered.connect(self.open_all_compounds_multi_eic)
+        tools_menu.addAction(open_all_primary_multi_action)
+
+        open_group_multi_action = QAction("Open all multi-EICs of current group", self)
+        open_group_multi_action.setToolTip("Open a multi-adduct EIC window for every compound sharing a group with the currently selected compound")
+        open_group_multi_action.triggered.connect(self.open_all_eics_current_group_multi)
+        tools_menu.addAction(open_group_multi_action)
 
         # Help menu
         help_menu = menubar.addMenu("Help")
@@ -3383,6 +3508,10 @@ class MzMLExplorerMainWindow(QMainWindow):
         # Apply memory settings to file manager
         self.file_manager.set_memory_mode(self.memory_settings["keep_in_memory"], auto_load=True)
 
+        # Expose the parallel worker count via eic_defaults so EIC/multi-adduct
+        # windows (which only receive the `defaults` dict) can use it too.
+        self.eic_defaults["parallel_tasks"] = self.memory_settings["parallel_tasks"]
+
     def save_eic_defaults(self):
         """Save EIC window default settings"""
         self.settings.setValue("eic/mz_tolerance_ppm", self.eic_defaults["mz_tolerance_ppm"])
@@ -3548,6 +3677,7 @@ class MzMLExplorerMainWindow(QMainWindow):
             new_eic, new_mem = dialog.get_values()
             self.eic_defaults.update(new_eic)
             self.memory_settings.update(new_mem)
+            self.eic_defaults["parallel_tasks"] = self.memory_settings["parallel_tasks"]
             self.save_eic_defaults()
             self.save_memory_settings()
 

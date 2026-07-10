@@ -1827,12 +1827,107 @@ class MzMLExplorerMainWindow(QMainWindow):
         if menu.actions():
             menu.addSeparator()
 
+        duplicate_action = QAction("Duplicate compound…", self)
+        duplicate_action.setToolTip("Replace this compound with two new named entries (e.g. to split one entry into two chromatographic peaks)")
+        duplicate_action.triggered.connect(lambda checked, c=compound_data: self._duplicate_compound(c))
+        menu.addAction(duplicate_action)
+        menu.addSeparator()
+
         # Add multi-adduct options
         self._add_multi_adduct_actions(menu, compound_data, adducts_info, can_calculate)
 
         # Show menu at cursor position
         if menu.actions():
             menu.exec(self.compounds_table.mapToGlobal(position))
+
+    def _duplicate_compound(self, compound_data):
+        """Duplicate a compound into two new named entries.
+
+        Shows a dialog pre-filled with " - peak A" / " - peak B" suffixed
+        names, letting the user edit them. On acceptance (after validating
+        that the two names differ and don't already exist in the compound
+        list) the original row is replaced by two new rows - directly
+        underneath each other - in the compound list, which is then saved
+        back to the source file. Retention times and adducts are copied
+        unchanged from the original.
+        """
+        compound_name = compound_data["Name"]
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"Duplicate '{compound_name}'")
+        dlg.setMinimumWidth(420)
+        layout = QVBoxLayout(dlg)
+
+        info_lbl = QLabel(f"Replace <b>{compound_name}</b> with two new compounds.<br>Edit the names for the two new entries below.")
+        info_lbl.setWordWrap(True)
+        layout.addWidget(info_lbl)
+
+        form = QFormLayout()
+        name_a_edit = QLineEdit(f"{compound_name} - peak A")
+        name_b_edit = QLineEdit(f"{compound_name} - peak B")
+        form.addRow("Name (peak A):", name_a_edit)
+        form.addRow("Name (peak B):", name_b_edit)
+        layout.addLayout(form)
+
+        from PyQt6.QtWidgets import QDialogButtonBox
+
+        btn_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        layout.addWidget(btn_box)
+
+        def _on_accept():
+            name_a = name_a_edit.text().strip()
+            name_b = name_b_edit.text().strip()
+
+            if not name_a or not name_b:
+                QMessageBox.warning(dlg, "Invalid name", "Both names must be non-empty.")
+                return
+            if name_a == name_b:
+                QMessageBox.warning(dlg, "Invalid name", "The two names must be different from each other.")
+                return
+
+            existing_names = set(self.compound_manager.get_compounds_data()["Name"].tolist())
+            conflicts = [n for n in (name_a, name_b) if n in existing_names]
+            if conflicts:
+                QMessageBox.warning(
+                    dlg,
+                    "Name already exists",
+                    "The following name(s) already exist in the compound list:\n" + "\n".join(conflicts),
+                )
+                return
+
+            dlg.accept()
+
+        btn_box.accepted.connect(_on_accept)
+        btn_box.rejected.connect(dlg.reject)
+
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        name_a = name_a_edit.text().strip()
+        name_b = name_b_edit.text().strip()
+
+        if not self.compound_manager.duplicate_compound(compound_name, name_a, name_b):
+            QMessageBox.critical(self, "Error", f"Could not duplicate compound '{compound_name}'.")
+            return
+
+        self.update_compounds_table()
+
+        saved = self._save_compounds_to_file(parent=self)
+
+        if saved:
+            self.statusBar().showMessage(f"Duplicated '{compound_name}' into '{name_a}' and '{name_b}', saved to file.")
+        else:
+            self.statusBar().showMessage(f"Duplicated '{compound_name}' into '{name_a}' and '{name_b}' (file not saved).")
+
+        QMessageBox.information(
+            self,
+            "Compound duplicated",
+            f"Compound '{compound_name}' has been replaced by:\n"
+            f"  \u2022 {name_a}\n"
+            f"  \u2022 {name_b}\n\n"
+            + ("The compound file has been saved.\n\n" if saved else "The compound file could not be saved automatically.\n\n")
+            + "Note: the retention times and adducts of the new entries were copied unchanged from the original compound and have not been modified.",
+        )
 
     def _add_adduct_action(self, menu, compound_data, adduct, specified=True):
         """Add an adduct action to the context menu"""
@@ -3135,6 +3230,8 @@ class MzMLExplorerMainWindow(QMainWindow):
         open_group_action.setToolTip("Open a separate single-EIC window for every compound sharing a group with the currently selected compound")
         open_group_action.triggered.connect(self.open_all_eics_current_group)
         tools_menu.addAction(open_group_action)
+
+        tools_menu.addSeparator()
 
         open_all_primary_multi_action = QAction("Open all compounds with multi-EIC view", self)
         open_all_primary_multi_action.setToolTip("Open a multi-adduct EIC window for every compound")

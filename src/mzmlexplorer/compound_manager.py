@@ -199,6 +199,58 @@ class CompoundManager:
         # Pre-calculate m/z values for all compound-adduct combinations
         self._precalculate_mz_values()
 
+    def duplicate_compound(self, compound_name: str, new_name_a: str, new_name_b: str) -> bool:
+        """Replace the compound *compound_name* with two new rows.
+
+        The original row is removed and two new rows are inserted directly
+        underneath each other in its place, carrying an exact copy of all
+        other columns (retention times, adducts, formula/mass, group,
+        comment, etc.) unchanged - only ``Name`` is set to *new_name_a* /
+        *new_name_b* respectively.
+
+        Returns True on success, False if *compound_name* was not found.
+        """
+        df = self.compounds_data
+        if df.empty:
+            return False
+
+        matches = df.index[df["Name"] == compound_name].tolist()
+        if not matches:
+            return False
+
+        pos = df.index.get_loc(matches[0])
+
+        original_row = df.iloc[pos].copy()
+        # Deep-copy list-valued columns (e.g. Common_adducts) so the two new
+        # rows don't accidentally share/mutate the same list object.
+        for col, value in original_row.items():
+            if isinstance(value, list):
+                original_row[col] = list(value)
+
+        row_a = original_row.copy()
+        row_a["Name"] = new_name_a
+        for col, value in original_row.items():
+            if isinstance(value, list):
+                row_a[col] = list(value)
+
+        row_b = original_row.copy()
+        row_b["Name"] = new_name_b
+        for col, value in original_row.items():
+            if isinstance(value, list):
+                row_b[col] = list(value)
+
+        new_rows_df = pd.DataFrame([row_a, row_b])
+
+        before = df.iloc[:pos]
+        after = df.iloc[pos + 1 :]
+        self.compounds_data = pd.concat([before, new_rows_df, after], ignore_index=True)
+
+        # Drop the now-removed original compound's pre-calculated adduct data
+        self.compound_adduct_data.pop(compound_name, None)
+
+        self._precalculate_mz_values()
+        return True
+
     def _precalculate_mz_values(self):
         """Pre-calculate m/z values and polarity for all compound-adduct combinations"""
         self.compound_adduct_data = {}  # Dictionary to store pre-calculated data

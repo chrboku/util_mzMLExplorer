@@ -35,5 +35,23 @@ uv run mzmlexplorer
 
 
 
+## Keyboard shortcuts, zooming, etc.
+The single-compound EIC window provides mouse- and keyboard-driven controls for navigating and annotating chromatograms. Left-click-hold and drag anywhere on the plot to pan the view, or right-click-hold and drag the plot area to zoom in/out interactively. Holding **Alt** unlocks two additional zoom modes: **Alt + mouse wheel** steps the x-axis (retention time) range in/out by a fixed increment, and **Alt + left-click-drag** draws a rubber-band selection that zooms directly to the enclosed retention-time range. A plain right-click (without dragging) opens a context menu with further view, trace, and lookup options, while **Ctrl + left-click** are used to set peak-boundary/baseline points and **Ctrl + right-click** is used to set the RT_min marker, respectively. Double-clicking the plot resets the zoom to show the full chromatogram. The table below summarizes these interactions together with the available keyboard shortcuts.
+
+| Action | Interaction |
+| --- | --- |
+| Pan the plot | Left-click-hold and drag |
+| Zoom in/out (free) | Right-click-hold and drag outside the plot area |
+| Zoom the x-axis (retention time) | `Alt` + mouse wheel |
+| Zoom to a selected retention-time range | `Alt` + left-click-drag (rubber-band selection) |
+| Add a peak boundary / baseline point | `Ctrl` + left-click inside the plot |
+| Set the RT_min marker | `Ctrl` + right-click inside the plot |
+| Open the context menu (view, traces, lookups) | Right-click (no drag) inside the plot |
+| Reset the zoom to the full chromatogram | Double-click the plot |
+| Save peak boundaries to the compound list | `Ctrl` + S |
+| Clear integration boundaries and baseline | `Ctrl`+ D |
+| Zoom out to show the entire EIC | `Ctrl`+ E |
+| Set the intensity value under the mouse cursor as the compound intensity | `Ctrl`+ I |
+
 ## License
 This project is licensed under the MIT license (see LICENSE.txt for a full copy of the licensing conditions). 

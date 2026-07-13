@@ -1,12 +1,14 @@
 print("Loading mzmlexplorer...")
 
 import concurrent.futures
+import faulthandler
 import json
 import os
 import re
 import sys
 import traceback
 import unicodedata
+from pathlib import Path
 
 import pandas as pd
 import toml
@@ -61,6 +63,7 @@ from PyQt6.QtWidgets import (
 
 from .compound_import_dialog import (
     CompoundImportDialog,
+    FormulaSmilesMismatchDialog,
     validate_formula_smiles_agreement,
 )
 from .compound_manager import CompoundManager
@@ -75,6 +78,7 @@ from .window_eic import (
     resolve_normalization_mode,
 )
 from .window_msms import USISpectrumComparisonWindow
+from .window_report import CompoundReportWindow, ReportOptionsDialog
 from .window_shared import NoScrollComboBox, NoScrollDoubleSpinBox, NoScrollSpinBox
 from .windows import EICWindow, MultiAdductWindow
 
@@ -758,6 +762,7 @@ class MzMLExplorerMainWindow(QMainWindow):
         self.file_manager = FileManager()
         self.compound_manager = CompoundManager()
         self.eic_windows = []
+        self.report_windows = []
 
         # Window manager — must be created before init_ui so the panel can be
         # embedded in the splitter during UI construction.
@@ -3015,6 +3020,86 @@ class MzMLExplorerMainWindow(QMainWindow):
             message += f"\n\nSkipped {len(skipped)} compound(s) without usable adducts:\n{shown}{more}"
         QMessageBox.information(self, "Open Group Multi-EICs", message)
 
+    def _launch_compound_report(self, compounds: list, dialog_title_suffix: str = "") -> None:
+        """Shared logic to show the report options dialog and open the report window."""
+        if not compounds:
+            QMessageBox.information(self, "No Compounds", "No compounds to report on.")
+            return
+        if self.file_manager.get_files_data().empty:
+            QMessageBox.warning(self, "Warning", "No files loaded!")
+            return
+
+        files_df = self.file_manager.get_files_data()
+        groups = self.file_manager.get_groups()
+        samples = [(row["Filepath"], row["filename"], row["group"]) for _, row in files_df.iterrows()]
+        fallback_choices = self.compound_manager.get_all_available_adducts()
+
+        dialog = ReportOptionsDialog(len(compounds), groups, samples, fallback_choices, parent=self)
+        if dialog_title_suffix:
+            dialog.setWindowTitle(f"Compound Report Options{dialog_title_suffix}")
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        options = dialog.get_result()
+
+        try:
+            print("[compound report] constructing CompoundReportWindow...", flush=True)
+            report_window = CompoundReportWindow(compounds, options, self.compound_manager, self.file_manager, self.eic_defaults, parent=None)
+            print("[compound report] CompoundReportWindow constructed", flush=True)
+        except Exception as e:
+            traceback.print_exc()
+            QMessageBox.critical(self, "Error", f"Failed to generate compound report: {str(e)}\n{traceback.format_exc()}")
+            return
+
+        print("[compound report] showing report window...", flush=True)
+        report_window.show()
+        report_window.raise_()
+        print("[compound report] report window shown", flush=True)
+        self.report_windows.append(report_window)
+
+        def on_window_closed():
+            if report_window in self.report_windows:
+                self.report_windows.remove(report_window)
+
+        report_window.destroyed.connect(on_window_closed)
+
+        self._wm.register_window(
+            report_window,
+            parent_window=self,
+            title="Compound Report",
+            wtype="Report",
+        )
+
+    def generate_compound_report_all(self):
+        """Generate a comprehensive report for all loaded compounds."""
+        compounds_df = self.compound_manager.compounds_data
+        if compounds_df is None or compounds_df.empty:
+            QMessageBox.information(self, "No Compounds", "No compound list is loaded.")
+            return
+        compounds = [row.to_dict() for _, row in compounds_df.iterrows()]
+        self._launch_compound_report(compounds, " — All Compounds")
+
+    def generate_compound_report_current_group(self):
+        """Generate a comprehensive report for compounds sharing a group with the currently selected compound."""
+        item = self.compounds_table.currentItem()
+        compound_data = item.data(0, Qt.ItemDataRole.UserRole) if item is not None else None
+        if not compound_data:
+            QMessageBox.information(self, "No Selection", "Please select a compound (not a group header) in the compound list first.")
+            return
+
+        selected_groups = self._parse_compound_groups(compound_data.get("Group", ""))
+        if not selected_groups:
+            QMessageBox.information(self, "No Group", f"'{compound_data.get('Name', '?')}' is not assigned to a group.")
+            return
+        target_group = selected_groups[0]
+
+        compounds_df = self.compound_manager.compounds_data
+        if compounds_df is None or compounds_df.empty:
+            QMessageBox.information(self, "No Compounds", "No compound list is loaded.")
+            return
+
+        compounds = [row.to_dict() for _, row in compounds_df.iterrows() if target_group in self._parse_compound_groups(row.get("Group", ""))]
+        self._launch_compound_report(compounds, f" — Group '{target_group}'")
+
     def _open_spectrum_comparator(self):
         """Open an empty Spectrum Comparator window."""
         if not hasattr(self, "_comparator_windows"):
@@ -3243,6 +3328,18 @@ class MzMLExplorerMainWindow(QMainWindow):
         open_group_multi_action.triggered.connect(self.open_all_eics_current_group_multi)
         tools_menu.addAction(open_group_multi_action)
 
+        tools_menu.addSeparator()
+
+        report_all_action = QAction("Generate Compound Report (All Compounds)…", self)
+        report_all_action.setToolTip("Generate a comprehensive multi-page report covering all loaded compounds")
+        report_all_action.triggered.connect(self.generate_compound_report_all)
+        tools_menu.addAction(report_all_action)
+
+        report_group_action = QAction("Generate Compound Report (Current Group)…", self)
+        report_group_action.setToolTip("Generate a comprehensive multi-page report for compounds sharing a group with the currently selected compound")
+        report_group_action.triggered.connect(self.generate_compound_report_current_group)
+        tools_menu.addAction(report_group_action)
+
         # Help menu
         help_menu = menubar.addMenu("Help")
 
@@ -3461,15 +3558,9 @@ class MzMLExplorerMainWindow(QMainWindow):
             )
             problematic = validate_formula_smiles_agreement(compounds_df, formula_col, smiles_col, name_col)
             if problematic:
-                names_text = "\n".join(f"  \u2022 {n}" for n in problematic)
-                result = QMessageBox.question(
-                    self,
-                    "Formula/SMILES Mismatch",
-                    f"{len(problematic)} compound(s) have a mismatch between sum formula and SMILES:\n\n{names_text}\n\nDo you want to continue the import anyway?",
-                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                    QMessageBox.StandardButton.No,
-                )
-                if result != QMessageBox.StandardButton.Yes:
+                mismatch_dialog = FormulaSmilesMismatchDialog(problematic, self)
+                mismatch_dialog.exec()
+                if not mismatch_dialog.should_continue():
                     return
 
         # Load compounds
@@ -4267,7 +4358,9 @@ ggplot(peak_data, aes(x = group_name, y = peak_area)) +
                                 cell_colors[(row_pos, target_col)] = "blue"  # indicate canonicalization update
                         else:
                             # Different molecules – mark as conflict
-                            df.at[df_idx, target_col] = f"canonical smiles do not match, available: {existing_str} / {existing_canon} $$$ fetched: {fetched_compare} / {fetched_canon}"
+                            df.at[df_idx, target_col] = (
+                                f"canonical smiles do not match, available: {existing_str} / {existing_canon} $$$ fetched: {fetched_compare} / {fetched_canon}"
+                            )
                             cell_colors[(row_pos, target_col)] = "orange"
 
                     else:
@@ -5008,6 +5101,23 @@ class EICDefaultsDialog(QDialog):
 
 
 def main():
+    # Enable a crash log so that native crashes (e.g. segfaults inside Qt/C++
+    # code, which never reach a Python `except` block and can abort the
+    # process before anything is printed to the console) still leave a trace.
+    log_dir = Path.home() / ".mzmlexplorer"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    crash_log_path = log_dir / "crash.log"
+    crash_log_file = open(crash_log_path, "a", encoding="utf-8")
+    faulthandler.enable(file=crash_log_file, all_threads=True)
+
+    def _log_uncaught_exception(exc_type, exc_value, exc_traceback):
+        traceback.print_exception(exc_type, exc_value, exc_traceback, file=crash_log_file)
+        crash_log_file.flush()
+        traceback.print_exception(exc_type, exc_value, exc_traceback)
+
+    sys.excepthook = _log_uncaught_exception
+    print(f"Crash log (if anything goes wrong): {crash_log_path}")
+
     app = QApplication(sys.argv)
 
     # Set application icon

@@ -199,10 +199,11 @@ QTabBar::tab:hover:!selected {
 }
 
 /* -------------------------------------------------------
-   Tables and trees
+   Tables, trees and lists
 ------------------------------------------------------- */
 QTableWidget,
-QTreeWidget {
+QTreeWidget,
+QListWidget {
     background-color: #ffffff;
     alternate-background-color: #f8f9fa;
     gridline-color: #e8eaed;
@@ -213,13 +214,15 @@ QTreeWidget {
 }
 
 QTableWidget::item,
-QTreeWidget::item {
+QTreeWidget::item,
+QListWidget::item {
     padding: 0px 2px;
     height: 20px;
 }
 
 QTableWidget::item:selected,
-QTreeWidget::item:selected {
+QTreeWidget::item:selected,
+QListWidget::item:selected {
     background-color: #e8f0fe;
     color: #202124;
 }

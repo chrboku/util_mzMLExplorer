@@ -43,8 +43,8 @@ def validate_formula_smiles_agreement(
     the molecular formula from the SMILES.  Both are normalised to base elements
     (isotope-specific keys are stripped) before comparison.
 
-    Returns a list of human-readable labels for every row with a discrepancy or
-    a parse error.
+    Returns a list of dicts (one per discrepancy or parse error) with the keys
+    "row", "name", "formula", "smiles" and "derived_formula".
     """
 
     ft = formulaTools()
@@ -65,7 +65,7 @@ def validate_formula_smiles_agreement(
             continue
 
         # Human-readable row label
-        compound_name = f"Row {idx + 1}"
+        compound_name = ""
         if name_col and name_col in df.columns:
             raw_name = row[name_col]
             if raw_name is not None and not pd.isna(raw_name):
@@ -76,26 +76,136 @@ def validate_formula_smiles_agreement(
             formula_elems = ft.parseFormula(formula_str)
             formula_base = {k: v for k, v in formula_elems.items() if k[0].isalpha()}
         except Exception:
-            problematic.append(f"{compound_name} (invalid formula: {formula_str})")
+            problematic.append(
+                {
+                    "row": idx + 1,
+                    "name": compound_name,
+                    "formula": formula_str,
+                    "smiles": smiles_str,
+                    "derived_formula": "(invalid formula)",
+                }
+            )
             continue
 
         # Derive formula from SMILES via RDKit
         try:
             mol = Chem.MolFromSmiles(smiles_str)
             if mol is None:
-                problematic.append(f"{compound_name} (invalid SMILES)")
+                problematic.append(
+                    {
+                        "row": idx + 1,
+                        "name": compound_name,
+                        "formula": formula_str,
+                        "smiles": smiles_str,
+                        "derived_formula": "(invalid SMILES)",
+                    }
+                )
                 continue
             rdkit_formula_str = rdMolDescriptors.CalcMolFormula(mol)
             rdkit_elems = ft.parseFormula(rdkit_formula_str)
             rdkit_base = {k: v for k, v in rdkit_elems.items() if k[0].isalpha()}
         except Exception:
-            problematic.append(f"{compound_name} (SMILES parsing error)")
+            problematic.append(
+                {
+                    "row": idx + 1,
+                    "name": compound_name,
+                    "formula": formula_str,
+                    "smiles": smiles_str,
+                    "derived_formula": "(SMILES parsing error)",
+                }
+            )
             continue
 
         if formula_base != rdkit_base:
-            problematic.append(compound_name)
+            problematic.append(
+                {
+                    "row": idx + 1,
+                    "name": compound_name,
+                    "formula": formula_str,
+                    "smiles": smiles_str,
+                    "derived_formula": rdkit_formula_str,
+                }
+            )
 
     return problematic
+
+
+class FormulaSmilesMismatchDialog(QDialog):
+    """Dialog showing a table of compounds whose sum formula and SMILES disagree."""
+
+    def __init__(self, problematic: list, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Formula/SMILES Mismatch")
+        self.setModal(True)
+        self._accepted_continue = False
+
+        layout = QVBoxLayout(self)
+
+        info_label = QLabel(f"{len(problematic)} compound(s) have a mismatch between sum formula and SMILES:")
+        layout.addWidget(info_label)
+
+        table = QTableWidget(self)
+        headers = ["Row", "Name", "Formula", "SMILES", "Formula from SMILES"]
+        table.setColumnCount(len(headers))
+        table.setHorizontalHeaderLabels(headers)
+        table.setRowCount(len(problematic))
+        table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        table.verticalHeader().setVisible(False)
+
+        for row_idx, entry in enumerate(problematic):
+            values = [
+                str(entry.get("row", "")),
+                entry.get("name", ""),
+                entry.get("formula", ""),
+                entry.get("smiles", ""),
+                entry.get("derived_formula", ""),
+            ]
+            for col_idx, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                table.setItem(row_idx, col_idx, item)
+
+        header = table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+
+        # Show a maximum of 10 rows before scrolling is required.
+        visible_rows = min(len(problematic), 10)
+        rows_height = table.horizontalHeader().height()
+        for i in range(visible_rows):
+            rows_height += table.rowHeight(i)
+        table.setMinimumHeight(rows_height + 2 * table.frameWidth() + 4)
+        table.setMaximumHeight(rows_height + 2 * table.frameWidth() + 4)
+
+        layout.addWidget(table)
+
+        question_label = QLabel("Do you want to continue the import anyway?")
+        layout.addWidget(question_label)
+
+        button_layout = QHBoxLayout()
+        button_layout.addStretch()
+        yes_btn = QPushButton("Yes")
+        no_btn = QPushButton("No")
+        no_btn.setDefault(True)
+        no_btn.setAutoDefault(True)
+        yes_btn.clicked.connect(self._on_yes)
+        no_btn.clicked.connect(self.reject)
+        button_layout.addWidget(yes_btn)
+        button_layout.addWidget(no_btn)
+        layout.addLayout(button_layout)
+
+        self.resize(800, rows_height + 160)
+
+    def _on_yes(self):
+        self._accepted_continue = True
+        self.accept()
+
+    def should_continue(self) -> bool:
+        """Return True if the user chose to continue the import despite the mismatches."""
+        return self._accepted_continue
 
 
 class CompoundImportDialog(QDialog):
@@ -610,16 +720,9 @@ class CompoundImportDialog(QDialog):
         if formula_col and smiles_col and self.df is not None:
             problematic = self._validate_formula_smiles(formula_col, smiles_col)
             if problematic:
-                names_text = "\n".join(f"  \u2022 {name}" for name in problematic)
-                msg_text = f"{len(problematic)} compound(s) have a mismatch between sum formula and SMILES:\n\n{names_text}\n\nDo you want to continue the import anyway?"
-                result = QMessageBox.question(
-                    self,
-                    "Formula/SMILES Mismatch",
-                    msg_text,
-                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                    QMessageBox.StandardButton.No,
-                )
-                if result != QMessageBox.StandardButton.Yes:
+                mismatch_dialog = FormulaSmilesMismatchDialog(problematic, self)
+                mismatch_dialog.exec()
+                if not mismatch_dialog.should_continue():
                     return  # Keep dialog open so the user can review/cancel
 
         self.accept()

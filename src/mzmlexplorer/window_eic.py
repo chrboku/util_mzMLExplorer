@@ -396,6 +396,12 @@ class InteractiveChartView(QChartView):
         # Check all series for proximity
         for series in self.chart().series():
             if isinstance(series, QLineSeries):
+                # Decorative/annotation lines (e.g. reference bands, peak
+                # boundaries, box-plot whiskers/medians) opt out of this
+                # generic "sample name" hover tooltip so they don't show a
+                # misleading "Unknown Sample" popup.
+                if series.property("no_hover_tooltip"):
+                    continue
                 # Get series data from cache or create it
                 series_id = id(series)
                 if series_id not in self.series_data_cache:

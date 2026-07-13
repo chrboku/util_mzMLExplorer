@@ -4194,7 +4194,7 @@ ggplot(peak_data, aes(x = group_name, y = peak_area)) +
 
                 mol = Chem.MolFromSmiles(smi)
                 if mol:
-                    return Chem.MolToSmiles(mol)
+                    return Chem.MolToSmiles(mol, kekuleSmiles=True, canonical=True)
             except Exception:
                 pass
             return None
@@ -4218,6 +4218,7 @@ ggplot(peak_data, aes(x = group_name, y = peak_area)) +
             ("cas_preferred_name", "CAS_Preferred_Name"),
             ("cas_rn_confirmed", "CAS_RN_Confirmed"),
             ("cas_experimental_properties", "CAS_Experimental_Properties"),
+            ("Kegg_ID", "Kegg_ID"),
         ]
 
         # Ensure all target columns exist in the DataFrame
@@ -4262,13 +4263,17 @@ ggplot(peak_data, aes(x = group_name, y = peak_area)) +
                         if existing_canon and fetched_canon and existing_canon == fetched_canon:
                             # Same molecule – update to PubChem canonical form if text differs
                             if existing_str != fetched_compare:
-                                df.at[df_idx, target_col] = fetched_str
-                                cell_colors[(row_pos, target_col)] = "yellow"
-                            continue  # not a conflict
+                                df.at[df_idx, target_col] = f"canonical smiles match, available: {existing_str} / {existing_canon} $$$ fetched: {fetched_compare} / {fetched_canon}"
+                                cell_colors[(row_pos, target_col)] = "blue"  # indicate canonicalization update
+                        else:
+                            # Different molecules – mark as conflict
+                            df.at[df_idx, target_col] = f"canonical smiles do not match, available: {existing_str} / {existing_canon} $$$ fetched: {fetched_compare} / {fetched_canon}"
+                            cell_colors[(row_pos, target_col)] = "orange"
 
-                    if existing_str != fetched_compare:
-                        df.at[df_idx, target_col] = f"available: {existing_str} $$$ fetched: {fetched_compare}"
-                        cell_colors[(row_pos, target_col)] = "orange"
+                    else:
+                        if existing_str != fetched_compare:
+                            df.at[df_idx, target_col] = f"available: {existing_str} $$$ fetched: {fetched_compare}"
+                            cell_colors[(row_pos, target_col)] = "orange"
                     # exact match: no change, no colour
 
         # Step 6: Ask user where to save the enriched file
@@ -4287,11 +4292,12 @@ ggplot(peak_data, aes(x = group_name, y = peak_area)) +
             self._save_enriched_excel(df, save_path, cell_colors)
             n_yellow = sum(1 for v in cell_colors.values() if v == "yellow")
             n_orange = sum(1 for v in cell_colors.values() if v == "orange")
+            n_blue = sum(1 for v in cell_colors.values() if v == "blue")
             QMessageBox.information(
                 self,
                 "Done",
                 (
-                    f"Enriched compound file saved to:\n{save_path}\n\n  \u2022 {n_yellow} cell(s) with new information (yellow)\n  \u2022 {n_orange} cell(s) with conflicting information (orange)"
+                    f"Enriched compound file saved to:\n{save_path}\n\n  \u2022 {n_yellow} cell(s) with new information (yellow)\n  \u2022 {n_orange} cell(s) with conflicting information (orange)\n  \u2022 {n_blue} cell(s) with canonicalization updates (blue)"
                 ),
             )
         except Exception as e:
@@ -4304,6 +4310,7 @@ ggplot(peak_data, aes(x = group_name, y = peak_area)) +
 
         YELLOW = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
         ORANGE = PatternFill(start_color="FFA500", end_color="FFA500", fill_type="solid")
+        BLUE = PatternFill(start_color="1E90FF", end_color="1E90FF", fill_type="solid")
 
         wb = openpyxl.Workbook()
         ws = wb.active
@@ -4329,6 +4336,8 @@ ggplot(peak_data, aes(x = group_name, y = peak_area)) +
                     cell.fill = YELLOW
                 elif color == "orange":
                     cell.fill = ORANGE
+                elif color == "blue":
+                    cell.fill = BLUE
 
         wb.save(path)
 

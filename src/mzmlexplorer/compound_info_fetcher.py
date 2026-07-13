@@ -149,6 +149,9 @@ def _props_key(cid: int) -> str:
 def _syns_key(cid: int) -> str:
     return f"pubchem:syns:{cid}"
 
+def _ids_key(cid: int) -> str:
+    return f"pubchem:ids:{cid}"
+
 
 # ---------------------------------------------------------------------------
 # Batch property / synonym fetchers
@@ -203,6 +206,36 @@ def _batch_fetch_synonyms(cids: list) -> None:
         for c in chunk:
             if c not in fetched:
                 _cache_set(_syns_key(c), [])
+
+
+def _batch_fetch_identifiers(cids: list) -> None:
+    """Fetch identifiers for *cids* using comma-separated CID requests.
+
+    Results are stored individually under ``pubchem:ids:{cid}``.
+    Requests are chunked at *_BATCH_CHUNK_SIZE* CIDs each.
+    """
+    for i in range(0, len(cids), _BATCH_CHUNK_SIZE):
+        chunk = cids[i : i + _BATCH_CHUNK_SIZE]
+        cid_str = ",".join(str(c) for c in chunk)
+        url = f"{PUBCHEM_BASE_URL}/compound/cid/{cid_str}/identifiers/JSON"
+        data = _http_get_raw(url)
+        time.sleep(REQUEST_DELAY)
+        fetched: set = set()
+        if data and "InformationList" in data:
+            for info in data["InformationList"].get("Information", []):
+                cid = info.get("CID")
+                if cid is not None:
+                    ids = {"KEGG ID": []}
+                    for ii in info.get("Identifiers", []):
+                        if ii["Type"] == "KEGG ID":
+                            ids["KEGG ID"].append(ii.get("Identifier"))
+                    _cache_set(_ids_key(cid), ids)
+                    fetched.add(cid)
+        for c in chunk:
+            if c not in fetched:
+                _cache_set(_ids_key(c), [])
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -332,6 +365,10 @@ def _assemble_result(cid: int, original_cas: Optional[str]) -> dict:
                 if _CAS_PATTERN.match(str(syn)):
                     result["cas_number"] = syn
                     break
+    
+    _, identifiers = _cache_get(_ids_key(cid))
+    if identifiers:
+        result['Kegg_ID'] = "; ".join(identifiers.get("KEGG ID", [])) if identifiers.get("KEGG ID") else None
 
     return result
 
@@ -391,11 +428,14 @@ def fetch_pubchem_info_batch(
     resolved = list(dict.fromkeys(c for c in cids if c is not None))
     needs_props = [c for c in resolved if not _cache_is_fresh(_props_key(c))]
     needs_syns = [c for c in resolved if not _cache_is_fresh(_syns_key(c))]
+    needs_ids = [c for c in resolved if not _cache_is_fresh(_ids_key(c))]
 
     if needs_props:
         _batch_fetch_properties(needs_props)
     if needs_syns:
         _batch_fetch_synonyms(needs_syns)
+    if needs_ids:
+        _batch_fetch_identifiers(needs_ids)
 
     # Step 3 — assemble PubChem results from per-CID cache
     results = [None if cid is None else _assemble_result(cid, cas) for (name, cas), cid in zip(compounds, cids)]

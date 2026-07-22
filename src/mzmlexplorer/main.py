@@ -1868,8 +1868,8 @@ class MzMLExplorerMainWindow(QMainWindow):
         layout.addWidget(info_lbl)
 
         form = QFormLayout()
-        name_a_edit = QLineEdit(f"{compound_name} - peak A")
-        name_b_edit = QLineEdit(f"{compound_name} - peak B")
+        name_a_edit = QLineEdit(f"{compound_name} // Peak 1")
+        name_b_edit = QLineEdit(f"{compound_name} // Peak 2")
         form.addRow("Name (peak A):", name_a_edit)
         form.addRow("Name (peak B):", name_b_edit)
         layout.addLayout(form)

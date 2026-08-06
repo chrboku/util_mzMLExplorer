@@ -19,7 +19,7 @@ from matplotlib.figure import Figure
 from natsort import natsort_keygen, natsorted
 from PyQt6.QtCharts import QChart, QChartView, QLineSeries, QValueAxis
 from PyQt6.QtCore import QMargins, QPointF, QRect, Qt, QThread, pyqtSignal
-from PyQt6.QtGui import QAction, QBrush, QColor, QCursor, QKeySequence, QMouseEvent, QPainter, QPen, QShortcut
+from PyQt6.QtGui import QAction, QBrush, QColor, QCursor, QKeySequence, QMouseEvent, QPainter, QPainterPath, QPen, QShortcut
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -28,6 +28,8 @@ from PyQt6.QtWidgets import (
     QDialogButtonBox,
     QDoubleSpinBox,
     QFormLayout,
+    QGraphicsItemGroup,
+    QGraphicsPathItem,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
@@ -977,8 +979,8 @@ class EICWindow(QWidget):
         self._equalizing_y_widths = False  # Guard against recursive width equalization
 
         # Group name annotation items drawn on the chart scene (cleared/rebuilt on each update_plot)
-        self._group_annotations = []  # QGraphicsSimpleTextItem references
-        self._group_annotation_data = []  # (text_item, x_rt_data) for live repositioning
+        self._group_annotations = []  # QGraphicsItemGroup references
+        self._group_annotation_data = []  # (group, x_rt_data) for live repositioning
 
         # Initialize peak boundary line attributes
         self.peak_boundary_lines = []  # List of QLineSeries for boundary lines
@@ -7364,24 +7366,29 @@ class EICWindow(QWidget):
         if not self._group_annotation_data:
             return
         plot_area = self.chart.plotArea()
-        for text, x_rt in self._group_annotation_data:
+        for annotation_group, x_rt in self._group_annotation_data:
             pos = self.chart.mapToPosition(QPointF(x_rt, 0))
             outside = pos.x() < plot_area.left() or pos.x() > plot_area.right()
-            text.setVisible(not outside)
+            annotation_group.setVisible(not outside)
             if not outside:
-                text_rect = text.boundingRect()
-                text_w = text_rect.width()
-                text_h = text_rect.height()
-                # Centre label on the line; pin the top char near plot_area.top()
-                text.setPos(pos.x() - text_h / 2, plot_area.top() + text_w + 6)
+                group_rect = annotation_group.boundingRect()
+                # Keep the box centred on the reference line, then anchor the
+                # right end of the text just inside the top of the plot.
+                annotation_group.setPos(pos.x() - group_rect.center().x(), 0)
+                right_text_end = QPointF(group_rect.right() - 5, group_rect.center().y())
+                transformed_end = annotation_group.mapToParent(right_text_end)
+                annotation_group.setPos(
+                    annotation_group.pos().x(),
+                    plot_area.top() + transformed_end.y() * 10,
+                )
 
     def _place_group_annotations(self, groups_data):
         """Create rotated group-name labels along the vertical reference lines.
 
-        Items are QGraphicsSimpleTextItem children of the chart, rotated -90°
-        so they read bottom-to-top.  Actual pixel positions are computed by
-        _reposition_group_annotations, which is also connected to
-        rangeChanged / plotAreaChanged so they follow every zoom or pan.
+        Items are rounded label boxes attached to the chart and rotated -45°.
+        Actual pixel positions are computed by _reposition_group_annotations,
+        which is also connected to rangeChanged / plotAreaChanged so they
+        follow every zoom or pan.
         """
         from PyQt6.QtWidgets import QGraphicsSimpleTextItem
 
@@ -7398,22 +7405,43 @@ class EICWindow(QWidget):
         for group_name in sorted_groups:
             x_rt = compound_rt + self.group_shifts.get(group_name, 0.0)
 
-            text = QGraphicsSimpleTextItem(group_name, self.chart)
+            annotation_group = QGraphicsItemGroup(self.chart)
+            text = QGraphicsSimpleTextItem(group_name, annotation_group)
             font = text.font()
             font.setPointSize(8)
             text.setFont(font)
 
             group_color = self._get_group_color(group_name)
-            if group_color:
-                text.setBrush(QBrush(QColor(group_color)))
+            color = QColor(group_color) if group_color else QColor(128, 128, 128)
+            # Use only black or white for the label background, based on contrast.
+            background = QColor(0, 0, 0) if color.lightnessF() > 0.65 else QColor(255, 255, 255)
+            foreground = QColor(255, 255, 255) if background == QColor(0, 0, 0) else QColor(0, 0, 0)
+            text.setBrush(QBrush(foreground))
 
-            # Rotate -90° so the label reads bottom-to-top along the reference line
-            text.setRotation(-90)
+            padding_x = 5
+            padding_y = 2
+            text_rect = text.boundingRect()
+            box_width = text_rect.width() + 2 * padding_x
+            box_height = text_rect.height() + 2 * padding_y
+            box_path = QPainterPath()
+            box_path.addRoundedRect(0, 0, box_width, box_height, 4, 4)
+            box_rect = QGraphicsPathItem(box_path, annotation_group)
+            box_rect.setBrush(QBrush(background))
+            border = QPen(color)
+            border.setWidthF(1.2)
+            box_rect.setPen(border)
+            box_rect.setZValue(0)
+            text.setPos(padding_x, padding_y)
+            text.setZValue(1)
+
+            # Rotate the complete label box by exactly -45 degrees.
+            annotation_group.setTransformOriginPoint(annotation_group.boundingRect().center())
+            annotation_group.setRotation(-30)
             # Render on top of all chart content
-            text.setZValue(10)
+            annotation_group.setZValue(10)
 
-            self._group_annotations.append(text)
-            self._group_annotation_data.append((text, x_rt))
+            self._group_annotations.append(annotation_group)
+            self._group_annotation_data.append((annotation_group, x_rt))
 
         # Connect signals so positions update on every zoom / pan / resize
         self.x_axis.rangeChanged.connect(self._reposition_group_annotations)

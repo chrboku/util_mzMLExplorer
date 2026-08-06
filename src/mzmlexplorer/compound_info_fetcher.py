@@ -149,6 +149,7 @@ def _props_key(cid: int) -> str:
 def _syns_key(cid: int) -> str:
     return f"pubchem:syns:{cid}"
 
+
 def _ids_key(cid: int) -> str:
     return f"pubchem:ids:{cid}"
 
@@ -234,8 +235,6 @@ def _batch_fetch_identifiers(cids: list) -> None:
         for c in chunk:
             if c not in fetched:
                 _cache_set(_ids_key(c), [])
-
-
 
 
 # ---------------------------------------------------------------------------
@@ -365,10 +364,10 @@ def _assemble_result(cid: int, original_cas: Optional[str]) -> dict:
                 if _CAS_PATTERN.match(str(syn)):
                     result["cas_number"] = syn
                     break
-    
+
     _, identifiers = _cache_get(_ids_key(cid))
     if identifiers:
-        result['Kegg_ID'] = "; ".join(identifiers.get("KEGG ID", [])) if identifiers.get("KEGG ID") else None
+        result["Kegg_ID"] = "; ".join(identifiers.get("KEGG ID", [])) if identifiers.get("KEGG ID") else None
 
     return result
 

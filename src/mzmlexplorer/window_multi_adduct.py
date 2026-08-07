@@ -25,7 +25,8 @@ from PyQt6.QtWidgets import (
 
 
 def extract_eic_for_target(file_manager, files_data, mz_value, polarity, mz_tolerance_ppm, calculation_method):
-    """Extract EIC data (keyed by filename) for a given m/z / polarity across all loaded files.
+    """Extract EIC data (keyed by Filepath - the unique identifier; base filenames can
+    collide across groups/folders) for a given m/z / polarity across all loaded files.
 
     Shared helper so both the per-adduct and per-sample widgets, as well as the
     parallel adduct-extraction pass in ``MultiAdductWindow``, use identical
@@ -50,7 +51,7 @@ def extract_eic_for_target(file_manager, files_data, mz_value, polarity, mz_tole
             )
 
             if len(rt_values) > 0 and len(intensity_values) > 0:
-                eic_results[filename] = {
+                eic_results[file_path] = {
                     "rt": rt_values,
                     "intensity": intensity_values,
                     "metadata": file_row.to_dict(),  # Include all file metadata
@@ -250,12 +251,14 @@ class InteractiveEICWidget(QWidget):
 
             # Organize data by groups for consistent coloring
             groups_data = {}
-            for filename, data in eic_data.items():
+            for filepath, data in eic_data.items():
                 metadata = data.get("metadata", {})
                 group = metadata.get("group", "Unknown")
                 if group not in groups_data:
                     groups_data[group] = []
-                groups_data[group].append((filename, data))
+                groups_data[group].append((filepath, data))
+
+            display_names = self.file_manager.get_display_names()
 
             # Plot by groups
             for group_name, group_files in groups_data.items():
@@ -275,16 +278,20 @@ class InteractiveEICWidget(QWidget):
                     # Fallback to a default color if no group color is defined
                     color_rgb = (0.5, 0.5, 0.5, 0.7)
 
-                for filename, data in group_files:
+                for filepath, data in group_files:
                     if len(data["rt"]) > 0 and len(data["intensity"]) > 0:
                         all_rt_values.extend(data["rt"])
+
+                        linewidth = 1
+                        if filepath and self.file_manager.is_compound_spiked(filepath, self.compound.get("Name"), self.compound.get("Group")):
+                            linewidth = 3
 
                         ax.plot(
                             data["rt"],
                             data["intensity"],
-                            label=filename,
+                            label=display_names.get(filepath, filepath),
                             color=color_rgb,
-                            linewidth=1,
+                            linewidth=linewidth,
                         )
                         plots_made += 1
 
@@ -366,7 +373,7 @@ class InteractiveEICWidget(QWidget):
         max_intensity_in_window = 0
         min_intensity_in_window = float("inf")
 
-        for filename, data in eic_data.items():
+        for filepath, data in eic_data.items():
             if len(data["rt"]) > 0 and len(data["intensity"]) > 0:
                 # Filter data to RT window
                 rt_mask = (data["rt"] >= rt_window_start) & (data["rt"] <= rt_window_end)
@@ -645,6 +652,10 @@ class SampleEICWidget(QWidget):
             all_rt_values = []
             plots_made = 0
 
+            linewidth = 1
+            if self.file_manager.is_compound_spiked(self.sample_filepath, self.compound.get("Name"), self.compound.get("Group")):
+                linewidth = 3
+
             for idx, (adduct, data) in enumerate(eic_data.items()):
                 color = base_colors[idx % len(base_colors)]
                 if len(data["rt"]) > 0 and len(data["intensity"]) > 0:
@@ -654,7 +665,7 @@ class SampleEICWidget(QWidget):
                         data["intensity"],
                         label=adduct,
                         color=color,
-                        linewidth=1,
+                        linewidth=linewidth,
                     )
                     plots_made += 1
 
@@ -984,31 +995,31 @@ class MultiAdductWindow(QWidget):
             s_col = 0
 
             # Reshape the already-extracted per-adduct EIC data into a
-            # per-sample structure so SampleEICWidget doesn't need to
-            # re-extract anything from the mzML files.
+            # per-sample structure (keyed by filepath - the unique identifier)
+            # so SampleEICWidget doesn't need to re-extract anything from the mzML files.
             adduct_mz_lookup = {a: mz for a, mz, _pol in sorted_adducts}
             eic_data_by_sample = {}
             for adduct, mz_value, _pol in sorted_adducts:
-                for filename, data in eic_data_by_adduct.get(adduct, {}).items():
-                    eic_data_by_sample.setdefault(filename, {})[adduct] = {
+                for filepath, data in eic_data_by_adduct.get(adduct, {}).items():
+                    eic_data_by_sample.setdefault(filepath, {})[adduct] = {
                         "rt": data["rt"],
                         "intensity": data["intensity"],
                         "mz_value": adduct_mz_lookup.get(adduct, mz_value),
                     }
 
             for _, file_row in files_data.iterrows():
-                filename = file_row["filename"]
                 filepath = file_row["Filepath"]
+                display_name = self.file_manager.get_display_name(filepath)
 
                 sample_widget = SampleEICWidget(
                     self.compound,
-                    filename,
+                    display_name,
                     filepath,
                     sorted_adducts,
                     self.file_manager,
                     self.defaults,
                     self,
-                    adduct_results=eic_data_by_sample.get(filename, {}),
+                    adduct_results=eic_data_by_sample.get(filepath, {}),
                 )
                 sample_widget.setMinimumSize(350, 280)
                 sample_widget.setMaximumSize(500, 380)

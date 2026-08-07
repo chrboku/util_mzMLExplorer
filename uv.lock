@@ -1036,7 +1036,7 @@ wheels = [
 
 [[package]]
 name = "util-mzmlexplorer"
-version = "9.5.1"
+version = "10.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "matchms" },

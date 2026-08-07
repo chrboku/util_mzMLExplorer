@@ -11,9 +11,11 @@ try:
     import _pickle as pickle  # C-accelerated pickle (cPickle equivalent in Python 3)
 except ImportError:
     import pickle
+import ast
 import gc
 import importlib.metadata
 import json
+import re
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
@@ -467,9 +469,29 @@ class FileManager:
         else:
             new_files_df["injection_volume"] = pd.to_numeric(new_files_df["injection_volume"], errors="coerce").fillna(1.0)
 
+        # Add batch column with default value "batch1" if not present/empty
+        if "batch" not in new_files_df.columns:
+            new_files_df["batch"] = "batch1"
+        else:
+            new_files_df["batch"] = new_files_df["batch"].apply(lambda v: str(v) if pd.notna(v) and str(v).strip() else "batch1")
+
+        # Add injection_order column with default value 1 if not present/empty
+        if "injection_order" not in new_files_df.columns:
+            new_files_df["injection_order"] = 1
+        else:
+            new_files_df["injection_order"] = pd.to_numeric(new_files_df["injection_order"], errors="coerce").fillna(1)
+
         # Ensure Quantification column exists (empty if not provided)
         if "Quantification" not in new_files_df.columns:
             new_files_df["Quantification"] = ""
+
+        # Ensure spiked_compounds column exists (empty if not provided)
+        if "spiked_compounds" not in new_files_df.columns:
+            new_files_df["spiked_compounds"] = ""
+
+        # Validate the Quantification/spiked_compounds cells now so parse errors are
+        # surfaced to the user immediately instead of being silently skipped later.
+        parse_errors = self._validate_quant_and_spiked_columns(new_files_df)
 
         # Ensure hidden column exists (samples are visible/active by default)
         if "hidden" not in new_files_df.columns:
@@ -493,6 +515,42 @@ class FileManager:
 
         # Note: Memory loading is now handled by the main window with progress dialog
         # The main window will call load_files_to_memory_with_progress() if needed
+
+        return parse_errors
+
+    def _validate_quant_and_spiked_columns(self, new_files_df: pd.DataFrame) -> List[str]:
+        """Parse every non-empty 'Quantification'/'spiked_compounds' cell in *new_files_df*
+        and return a list of human-readable error messages for cells that fail to parse
+        or don't match the expected structure ({selector: [value, unit]} dict / list of
+        selector strings, respectively).
+        """
+        errors: List[str] = []
+        for _, row in new_files_df.iterrows():
+            filename = row.get("filename", row.get("Filepath", "?"))
+
+            quant_str = row.get("Quantification", "")
+            if quant_str and pd.notna(quant_str) and str(quant_str).strip():
+                try:
+                    quant_data = self._parse_json_or_literal(str(quant_str))
+                    if not isinstance(quant_data, dict):
+                        errors.append(f"{filename}: 'Quantification' must be a JSON object/dict, got {type(quant_data).__name__}")
+                    else:
+                        for key, value in quant_data.items():
+                            if not (isinstance(value, list) and len(value) == 2):
+                                errors.append(f"{filename}: 'Quantification' entry '{key}' must be a [value, unit] list, got {value!r}")
+                except (json.JSONDecodeError, ValueError, SyntaxError, TypeError) as e:
+                    errors.append(f"{filename}: 'Quantification' could not be parsed ('{quant_str}'): {e}")
+
+            spiked_str = row.get("spiked_compounds", "")
+            if spiked_str and pd.notna(spiked_str) and str(spiked_str).strip():
+                try:
+                    spiked_data = self._parse_json_or_literal(str(spiked_str))
+                    if not isinstance(spiked_data, list):
+                        errors.append(f"{filename}: 'spiked_compounds' must be a JSON list, got {type(spiked_data).__name__}")
+                except (json.JSONDecodeError, ValueError, SyntaxError, TypeError) as e:
+                    errors.append(f"{filename}: 'spiked_compounds' could not be parsed ('{spiked_str}'): {e}")
+
+        return errors
 
     def _sort_files_data(self):
         """Sort files data by group first, then by filename using natural sort"""
@@ -580,6 +638,76 @@ class FileManager:
             return False
         return bool(row["hidden"].iloc[0])
 
+    def get_display_names(self, include_hidden: bool = True) -> Dict[str, str]:
+        """Compute a unique, human-readable display name for every loaded file.
+
+        Internally, all data structures must be keyed/matched by the full
+        ``Filepath`` (base filenames alone are NOT guaranteed unique - the same
+        filename can appear in different groups/folders). This method resolves
+        the shortest unambiguous label for each file, for use in the UI only:
+        - the base filename (without extension) if it is unique among all files
+        - otherwise "filename (group)" if that combination is unique
+        - otherwise "filename (group) [full path]"
+
+        Returns:
+            Dict mapping Filepath -> display name.
+        """
+        df = self.files_data
+        if df is None or df.empty or "Filepath" not in df.columns:
+            return {}
+
+        def _sample_name(filepath: str) -> str:
+            return os.path.splitext(os.path.basename(str(filepath)))[0]
+
+        rows = [
+            {
+                "filepath": row["Filepath"],
+                "name": _sample_name(row["Filepath"]),
+                "group": str(row.get("group", "")) if pd.notna(row.get("group", "")) else "",
+            }
+            for _, row in df.iterrows()
+        ]
+
+        name_counts: Dict[str, int] = {}
+        for r in rows:
+            name_counts[r["name"]] = name_counts.get(r["name"], 0) + 1
+
+        name_group_counts: Dict[tuple, int] = {}
+        for r in rows:
+            key = (r["name"], r["group"])
+            name_group_counts[key] = name_group_counts.get(key, 0) + 1
+
+        display_names: Dict[str, str] = {}
+        for r in rows:
+            if name_counts[r["name"]] <= 1:
+                display_names[r["filepath"]] = r["name"]
+            elif name_group_counts[(r["name"], r["group"])] <= 1:
+                display_names[r["filepath"]] = f"{r['name']} ({r['group']})"
+            else:
+                display_names[r["filepath"]] = f"{r['name']} ({r['group']}) [{r['filepath']}]"
+
+        return display_names
+
+    def get_display_name(self, filepath: str) -> str:
+        """Return the unique display name for a single file (see get_display_names)."""
+        return self.get_display_names().get(filepath, os.path.splitext(os.path.basename(str(filepath)))[0])
+
+    def find_duplicate_filenames(self) -> Dict[str, List[str]]:
+        """Return a dict mapping each duplicated base filename to the list of full
+        Filepaths that share it (only entries with more than one file are included).
+        Used to warn the user at import time about ambiguous filenames.
+        """
+        df = self.files_data
+        if df is None or df.empty or "Filepath" not in df.columns:
+            return {}
+
+        by_name: Dict[str, List[str]] = {}
+        for filepath in df["Filepath"]:
+            name = os.path.basename(str(filepath))
+            by_name.setdefault(name, []).append(filepath)
+
+        return {name: paths for name, paths in by_name.items() if len(paths) > 1}
+
     def get_files_display_data(self) -> pd.DataFrame:
         """Get files data formatted for display in the table"""
         if self.files_data.empty:
@@ -587,8 +715,10 @@ class FileManager:
 
         display_data = self.files_data.copy()
 
-        # Derive sample name from path (filename without extension)
-        display_data["Sample Name"] = display_data["Filepath"].apply(lambda p: os.path.splitext(os.path.basename(p))[0])
+        # Derive sample name from path (unique-disambiguated: filename, name+group,
+        # or name+group+path if filenames collide across groups/folders)
+        display_names = self.get_display_names()
+        display_data["Sample Name"] = display_data["Filepath"].map(lambda p: display_names.get(p, os.path.splitext(os.path.basename(p))[0]))
 
         # Reorder columns: group, Sample Name, color, acquisition date, then remaining columns, filepath last
         columns = list(display_data.columns)
@@ -749,9 +879,9 @@ class FileManager:
             Tuple of (retention_times, intensities) arrays
         """
 
-        if polarity.lower() in ["positive", "pos", "pos.", "+"]:
+        if polarity is not None and polarity.lower() in ["positive", "pos", "pos.", "+"]:
             polarity = "+"
-        elif polarity.lower() in ["negative", "neg", "neg.", "-"]:
+        elif polarity is not None and polarity.lower() in ["negative", "neg", "neg.", "-"]:
             polarity = "-"
         else:
             polarity = None  # unrecognised value → no filtering
@@ -929,13 +1059,56 @@ class FileManager:
             return file_row.iloc[0].to_dict()
         return {}
 
-    def get_quantification_data(self, filepath: str, compound_name: str) -> Optional[Tuple[float, str]]:
+    def _parse_json_or_literal(self, value_str: str):
+        """Parse a JSON string, falling back to a Python literal (e.g. single-quoted
+        dicts/lists as produced by copy-pasted templates) so a malformed cell in one
+        row/group doesn't silently drop that row's quantification/spiked data."""
+        try:
+            return json.loads(value_str)
+        except (json.JSONDecodeError, ValueError, TypeError):
+            return ast.literal_eval(value_str)
+
+    def _matches_compound_selector(self, selector: str, compound_name: str, group_names: set) -> bool:
+        """
+        Check whether *selector* refers to *compound_name*, either directly or via
+        one of the supported prefixes:
+        - "$REGEX:<pattern>" - regex matched against the compound name
+        - "$GROUP:<name>" - matches if the compound belongs to that group
+        - "$GROUPREGEX:<pattern>" - regex matched against the compound's group(s)
+        """
+        if not isinstance(selector, str):
+            return False
+        if selector.startswith("$GROUPREGEX:"):
+            pattern = selector[len("$GROUPREGEX:") :]
+            try:
+                return any(re.search(pattern, g) for g in group_names)
+            except re.error:
+                return False
+        if selector.startswith("$GROUP:"):
+            return selector[len("$GROUP:") :] in group_names
+        if selector.startswith("$REGEX:"):
+            pattern = selector[len("$REGEX:") :]
+            try:
+                return bool(re.search(pattern, compound_name))
+            except re.error:
+                return False
+        return selector == compound_name
+
+    def get_quantification_data(self, filepath: str, compound_name: str, compound_group: Optional[str] = None) -> Optional[Tuple[float, str]]:
         """
         Get quantification data (abundance, unit) for a specific file and compound.
+
+        Compound keys in the "Quantification" JSON dict may either be literal
+        compound names or one of the following selectors, matched against the
+        compound name and/or its semicolon-separated group(s):
+        - "$REGEX:<pattern>" - regex matched against the compound name
+        - "$GROUP:<name>" - matches if the compound belongs to that group
+        - "$GROUPREGEX:<pattern>" - regex matched against the compound's group(s)
 
         Args:
             filepath: Path to the mzML file
             compound_name: Name of the compound
+            compound_group: Semicolon-separated group string of the compound (optional)
 
         Returns:
             Tuple of (abundance, unit) if found, None otherwise
@@ -949,19 +1122,65 @@ class FileManager:
             return None
 
         try:
-            # Parse JSON quantification data
-            quant_data = json.loads(quant_str)
+            quant_data = self._parse_json_or_literal(quant_str)
             if compound_name in quant_data:
                 data = quant_data[compound_name]
                 if isinstance(data, list) and len(data) == 2:
                     abundance = float(data[0])
                     unit = str(data[1])
                     return (abundance, unit)
-        except (json.JSONDecodeError, ValueError, KeyError, TypeError) as e:
+
+            # Fall back to selector-based keys ("$REGEX:", "$GROUP:", "$GROUPREGEX:")
+            group_names = {g.strip() for g in str(compound_group).split(";") if g.strip()} if compound_group else set()
+            for key, data in quant_data.items():
+                if not isinstance(key, str) or key == compound_name:
+                    continue
+                if self._matches_compound_selector(key, compound_name, group_names) and isinstance(data, list) and len(data) == 2:
+                    return (float(data[0]), str(data[1]))
+        except (json.JSONDecodeError, ValueError, SyntaxError, KeyError, TypeError) as e:
             print(f"Error parsing quantification data '{quant_str}' for {filepath}: {e}")
             return None
 
         return None
+
+    def is_compound_spiked(self, filepath: str, compound_name: str, compound_group: Optional[str] = None) -> bool:
+        """
+        Check whether *compound_name* is listed as spiked-in for the given file.
+
+        The "spiked_compounds" column (optional) holds a JSON list of strings,
+        each of which is either:
+        - a literal compound name
+        - "$REGEX:<pattern>" - a regex matched against the compound name
+        - "$GROUP:<name>" - matches if the compound belongs to that group
+        - "$GROUPREGEX:<pattern>" - a regex matched against the compound's group(s)
+
+        Args:
+            filepath: Path to the mzML file
+            compound_name: Name of the compound
+            compound_group: Semicolon-separated group string of the compound (optional)
+
+        Returns:
+            True if the compound is marked as spiked-in for this sample.
+        """
+        file_row = self.files_data[self.files_data["Filepath"] == filepath]
+        if file_row.empty:
+            return False
+
+        spiked_str = file_row.iloc[0].get("spiked_compounds", "")
+        if not spiked_str or pd.isna(spiked_str):
+            return False
+
+        try:
+            entries = self._parse_json_or_literal(spiked_str) if isinstance(spiked_str, str) else spiked_str
+        except (json.JSONDecodeError, ValueError, SyntaxError, TypeError):
+            return False
+
+        if not isinstance(entries, list):
+            return False
+
+        group_names = {g.strip() for g in str(compound_group).split(";") if g.strip()} if compound_group else set()
+
+        return any(self._matches_compound_selector(entry, compound_name, group_names) for entry in entries if isinstance(entry, str))
 
     def get_dilution_factor(self, filepath: str) -> float:
         """

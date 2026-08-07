@@ -972,6 +972,7 @@ class MzMLExplorerMainWindow(QMainWindow):
             "batch": "batch",
             "injection_order": "injection_order",
             "injection_volume": "injection_volume",
+            "spiked_compounds": "spiked_compounds",
         }
         df = df.rename(columns={col: _FILES_COLUMNS.get(col.lower(), col) for col in df.columns})
 
@@ -986,7 +987,7 @@ class MzMLExplorerMainWindow(QMainWindow):
             return False
 
         first_row = df.iloc[0]
-        optional_cols = {"sample_id", "Quantification", "Dilution"}
+        optional_cols = {"sample_id", "Quantification", "Dilution", "batch", "injection_order", "injection_volume", "spiked_compounds"}
         missing_in_first = first_row.isna()
         required_missing = missing_in_first[~missing_in_first.index.isin(optional_cols)]
         if required_missing.any():
@@ -1018,8 +1019,34 @@ class MzMLExplorerMainWindow(QMainWindow):
                 df[col] = df[col].ffill()
 
         # Load files using file manager
-        self.file_manager.load_files(df, excel_path=excel_path)
+        parse_errors = self.file_manager.load_files(df, excel_path=excel_path)
         self.update_files_table()
+
+        if parse_errors:
+            preview = "\n".join(parse_errors[:20])
+            more = f"\n... and {len(parse_errors) - 20} more" if len(parse_errors) > 20 else ""
+            QMessageBox.warning(
+                self,
+                "Quantification/Spiked Compounds Parse Errors",
+                f"Some 'Quantification' or 'spiked_compounds' cells could not be parsed and will be ignored:\n\n{preview}{more}",
+            )
+
+        duplicate_filenames = self.file_manager.find_duplicate_filenames()
+        if duplicate_filenames:
+            lines = []
+            for name, filepaths in list(duplicate_filenames.items())[:20]:
+                lines.append(f"{name}:")
+                lines.extend(f"    {fp}" for fp in filepaths)
+            preview = "\n".join(lines)
+            more = f"\n... and {len(duplicate_filenames) - 20} more duplicate name(s)" if len(duplicate_filenames) > 20 else ""
+            QMessageBox.warning(
+                self,
+                "Duplicate File Names Detected",
+                "Multiple loaded files share the same file name but live in different "
+                "folders/groups. They are tracked internally by their full path, but "
+                "please double-check group assignments for these files:\n\n"
+                f"{preview}{more}",
+            )
 
         # If memory mode is enabled, load the new files into memory with progress
         if self.file_manager.keep_in_memory:
@@ -1132,12 +1159,20 @@ class MzMLExplorerMainWindow(QMainWindow):
                     "TRT_003",
                 ],
                 "quantification": [
-                    "{'Caffeine': [500.0, 'ng/mL']}",
-                    "{'Glucose': [250.0, 'µM']}",
-                    "{'Caffeine': [250.0, 'ng/mL']}",
-                    "{'Glucose': [125.0, 'µM']}",
+                    '{"Caffeine": [500.0, "ng/mL"]}',
+                    '{"Glucose": [250.0, "\u00b5M"]}',
+                    '{"Caffeine": [250.0, "ng/mL"]}',
+                    '{"Glucose": [125.0, "\u00b5M"]}',
+                    "",
+                    '{"$REGEX:Flavonoid.*": [100.0, "\u00b5M"], "$GROUP:Methylxanthines": [50.0, "ng/mL"], "$GROUPREGEX:Test.*": [10.0, "\u00b5M"]}',
+                ],
+                "spiked_compounds": [
+                    '["Caffeine"]',
                     "",
                     "",
+                    '["Glucose", "$REGEX:Flavonoid.*"]',
+                    "",
+                    '["$GROUP:Methylxanthines", "$GROUPREGEX:Test.*"]',
                 ],
             }
 
@@ -1221,6 +1256,17 @@ class MzMLExplorerMainWindow(QMainWindow):
                 f"  - 'Filepath' column: Full path to your mzML files (required)\n"
                 f"  - 'group' column: Group names for organizing samples\n"
                 f"  - 'color' column: Hex colors for visualization (optional)\n"
+                f"  - 'batch', 'injection_order', 'injection_volume': optional; left empty\n"
+                f"    they default to 'batch1', 1, and 1 respectively\n"
+                f"  - 'quantification': JSON dict (use double quotes) mapping a compound\n"
+                f"    selector to [value, unit]. Keys may be a literal compound name,\n"
+                f"    '$REGEX:<pattern>' (matches many compounds by name), '$GROUP:<name>'\n"
+                f"    (matches a compound group), or '$GROUPREGEX:<pattern>' (matches compound\n"
+                f"    groups by regex). Malformed cells are skipped for that row only -\n"
+                f"    other rows/groups are unaffected\n"
+                f"  - 'spiked_compounds': optional JSON list of compound names and/or\n"
+                f"    '$REGEX:<pattern>', '$GROUP:<name>', '$GROUPREGEX:<pattern>' entries;\n"
+                f"    matching EICs are drawn 3x thicker in the EIC/multi-adduct viewers\n"
                 f"  - Other columns: Additional metadata as needed\n\n"
                 f"• In the compounds template:\n"
                 f"  - Use either 'ChemicalFormula' OR 'Mass' column\n"
@@ -3498,6 +3544,10 @@ class MzMLExplorerMainWindow(QMainWindow):
                     f"Unsupported file format: {file_ext}. Supported formats: xlsx, csv, tsv",
                 )
 
+        except ValueError as e:
+            # Validation errors from CompoundManager already contain a detailed,
+            # user-friendly explanation (expected vs. found columns, row errors, tips).
+            QMessageBox.critical(self, "Error Loading Compounds", str(e))
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to load compounds: {str(e)}\n{traceback.format_exc()}")
 

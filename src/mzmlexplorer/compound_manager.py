@@ -98,7 +98,16 @@ class CompoundManager:
         has_mass = "Mass" in compounds_data.columns
 
         if missing_columns:
-            raise ValueError(f"Missing required columns: {', '.join(missing_columns)}")
+            expected_columns = list(_COMPOUNDS_COLUMNS.values()) + ["Comment"]
+            present_columns = list(compounds_data.columns)
+            raise ValueError(
+                f"The compounds file could not be parsed: missing required column(s): {', '.join(missing_columns)}.\n\n"
+                f"Expected columns: {', '.join(expected_columns)}.\n"
+                f"Columns found in your file: {', '.join(present_columns) if present_columns else '(none)'}.\n"
+                f"Column(s) not found: {', '.join(missing_columns)}.\n\n"
+                "Tip: Use 'File > Generate Excel Templates' to create an example compounds "
+                "template that shows the required format and column names."
+            )
 
         # Add RT columns if they don't exist (will be filled with defaults)
         if "RT_min" not in compounds_data.columns:
@@ -123,6 +132,7 @@ class CompoundManager:
 
         # Validate and process compounds
         valid_compounds = []
+        row_errors = []
         for idx, row in compounds_data.iterrows():
             try:
                 compound_name = row["Name"]
@@ -177,13 +187,26 @@ class CompoundManager:
 
             except Exception as e:
                 print(f"Warning: Invalid compound {row.get('Name', 'Unknown')}: {str(e)}")
+                row_errors.append(f"{row.get('Name', f'Row {idx + 2}')}: {str(e)}")
 
         if not valid_compounds:
             if not self.compounds_data.empty:
                 print("No new valid compounds to add.")
                 return
             else:
-                raise ValueError("No valid compounds found!")
+                present_columns = list(compounds_data.columns)
+                details = "\n".join(f"  - {err}" for err in row_errors[:20])
+                if len(row_errors) > 20:
+                    details += f"\n  ... and {len(row_errors) - 20} more"
+                raise ValueError(
+                    "No valid compounds found! Every row failed validation.\n\n"
+                    f"Columns found in your file: {', '.join(present_columns) if present_columns else '(none)'}.\n"
+                    "Each compound needs a 'Name' plus either 'ChemicalFormula', 'Mass', "
+                    "or an m/z-only entry in 'Common_adducts' (e.g. [197.1234]+).\n\n"
+                    f"Row errors:\n{details}\n\n"
+                    "Tip: Use 'File > Generate Excel Templates' to create an example compounds "
+                    "template that shows the required format and column names."
+                )
 
         # Create DataFrame for new compounds
         new_compounds_df = pd.DataFrame(valid_compounds)

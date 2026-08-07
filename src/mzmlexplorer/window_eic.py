@@ -384,6 +384,7 @@ class InteractiveChartView(QChartView):
             if self.current_hovered_series:
                 self.hover_label.hide()
                 self.current_hovered_series = None
+                self._apply_hover_visuals()
             return
 
         # Convert mouse position to chart coordinates
@@ -425,6 +426,7 @@ class InteractiveChartView(QChartView):
         if closest_distance <= self.hover_threshold:
             if closest_series != self.current_hovered_series:
                 self.current_hovered_series = closest_series
+                self._apply_hover_visuals()
 
                 # Get the series color for the tooltip
                 series_color = closest_series.pen().color()
@@ -468,6 +470,39 @@ class InteractiveChartView(QChartView):
             if self.current_hovered_series:
                 self.hover_label.hide()
                 self.current_hovered_series = None
+                self._apply_hover_visuals()
+
+    def _apply_hover_visuals(self):
+        """Restyle EIC sample series based on the currently hovered series.
+
+        When a sample is hovered, it is drawn at 2x its normal line width
+        while all other samples are drawn at 66% transparency (34% of their
+        normal opacity). When nothing is hovered, all series are restored to
+        their normal (base) pen.
+        """
+        for series in self.chart().series():
+            if not isinstance(series, QLineSeries):
+                continue
+            series_id = id(series)
+            cache = self.series_data_cache.get(series_id)
+            if not cache or "base_pen" not in cache:
+                continue
+            # Only restyle actual per-sample EIC traces, not decorative/reference lines
+            if not series.property("sample_filename"):
+                continue
+
+            base_pen = cache["base_pen"]
+            pen = QPen(base_pen)
+            if self.current_hovered_series is None:
+                series.setPen(pen)
+            elif series is self.current_hovered_series:
+                pen.setWidthF(base_pen.widthF() * 2.0)
+                series.setPen(pen)
+            else:
+                color = QColor(base_pen.color())
+                color.setAlpha(int(base_pen.color().alpha() * 0.34))
+                pen.setColor(color)
+                series.setPen(pen)
 
     def _cache_series_data(self, series: QLineSeries):
         """Cache series data points and metadata for hover detection"""
@@ -487,7 +522,7 @@ class InteractiveChartView(QChartView):
             sample_name = series_name if series_name else "Unknown Sample"
 
         # Store in cache
-        self.series_data_cache[series_id] = {"points": points, "name": sample_name}
+        self.series_data_cache[series_id] = {"points": points, "name": sample_name, "base_pen": QPen(series.pen())}
 
     def _find_closest_distance_to_series(self, mouse_x, mouse_y, points):
         """Find the closest distance from mouse to the series line"""
@@ -561,12 +596,18 @@ class InteractiveChartView(QChartView):
         for series in self.chart().series():
             if isinstance(series, QLineSeries):
                 self._cache_series_data(series)
+        # Series objects are recreated on every plot update, so any previously
+        # hovered series reference is now stale.
+        if self.current_hovered_series is not None:
+            self.hover_label.hide()
+            self.current_hovered_series = None
 
     def leaveEvent(self, event):
         """Handle mouse leave events to hide tooltips"""
         if self.current_hovered_series:
             self.hover_label.hide()
             self.current_hovered_series = None
+            self._apply_hover_visuals()
         super().leaveEvent(event)
 
     def mouseReleaseEvent(self, event: QMouseEvent):
@@ -1810,7 +1851,7 @@ class EICWindow(QWidget):
                         if group_col is not None:
                             matching_files = df[df[group_col].astype(str) == grp]
                             for _, frow in matching_files.iterrows():
-                                fn = str(frow.get("filename", ""))
+                                fn = str(frow.get("Filepath", ""))
                                 if fn and fn in self.sample_settings:
                                     self.sample_settings[fn]["plot"] = visible
                     cell_widget = table.cellWidget(row, 2)
@@ -1843,7 +1884,7 @@ class EICWindow(QWidget):
                         if group_col is not None:
                             matching_files = df[df[group_col].astype(str) == grp]
                             for _, frow in matching_files.iterrows():
-                                fn = str(frow.get("filename", ""))
+                                fn = str(frow.get("Filepath", ""))
                                 if fn:
                                     self.sample_settings[fn] = dict(defaults)
                     scaling_widget = table.cellWidget(row, 1)
@@ -1952,7 +1993,7 @@ class EICWindow(QWidget):
                 if group_col is not None:
                     matching_files = df[df[group_col].astype(str) == group]
                     for _, frow in matching_files.iterrows():
-                        fn = str(frow.get("filename", ""))
+                        fn = str(frow.get("Filepath", ""))
                         if not fn:
                             continue
                         if fn not in self.sample_settings:
@@ -2216,50 +2257,53 @@ class EICWindow(QWidget):
         if table is None:
             return
 
-        # Collect all filenames from the sample matrix
+        # Collect all filepaths from the sample matrix (filepath is the unique key;
+        # filenames alone may collide across groups/folders)
         samples = []
         if hasattr(self.file_manager, "files_data") and self.file_manager.files_data is not None:
             df = self.file_manager.files_data
-            if "filename" in df.columns:
-                for filename in df["filename"].dropna().unique():
-                    if filename:
-                        samples.append(str(filename))
+            if "Filepath" in df.columns:
+                for filepath in df["Filepath"].dropna().unique():
+                    if filepath:
+                        samples.append(str(filepath))
 
-        # Sort by group first, then by filename within each group
+        display_names = self.file_manager.get_display_names()
+
+        # Sort by group first, then by filepath within each group
         if hasattr(self.file_manager, "files_data") and self.file_manager.files_data is not None:
             df = self.file_manager.files_data
-            if "filename" in df.columns and "group" in df.columns:
-                sample_groups = {str(r["filename"]): str(r.get("group", "")) for _, r in df.iterrows()}
-            elif "filename" in df.columns:
-                sample_groups = {str(r["filename"]): "" for _, r in df.iterrows()}
+            if "Filepath" in df.columns and "group" in df.columns:
+                sample_groups = {str(r["Filepath"]): str(r.get("group", "")) for _, r in df.iterrows()}
+            elif "Filepath" in df.columns:
+                sample_groups = {str(r["Filepath"]): "" for _, r in df.iterrows()}
             else:
                 sample_groups = {}
         else:
             sample_groups = {}
         natsort_key_fn = natsort_keygen()
-        precomputed_keys = {fn: (natsort_key_fn(sample_groups.get(fn, "")), natsort_key_fn(fn)) for fn in samples}
-        sorted_samples = sorted(samples, key=lambda fn: precomputed_keys[fn])
+        precomputed_keys = {fp: (natsort_key_fn(sample_groups.get(fp, "")), natsort_key_fn(display_names.get(fp, fp))) for fp in samples}
+        sorted_samples = sorted(samples, key=lambda fp: precomputed_keys[fp])
 
         table.setSortingEnabled(False)
         table.setRowCount(len(sorted_samples))
 
         # Initialise settings for samples that haven't been seen before
-        for filename in sorted_samples:
-            if filename not in self.sample_settings:
-                self.sample_settings[filename] = {"scaling": 1.0, "plot": True, "negative": False, "line_width": 1.0}
+        for filepath in sorted_samples:
+            if filepath not in self.sample_settings:
+                self.sample_settings[filepath] = {"scaling": 1.0, "plot": True, "negative": False, "line_width": 1.0}
             else:
-                self.sample_settings[filename].setdefault("scaling", 1.0)
-                self.sample_settings[filename].setdefault("negative", False)
-                self.sample_settings[filename].setdefault("line_width", 1.0)
+                self.sample_settings[filepath].setdefault("scaling", 1.0)
+                self.sample_settings[filepath].setdefault("negative", False)
+                self.sample_settings[filepath].setdefault("line_width", 1.0)
 
-        for row, filename in enumerate(sorted_samples):
-            display_name = filename.rsplit(".", 1)[0] if "." in filename else filename
+        for row, filepath in enumerate(sorted_samples):
+            display_name = display_names.get(filepath, filepath)
 
-            # Column 0: Sample name (stores full filename in UserRole for later lookup)
+            # Column 0: Sample name (stores full Filepath in UserRole for later lookup)
             name_item = QTableWidgetItem(display_name)
-            name_item.setData(Qt.ItemDataRole.UserRole, filename)
+            name_item.setData(Qt.ItemDataRole.UserRole, filepath)
             name_item.setFlags(name_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            group_color = self._get_sample_group_color(filename)
+            group_color = self._get_sample_group_color(filepath)
             if group_color:
                 name_item.setForeground(QColor(group_color))
             table.setItem(row, 0, name_item)
@@ -2267,16 +2311,16 @@ class EICWindow(QWidget):
             # Column 1: Scaling spinbox
             scaling_spin = NoScrollDoubleSpinBox()
             scaling_spin.setRange(0.00001, 100000.0)
-            scaling_spin.setValue(self.sample_settings[filename]["scaling"])
+            scaling_spin.setValue(self.sample_settings[filepath]["scaling"])
             scaling_spin.setDecimals(5)
             scaling_spin.setSingleStep(0.1)
-            scaling_spin.valueChanged.connect(lambda value, fn=filename: self.on_sample_setting_changed(fn, "scaling", value))
+            scaling_spin.valueChanged.connect(lambda value, fn=filepath: self.on_sample_setting_changed(fn, "scaling", value))
             table.setCellWidget(row, 1, scaling_spin)
 
             # Column 2: Plot checkbox
             plot_checkbox = QCheckBox()
-            plot_checkbox.setChecked(self.sample_settings[filename]["plot"])
-            plot_checkbox.stateChanged.connect(lambda state, fn=filename: self.on_sample_setting_changed(fn, "plot", state == Qt.CheckState.Checked.value))
+            plot_checkbox.setChecked(self.sample_settings[filepath]["plot"])
+            plot_checkbox.stateChanged.connect(lambda state, fn=filepath: self.on_sample_setting_changed(fn, "plot", state == Qt.CheckState.Checked.value))
             checkbox_widget = QWidget()
             checkbox_layout = QHBoxLayout(checkbox_widget)
             checkbox_layout.addWidget(plot_checkbox)
@@ -2286,8 +2330,8 @@ class EICWindow(QWidget):
 
             # Column 3: Neg. checkbox
             neg_checkbox = QCheckBox()
-            neg_checkbox.setChecked(self.sample_settings[filename]["negative"])
-            neg_checkbox.stateChanged.connect(lambda state, fn=filename: self.on_sample_setting_changed(fn, "negative", state == Qt.CheckState.Checked.value))
+            neg_checkbox.setChecked(self.sample_settings[filepath]["negative"])
+            neg_checkbox.stateChanged.connect(lambda state, fn=filepath: self.on_sample_setting_changed(fn, "negative", state == Qt.CheckState.Checked.value))
             neg_checkbox_widget = QWidget()
             neg_checkbox_layout = QHBoxLayout(neg_checkbox_widget)
             neg_checkbox_layout.addWidget(neg_checkbox)
@@ -2298,34 +2342,34 @@ class EICWindow(QWidget):
             # Column 4: Line width spinbox
             width_spin = NoScrollDoubleSpinBox()
             width_spin.setRange(0.5, 10.0)
-            width_spin.setValue(self.sample_settings[filename]["line_width"])
+            width_spin.setValue(self.sample_settings[filepath]["line_width"])
             width_spin.setDecimals(1)
             width_spin.setSingleStep(0.5)
-            width_spin.valueChanged.connect(lambda value, fn=filename: self.on_sample_setting_changed(fn, "line_width", value))
+            width_spin.valueChanged.connect(lambda value, fn=filepath: self.on_sample_setting_changed(fn, "line_width", value))
             table.setCellWidget(row, 4, width_spin)
 
         table.setSortingEnabled(True)
 
-    def _get_sample_group_color(self, filename: str):
-        """Return the group colour for *filename*, or None if unavailable."""
+    def _get_sample_group_color(self, filepath: str):
+        """Return the group colour for *filepath*, or None if unavailable."""
         if not hasattr(self.file_manager, "files_data") or self.file_manager.files_data is None:
             return None
         df = self.file_manager.files_data
-        if "filename" not in df.columns or "group" not in df.columns:
+        if "Filepath" not in df.columns or "group" not in df.columns:
             return None
-        matching = df[df["filename"] == filename]
+        matching = df[df["Filepath"] == filepath]
         if matching.empty:
             return None
         group = str(matching.iloc[0]["group"])
         return self.file_manager.get_group_color(group)
 
-    def on_sample_setting_changed(self, filename: str, setting: str, value) -> None:
+    def on_sample_setting_changed(self, filepath: str, setting: str, value) -> None:
         """Handle changes to per-sample display settings"""
         if self._group_update_in_progress:
             return
-        if filename not in self.sample_settings:
-            self.sample_settings[filename] = {"scaling": 1.0, "plot": True, "negative": False, "line_width": 1.0}
-        self.sample_settings[filename][setting] = value
+        if filepath not in self.sample_settings:
+            self.sample_settings[filepath] = {"scaling": 1.0, "plot": True, "negative": False, "line_width": 1.0}
+        self.sample_settings[filepath][setting] = value
         # Persist across future EIC windows
         self._notify_setting("sample_settings", dict(self.sample_settings))
         self.update_plot(preserve_view=True)
@@ -3025,6 +3069,9 @@ class EICWindow(QWidget):
         self.peak_start_rt = None
         self.peak_end_rt = None
 
+        # Baseline points are meaningless without integration borders
+        self._clear_baseline_points()
+
         # Hide boxplot and clear info
         self.boxplot_widget.setVisible(False)
 
@@ -3104,7 +3151,7 @@ class EICWindow(QWidget):
             if "." in sample_name:
                 sample_name = sample_name.rsplit(".", 1)[0]
 
-            self._sample_acquisition_dates[sample_name] = metadata.get(ACQUISITION_DATETIME_COLUMN) or ""
+            self._sample_acquisition_dates[filepath] = metadata.get(ACQUISITION_DATETIME_COLUMN) or ""
 
             # Use original RT values for integration (not shifted)
             # This ensures we always use the same RT scale regardless of visualization
@@ -3171,7 +3218,7 @@ class EICWindow(QWidget):
                 (
                     group,
                     sample_name,
-                    self._sample_acquisition_dates.get(sample_name, ""),
+                    self._sample_acquisition_dates.get(filepath, ""),
                     sample_apex_rt,
                     sample_fwhm_left,
                     sample_fwhm_right,
@@ -3181,6 +3228,7 @@ class EICWindow(QWidget):
                     sample_fw10_right,
                     sample_fw10_asymmetry,
                     None if sample_apex_intensity == float("-inf") else sample_apex_intensity,
+                    filepath,
                 )
             )
 
@@ -3189,8 +3237,8 @@ class EICWindow(QWidget):
                     boxplot_data[group] = []
                 boxplot_data[group].append(integrated_area)
 
-                # Add to table data
-                table_data.append((group, sample_name, integrated_area))
+                # Add to table data (filepath is the unique key; sample_name/group are for display only)
+                table_data.append((group, sample_name, integrated_area, filepath))
 
         if not boxplot_data:
             self.boxplot_widget.setVisible(False)
@@ -3322,8 +3370,8 @@ class EICWindow(QWidget):
             # Prepare sample data list for the callback
             acquisition_dates = getattr(self, "_sample_acquisition_dates", {})
             sample_data_list = []
-            for group, sample_name, peak_area in table_data:
-                sample_data_list.append((sample_name, group, peak_area, acquisition_dates.get(sample_name, "")))
+            for group, sample_name, peak_area, filepath in table_data:
+                sample_data_list.append((sample_name, group, peak_area, acquisition_dates.get(filepath, "")))
 
             # Call the integration callback to record the first sample
             if sample_data_list:
@@ -3361,7 +3409,7 @@ class EICWindow(QWidget):
         table_data.sort(key=lambda x: (natsort_key(x[0]), natsort_key(x[1])))
 
         # Global maximum for bar scaling
-        global_max = max((pa for _, _, pa in table_data), default=0)
+        global_max = max((pa for _, _, pa, _ in table_data), default=0)
 
         # Set number of rows
         self.peak_area_table.setSortingEnabled(False)
@@ -3369,7 +3417,7 @@ class EICWindow(QWidget):
         self.peak_area_table.setRowCount(len(table_data))
 
         # Populate the table
-        for row, (group, sample_name, peak_area) in enumerate(table_data):
+        for row, (group, sample_name, peak_area, filepath) in enumerate(table_data):
             # Group column
             group_item = QTableWidgetItem(str(group))
             group_color = self._get_group_color(group)
@@ -3379,14 +3427,15 @@ class EICWindow(QWidget):
                 group_item.setBackground(gc)
             self.peak_area_table.setItem(row, 0, group_item)
 
-            # Sample name column
+            # Sample name column (stores the unique filepath in UserRole for lookups)
             sample_item = QTableWidgetItem(str(sample_name))
+            sample_item.setData(Qt.ItemDataRole.UserRole, filepath)
             if group_color:
                 sample_item.setBackground(gc)
             self.peak_area_table.setItem(row, 1, sample_item)
 
             # Acquisition date column
-            acq_date = getattr(self, "_sample_acquisition_dates", {}).get(sample_name, "")
+            acq_date = getattr(self, "_sample_acquisition_dates", {}).get(filepath, "")
             acq_item = QTableWidgetItem(str(acq_date))
             if group_color:
                 acq_item.setBackground(gc)
@@ -3445,21 +3494,32 @@ class EICWindow(QWidget):
                 series.setPen(pen)
             return
 
-        # Collect sample names from selected rows
+        # Collect sample identifiers from selected rows: prefer the unique
+        # Filepath stored in UserRole (immune to name collisions); fall back
+        # to the displayed text for tables that don't store it yet.
+        selected_filepaths = set()
         selected_names = set()
         for idx in selected_rows:
             item = table.item(idx.row(), name_col)
             if item:
-                selected_names.add(item.text())
+                fp = item.data(Qt.ItemDataRole.UserRole)
+                if fp:
+                    selected_filepaths.add(fp)
+                else:
+                    selected_names.add(item.text())
 
         # Adjust opacity: selected = full, others = dim
         for series in self.chart.series():
             if series.property("is_decoration"):
                 continue
-            sample_fn = series.property("sample_filename") or series.name() or ""
-            # Table stores names without extension; strip extension for comparison
-            base = os.path.splitext(os.path.basename(sample_fn))[0]
-            is_selected = base in selected_names
+            series_filepath = series.property("sample_filepath")
+            if selected_filepaths and series_filepath:
+                is_selected = series_filepath in selected_filepaths
+            else:
+                sample_fn = series.property("sample_filename") or series.name() or ""
+                # Table stores names without extension; strip extension for comparison
+                base = os.path.splitext(os.path.basename(sample_fn))[0]
+                is_selected = base in selected_names
             alpha = 1.0 if is_selected else 0.15
             color = series.color()
             color.setAlphaF(alpha)
@@ -3514,31 +3574,29 @@ class EICWindow(QWidget):
             if item:
                 selected_groups.add(item.text())
 
-        # Find all sample filenames that belong to the selected groups
-        selected_names = set()
+        # Find all sample filepaths that belong to the selected groups (the unique
+        # identifier; base filenames can collide across groups/folders)
+        selected_filepaths = set()
         if hasattr(self, "file_manager") and self.file_manager is not None:
             fd = self.file_manager.get_files_data()
-            if not fd.empty and self.grouping_column in fd.columns:
+            if not fd.empty and self.grouping_column in fd.columns and "Filepath" in fd.columns:
                 for _, row in fd.iterrows():
                     grp_val = row.get(self.grouping_column)
                     if grp_val is None:
                         continue
                     if str(grp_val) in selected_groups:
-                        fn = row.get("filename") or row.get("Filename") or ""
-                        base = os.path.splitext(os.path.basename(str(fn)))[0]
-                        if base:
-                            selected_names.add(base)
+                        fp = row.get("Filepath")
+                        if fp:
+                            selected_filepaths.add(fp)
 
-        if not selected_names:
+        if not selected_filepaths:
             return
 
         # Adjust opacity: selected groups = full, others = dim
         for series in self.chart.series():
             if series.property("is_decoration"):
                 continue
-            sample_fn = series.property("sample_filename") or series.name() or ""
-            base = os.path.splitext(os.path.basename(sample_fn))[0]
-            is_selected = base in selected_names
+            is_selected = series.property("sample_filepath") in selected_filepaths
             alpha = 1.0 if is_selected else 0.15
             color = series.color()
             color.setAlphaF(alpha)
@@ -3561,7 +3619,7 @@ class EICWindow(QWidget):
 
         # Group data by group name
         group_data = {}
-        for group, sample_name, peak_area in table_data:
+        for group, sample_name, peak_area, _filepath in table_data:
             if group not in group_data:
                 group_data[group] = []
             group_data[group].append(peak_area)
@@ -3812,7 +3870,7 @@ class EICWindow(QWidget):
         rt_data : list of tuples
             Each tuple: (group, sample_name, acquisition_date, apex_rt, fwhm_left,
             fwhm_right, fwhm_width, fwhm_asymmetry, fw10_left, fw10_right, fw10_asymmetry,
-            apex_intensity)
+            apex_intensity, filepath)
             Any of the float fields can be None if not computable.
         """
         self.rt_sample_table.setRowCount(0)
@@ -3864,6 +3922,7 @@ class EICWindow(QWidget):
             fw10_right,
             fw10_asymmetry,
             apex_intensity,
+            filepath,
         ) in enumerate(sample_rows):
             grp_color = self._get_group_color(group)
 
@@ -3876,7 +3935,9 @@ class EICWindow(QWidget):
                 return it
 
             self.rt_sample_table.setItem(row_idx, 0, _colored_item(group))
-            self.rt_sample_table.setItem(row_idx, 1, _colored_item(sample_name))
+            sample_item = _colored_item(sample_name)
+            sample_item.setData(Qt.ItemDataRole.UserRole, filepath)
+            self.rt_sample_table.setItem(row_idx, 1, sample_item)
             self.rt_sample_table.setItem(row_idx, 2, _colored_item(str(acquisition_date)))
 
             # Cols 3–5: RT positions — display actual value, centred bar shows offset from RT_min
@@ -3973,6 +4034,7 @@ class EICWindow(QWidget):
             fw10_right,
             fw10_asymmetry,
             apex_intensity,
+            _filepath,
         ) in sample_rows:
             entry = group_data.setdefault(group, {"apex": [], "fwhm": [], "fwhm_asym": [], "fw10_width": [], "fw10_asym": [], "apex_intensity": []})
             if apex_rt is not None:
@@ -4635,9 +4697,11 @@ class EICWindow(QWidget):
         if not self.eic_data:
             return
 
-        # Extract peak regions for all samples
+        # Extract peak regions for all samples (keyed by filepath - the unique
+        # identifier; base filenames can collide across groups/folders)
         sample_data = {}
-        sample_group = {}  # sample_name -> group
+        sample_group = {}  # filepath -> group
+        display_names = self.file_manager.get_display_names()
         for filepath, data in self.eic_data.items():
             rt = np.array(data["rt"])
             intensity = np.array(data["intensity"])
@@ -4646,14 +4710,9 @@ class EICWindow(QWidget):
             if len(rt) == 0:
                 continue
 
-            # Get sample name
-            sample_name = metadata.get("filename", "Unknown")
-            if "." in sample_name:
-                sample_name = sample_name.rsplit(".", 1)[0]
-
             # Track group for header colouring
             group_value = metadata.get(self.grouping_column, "Unknown")
-            sample_group[sample_name] = str(group_value) if group_value is not None else "Unknown"
+            sample_group[filepath] = str(group_value) if group_value is not None else "Unknown"
 
             # Extract peak region
             mask = (rt >= start_rt) & (rt <= end_rt)
@@ -4661,7 +4720,7 @@ class EICWindow(QWidget):
             peak_intensity = intensity[mask]
 
             if len(peak_rt) >= 2:  # Need at least 2 points
-                sample_data[sample_name] = {"rt": peak_rt, "intensity": peak_intensity}
+                sample_data[filepath] = {"rt": peak_rt, "intensity": peak_intensity}
 
         if len(sample_data) < 2:
             # Need at least 2 samples for comparison
@@ -4669,7 +4728,7 @@ class EICWindow(QWidget):
             return
 
         # Calculate pairwise correlations and store in a matrix
-        sample_names = natsorted(list(sample_data.keys()), key=natsort_keygen())
+        sample_names = natsorted(list(sample_data.keys()), key=lambda fp: natsort_keygen()(display_names.get(fp, fp)))
         n_samples = len(sample_names)
 
         # Create correlation matrix (n x n)
@@ -4697,7 +4756,7 @@ class EICWindow(QWidget):
             sample_names,
             key=lambda n: (
                 natsort_key(sample_group.get(n, "Unknown")),
-                natsort_key(n),
+                natsort_key(display_names.get(n, n)),
             ),
         )
         if sorted_names != sample_names:
@@ -4716,8 +4775,9 @@ class EICWindow(QWidget):
             grp = sample_group.get(name, "Unknown")
             grp_color = self._get_group_color(grp)
 
-            h_item = QTableWidgetItem(name)
-            v_item = QTableWidgetItem(name)
+            display_label = display_names.get(name, name)
+            h_item = QTableWidgetItem(display_label)
+            v_item = QTableWidgetItem(display_label)
             if grp_color:
                 c = QColor(grp_color)
                 c.setAlphaF(0.5)
@@ -4782,9 +4842,11 @@ class EICWindow(QWidget):
         if not self.eic_data:
             return
 
-        # Extract peak regions for all samples
+        # Extract peak regions for all samples (keyed by filepath - the unique
+        # identifier; base filenames can collide across groups/folders)
         sample_data = {}
         sample_metadata = {}
+        display_names = self.file_manager.get_display_names()
 
         for filepath, data in self.eic_data.items():
             rt = np.array(data["rt"])
@@ -4793,11 +4855,6 @@ class EICWindow(QWidget):
 
             if len(rt) == 0:
                 continue
-
-            # Get sample name and group
-            sample_name = metadata.get("filename", "Unknown")
-            if "." in sample_name:
-                sample_name = sample_name.rsplit(".", 1)[0]
 
             group_value = metadata.get(self.grouping_column, "Unknown")
             group = str(group_value) if group_value is not None else "Unknown"
@@ -4808,8 +4865,8 @@ class EICWindow(QWidget):
             peak_intensity = intensity[mask]
 
             if len(peak_rt) >= 2:  # Need at least 2 points
-                sample_data[sample_name] = {"rt": peak_rt, "intensity": peak_intensity}
-                sample_metadata[sample_name] = {"group": group}
+                sample_data[filepath] = {"rt": peak_rt, "intensity": peak_intensity}
+                sample_metadata[filepath] = {"group": group}
 
         if len(sample_data) < 3:
             # Need at least 3 samples for meaningful PCA
@@ -4828,7 +4885,7 @@ class EICWindow(QWidget):
             return
 
         # Calculate pairwise correlations
-        sample_names = natsorted(list(sample_data.keys()), key=natsort_keygen())
+        sample_names = natsorted(list(sample_data.keys()), key=lambda fp: natsort_keygen()(display_names.get(fp, fp)))
         n_samples = len(sample_names)
 
         # Create correlation matrix (n x n)
@@ -4910,7 +4967,7 @@ class EICWindow(QWidget):
                 # Add sample name as annotation (initially invisible, shown on hover)
                 # Position will be adjusted dynamically in hover handler
                 annotation = ax.annotate(
-                    sample_name,
+                    display_names.get(sample_name, sample_name),
                     xy=(x, y),
                     xytext=(5, 5),
                     textcoords="offset points",
@@ -4920,7 +4977,7 @@ class EICWindow(QWidget):
                 )
 
                 # Store annotation for hover functionality
-                self._pca_annotations.append((scatter, annotation, (x, y), sample_name))
+                self._pca_annotations.append((scatter, annotation, (x, y), display_names.get(sample_name, sample_name)))
 
             # Set labels with explained variance
             if len(explained_var) >= 2:
@@ -5024,42 +5081,34 @@ class EICWindow(QWidget):
         self.calibration_table.setRowCount(0)
 
         compound_name = self.compound_data.get("Name", "Unknown")
-        files_data = self.file_manager.get_files_data()
 
         calibration_rows = []
 
-        for group, sample_name, peak_area in table_data:
-            # Match file by filename (with or without .mzML)
-            sample_filename = f"{sample_name}.mzML"
-            matching_files = files_data[files_data["filename"] == sample_filename]
-            if matching_files.empty:
-                matching_files = files_data[files_data["filename"] == sample_name]
+        for group, sample_name, peak_area, filepath in table_data:
+            quant_data = self.file_manager.get_quantification_data(filepath, compound_name, self.compound_data.get("Group"))
 
-            if not matching_files.empty:
-                filepath = matching_files.iloc[0]["Filepath"]
-                quant_data = self.file_manager.get_quantification_data(filepath, compound_name)
-
-                if quant_data is not None:
-                    true_abundance, unit = quant_data
-                    dilution = self.file_manager.get_dilution_factor(filepath)
-                    inj_vol = self.file_manager.get_injection_volume(filepath)
-                    correction_factor = inj_vol * dilution
-                    # The stored abundance IS the in-vial concentration.
-                    # The actual sample concentration = vial_abundance * dilution.
-                    vial_abundance = true_abundance
-                    # Optionally normalize peak area by injection volume and dilution
-                    corrected_area = peak_area * correction_factor if self.normalize_peak_area_checkbox.isChecked() else peak_area
-                    calibration_rows.append(
-                        {
-                            "sample_name": sample_name,
-                            "peak_area": corrected_area,
-                            "vial_abundance": vial_abundance,
-                            "unit": unit,
-                            "dilution": dilution,
-                            "inj_vol": inj_vol,
-                            "correction_factor": correction_factor,
-                        }
-                    )
+            if quant_data is not None:
+                true_abundance, unit = quant_data
+                dilution = self.file_manager.get_dilution_factor(filepath)
+                inj_vol = self.file_manager.get_injection_volume(filepath)
+                correction_factor = inj_vol * dilution
+                # The stored abundance IS the in-vial concentration.
+                # The actual sample concentration = vial_abundance * dilution.
+                vial_abundance = true_abundance
+                # Optionally normalize peak area by injection volume and dilution
+                corrected_area = peak_area * correction_factor if self.normalize_peak_area_checkbox.isChecked() else peak_area
+                calibration_rows.append(
+                    {
+                        "sample_name": sample_name,
+                        "filepath": filepath,
+                        "peak_area": corrected_area,
+                        "vial_abundance": vial_abundance,
+                        "unit": unit,
+                        "dilution": dilution,
+                        "inj_vol": inj_vol,
+                        "correction_factor": correction_factor,
+                    }
+                )
 
         self.calibration_table.setRowCount(len(calibration_rows))
 
@@ -5070,7 +5119,9 @@ class EICWindow(QWidget):
             checkbox_item.setCheckState(Qt.CheckState.Checked)
             self.calibration_table.setItem(i, 0, checkbox_item)
 
-            self.calibration_table.setItem(i, 1, QTableWidgetItem(row["sample_name"]))
+            name_item = QTableWidgetItem(row["sample_name"])
+            name_item.setData(Qt.ItemDataRole.UserRole, row["filepath"])
+            self.calibration_table.setItem(i, 1, name_item)
 
             area_item = QTableWidgetItem(f"{row['peak_area']:.2e}")
             area_item.setFlags(Qt.ItemFlag.ItemIsEnabled)
@@ -5144,7 +5195,7 @@ class EICWindow(QWidget):
             checkbox_item = self.calibration_table.item(i, 0)
             if not (name_item and area_item and abund_item):
                 continue
-            calib_sample_set.add(name_item.text())
+            calib_sample_set.add(name_item.data(Qt.ItemDataRole.UserRole))
             try:
                 x_raw = float(area_item.text())
                 y_raw = float(abund_item.text())
@@ -5176,20 +5227,13 @@ class EICWindow(QWidget):
 
         # Collect unknown samples from all peak data
         unknown_x_raw, unknown_names = [], []
-        files_data_plot = self.file_manager.get_files_data()
         normalize = self.normalize_peak_area_checkbox.isChecked()
-        for _group, sample_name, peak_area in self._all_peak_data:
-            if sample_name not in calib_sample_set:
+        for _group, sample_name, peak_area, filepath in self._all_peak_data:
+            if filepath not in calib_sample_set:
                 if normalize:
-                    _sfn = f"{sample_name}.mzML"
-                    _mf = files_data_plot[files_data_plot["filename"] == _sfn]
-                    if _mf.empty:
-                        _mf = files_data_plot[files_data_plot["filename"] == sample_name]
-                    if not _mf.empty:
-                        _fp = _mf.iloc[0]["Filepath"]
-                        _iv = self.file_manager.get_injection_volume(_fp)
-                        _dil = self.file_manager.get_dilution_factor(_fp)
-                        peak_area = peak_area * _iv * _dil
+                    _iv = self.file_manager.get_injection_volume(filepath)
+                    _dil = self.file_manager.get_dilution_factor(filepath)
+                    peak_area = peak_area * _iv * _dil
                 unknown_x_raw.append(peak_area)
                 unknown_names.append(sample_name)
 
@@ -5325,17 +5369,16 @@ class EICWindow(QWidget):
             return
 
         compound_name = self.compound_data.get("Name", "Unknown")
-        files_data = self.file_manager.get_files_data()
         transform = self.calibration_info["transform"]
         coeffs = self.calibration_info["coeffs"]
         poly = np.poly1d(coeffs)
 
-        # Set of calibration standard names (for type classification)
+        # Set of calibration standard filepaths (for type classification)
         calib_sample_set = set()
         for i in range(self.calibration_table.rowCount()):
             name_item = self.calibration_table.item(i, 1)
             if name_item:
-                calib_sample_set.add(name_item.text())
+                calib_sample_set.add(name_item.data(Qt.ItemDataRole.UserRole))
 
         def apply_transform(v):
             if "Log2" in transform:
@@ -5356,21 +5399,10 @@ class EICWindow(QWidget):
         UNKNOWN_BG = QColor(255, 165, 0, 80)  # orange, semi-transparent
 
         rows = []
-        for grp, sample_name, peak_area in self._all_peak_data:
-            # Find file for dilution and quantification lookup
-            sample_filename = f"{sample_name}.mzML"
-            matching_files = files_data[files_data["filename"] == sample_filename]
-            if matching_files.empty:
-                matching_files = files_data[files_data["filename"] == sample_name]
-
-            dilution = 1.0
-            inj_vol = 1.0
-            quant_data = None
-            if not matching_files.empty:
-                filepath = matching_files.iloc[0]["Filepath"]
-                dilution = self.file_manager.get_dilution_factor(filepath)
-                inj_vol = self.file_manager.get_injection_volume(filepath)
-                quant_data = self.file_manager.get_quantification_data(filepath, compound_name)
+        for grp, sample_name, peak_area, filepath in self._all_peak_data:
+            dilution = self.file_manager.get_dilution_factor(filepath)
+            inj_vol = self.file_manager.get_injection_volume(filepath)
+            quant_data = self.file_manager.get_quantification_data(filepath, compound_name, self.compound_data.get("Group"))
 
             correction_factor = inj_vol * dilution
             # Optionally correct peak area by injection volume and dilution before prediction
@@ -7099,8 +7131,7 @@ class EICWindow(QWidget):
             max_plot_intensity = 0.0
             for _grp in natsorted(groups_data.keys()):
                 for _fd in groups_data.get(_grp, []):
-                    _fn = _fd["metadata"].get("filename", os.path.basename(_fd["filepath"]))
-                    _ss = self.sample_settings.get(_fn, {"scaling": 1.0, "plot": True, "negative": False})
+                    _ss = self.sample_settings.get(_fd["filepath"], {"scaling": 1.0, "plot": True, "negative": False})
                     if not _ss.get("plot", True):
                         continue
                     _ints = _fd["intensity"] * _ss.get("scaling", 1.0)
@@ -7122,6 +7153,7 @@ class EICWindow(QWidget):
         # Create separate series for each file, but group them for legend display
         # Iterate through groups in the same sorted order as group_shifts
         sorted_groups = natsorted(groups_data.keys())
+        display_names = self.file_manager.get_display_names()
 
         for group_name in sorted_groups:
             # Get group color
@@ -7131,7 +7163,7 @@ class EICWindow(QWidget):
 
             # Create a placeholder legend entry when all samples in the group are hidden
             # or there is no data (keeps legend order consistent).
-            any_visible = any(self.sample_settings.get(fd["metadata"].get("filename", os.path.basename(fd["filepath"])), {}).get("plot", True) for fd in group_files)
+            any_visible = any(self.sample_settings.get(fd["filepath"], {}).get("plot", True) for fd in group_files)
             if not any_visible or len(group_files) == 0:
                 series = QLineSeries()
                 if separate_groups:
@@ -7156,12 +7188,8 @@ class EICWindow(QWidget):
             first_file_in_group = True
 
             for file_data in group_files:
-                _fn = file_data["metadata"].get(
-                    "filename",
-                    os.path.basename(file_data["filepath"]),
-                )
                 # Per-sample rendering settings (authoritative source for all render decisions)
-                _ss = self.sample_settings.get(_fn, {"scaling": 1.0, "plot": True, "negative": False, "line_width": 1.0})
+                _ss = self.sample_settings.get(file_data["filepath"], {"scaling": 1.0, "plot": True, "negative": False, "line_width": 1.0})
                 if not _ss.get("plot", True):
                     continue
 
@@ -7185,15 +7213,14 @@ class EICWindow(QWidget):
                 # Create individual series for each file
                 series = QLineSeries()
 
-                # Store the sample filename for hover tooltips
+                # Store the sample display name for hover tooltips (unique across
+                # name/group/path; base filenames alone can collide)
                 filepath = file_data["filepath"]
-                filename = file_data["metadata"].get(
-                    "filename",
-                    filepath.split("\\")[-1] if "\\" in filepath else filepath.split("/")[-1] if "/" in filepath else filepath,
-                )
+                filename = display_names.get(filepath, filepath)
 
                 # Store custom property for hover detection
                 series.setProperty("sample_filename", filename)
+                series.setProperty("sample_filepath", filepath)
 
                 # Only the first file in each group gets the group name for legend
                 if separate_injection:
@@ -7219,6 +7246,8 @@ class EICWindow(QWidget):
 
                 # Apply group color with transparency and per-sample line width
                 _effective_lw = _ss.get("line_width", 1.0)
+                if self.file_manager.is_compound_spiked(filepath, self.compound_data.get("Name"), self.compound_data.get("Group")):
+                    _effective_lw *= 3.0
                 if group_color:
                     color = QColor(group_color)
                     color.setAlpha(180)
@@ -8034,8 +8063,8 @@ class EICWindow(QWidget):
             group = str(group_value) if group_value is not None else "Unknown"
 
             # Per-sample rendering settings (authoritative source for all render decisions)
-            fn = metadata.get("filename", os.path.basename(filepath))
-            _ss = self.sample_settings.get(fn, {"scaling": 1.0, "plot": True, "negative": False, "line_width": 1.0})
+            fn = self.file_manager.get_display_name(filepath)
+            _ss = self.sample_settings.get(filepath, {"scaling": 1.0, "plot": True, "negative": False, "line_width": 1.0})
             if not _ss.get("plot", True):
                 continue
 
@@ -8880,14 +8909,14 @@ class EICWindow(QWidget):
 
     def _is_file_visible(self, row) -> bool:
         """Return True if the file described by *row* is visible per current group/sample settings."""
-        filename = str(row.get("filename", ""))
+        filepath = str(row.get("Filepath", ""))
         group_value = row.get(self.grouping_column, row.get("group", "Unknown"))
         group = str(group_value) if group_value is not None else "Unknown"
         # Check group visibility
         if not self.group_settings.get(group, {"plot": True}).get("plot", True):
             return False
         # Check sample visibility
-        if not self.sample_settings.get(filename, {"plot": True}).get("plot", True):
+        if not self.sample_settings.get(filepath, {"plot": True}).get("plot", True):
             return False
         return True
 
